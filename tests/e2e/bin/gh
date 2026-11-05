@@ -82,6 +82,7 @@ const issueRecord = (i) => ({
   issueType: i.issueType || null,
   comments: i.comments || [],
   createdAt: i.createdAt || '2026-10-01T00:00:00Z',
+  author: { login: i.author || 'test' },
 })
 const prFor = (branch) => [...state.prs].reverse().find((p) => p.headRefName === branch)
 
@@ -103,6 +104,8 @@ if (key === 'auth status') {
   const code = canned.authExit || 0
   if (code) fail('You are not logged into any GitHub hosts. To log in, run: gh auth login', code)
   console.log('github.com\n  Logged in to github.com account test (fake)')
+} else if (key === 'api user') {
+  emit({ login: 'test' })
 } else if (key === 'issue list') {
   const rows = allIssues().filter((i) => (i.state || 'OPEN') === 'OPEN').map(issueRecord)
   if (flag('--json')) {

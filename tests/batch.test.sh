@@ -29,10 +29,13 @@ case "$1 $2" in
     case " $STUB_ISSUES " in
       *" $3 "*)
         state=OPEN; case " ${STUB_CLOSED-} " in *" $3 "*) state=CLOSED ;; esac
-        printf '{"number":%s,"title":"Issue %s","body":"b","url":"https://github.com/acme/batch/issues/%s","state":"%s","labels":[],"issueType":null,"comments":[]}\n' "$3" "$3" "$3" "$state" ;;
+        author=me; for p in ${STUB_AUTHORS-}; do [ "${p%%:*}" = "$3" ] && author="${p#*:}"; done
+        who="{\"login\":\"$author\"}"; [ "$author" = null ] && who=null
+        printf '{"number":%s,"title":"Issue %s","body":"b","url":"https://github.com/acme/batch/issues/%s","state":"%s","labels":[],"issueType":null,"comments":[],"author":%s}\n' "$3" "$3" "$3" "$state" "$who" ;;
       *) echo "GraphQL: Could not resolve to an issue or pull request with the number of $3." >&2; exit 1 ;;
     esac ;;
   "issue list") echo "${STUB_SEARCH-[]}" ;;
+  "api user") echo "${STUB_LOGIN-me}" ;;
 esac
 exit 0
 STUB
@@ -61,6 +64,26 @@ printf '%s\n' "${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-unset}" >>"$WORKER_LOG.cei
 printf '%s\n' "${perm[*]}" >>"$WORKER_LOG.perm"
 (IFS='|'; printf '%s\n' "${deny[*]}") >>"$WORKER_LOG.disallowed"
 printf '%s\n' "${TENX_BATCH_PLAN_DIR-unset}" >>"$WORKER_LOG.plandir"
+printf '%s\n' "${TENX_BATCH-unset}" >>"$WORKER_LOG.env"
+# With $WORKER_SCRIPT=flow the worker also does what a real one would, then prints its usual turn: /10x:work writes a
+# passing draft plan, or, once plan.md says approved, evidence and .worktrees/<id>; the approve reply sets
+# `Status: approved`; /10x:close removes the worktree. A reply finds its ticket through the session it resumes.
+if [ "${WORKER_SCRIPT:-}" = flow ]; then
+  case "$prompt" in
+    '/10x:work '*|'/10x:close '*) id="${prompt#* }"; [ "$flag" = --session-id ] && printf '%s %s\n' "$session" "$id" >>"$WORKER_LOG.sessions" ;;
+    *) id="$(awk -v s="$session" '$1 == s { print $2 }' "$WORKER_LOG.sessions")" ;;
+  esac
+  case "$prompt" in
+    '/10x:work '*)
+      if grep -q '^Status: approved' ".10x/$id/plan.md" 2>/dev/null; then
+        printf -- '- AC1 — met: x\n' >".10x/$id/evidence.md"; mkdir -p ".worktrees/$id"
+      else
+        printf '# %s\n\nStatus: draft\n\n## Acceptance criteria\n- AC1 — the change works\n\n## Approach\nOne change.\n\n## Files\n- `f-%s` — changed\n\n## Readers\n- `thing` — `grep -rn thing`\n  - no hits\n\n## Overlap\n- none\n\n## Tests\n| AC | Test file | Case |\n|---|---|---|\n| AC1 | `tests/x.sh` | `works` |\n' "$id" "$id" >".10x/$id/plan.md"
+      fi ;;
+    '/10x:close '*) rmdir ".worktrees/$id" ;;
+    Approved.*) sed -i.bak 's/^Status: draft/Status: approved/' ".10x/$id/plan.md"; rm -f ".10x/$id/plan.md.bak" ;;
+  esac
+fi
 if [ "$mode" = auto ] && [ -n "${WORKER_MODE:-}" ]; then
   printf '%s\n{"type":"system","subtype":"init","permissionMode":"%s"}\n' "$hook" "$WORKER_MODE"
   trap 'kill "$s" 2>/dev/null; exit 143' TERM INT
@@ -84,7 +107,7 @@ STUB
 chmod +x "$tmp/stub/gh" "$tmp/stub/worker"
 export PATH="$tmp/stub:$BIN:$PATH" STUB_LOG="$tmp/stub.log" WORKER_LOG="$tmp/worker.log" STUB_ISSUES="5 6 7 8 9"
 export TENX_BATCH_CLAUDE="$tmp/stub/worker"
-unset CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS TENX_BATCH_PLAN_DIR
+unset CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS TENX_BATCH_PLAN_DIR TENX_BATCH
 
 git -c init.defaultBranch=main init -q --bare "$tmp/origin.git"
 git -c init.defaultBranch=main init -q "$tmp/repo"
@@ -107,8 +130,36 @@ reset() {
   sleepers=(); bgs=()
   rm -rf .10x .worktrees .git/10x-batch
   : >"$WORKER_LOG"; : >"$WORKER_LOG.perm"; : >"$WORKER_LOG.disallowed"; : >"$WORKER_LOG.plandir"; : >"$STUB_LOG"
+  : >"$WORKER_LOG.env"; : >"$WORKER_LOG.sessions"
   echo '{"close":"local"}' >.claude/10x.json
 }
+# lp <seconds> [args...] — `10x-batch loop` bounded by <seconds> (killed then, LRC=124); LRC is its exit status, stdout
+# is in $tmp/loop.out and stderr in $tmp/loop.err, both also in $tmp/out.
+lp() {
+  local limit=$1 p i rc
+  shift
+  10x-batch loop "$@" >"$tmp/loop.out" 2>"$tmp/loop.err" &
+  p=$!
+  for ((i = 0; i < limit * 10; i++)); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
+  if kill -0 "$p" 2>/dev/null; then kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; rc=124; else wait "$p"; rc=$?; fi
+  cat "$tmp/loop.out" "$tmp/loop.err" >"$tmp/out"
+  LRC=$rc
+}
+printed() { [ "$(cat "$tmp/loop.out")" = "$1" ] || { echo "        printed: $(cat "$tmp/loop.out") (want $1)"; false; }; }
+finished() { [ "$LRC" -ne 124 ]; }
+# snap — every file under .10x and .git with its checksum.
+snap() { find .10x .git -type f -print0 | sort -z | xargs -0 cksum; }
+# fetched <n> — an `issue view <n>` call that is not the author lookup.
+fetched() { grep "^issue view $1 " "$STUB_LOG" | grep -v -- '--json author' | grep -q .; }
+# The fixed reply of auto mode, byte for byte.
+cat >"$tmp/fixed" <<'EOF'
+Auto mode: no human answers this batch's questions. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, one line per question (its number, the choice and why), and go on.
+EOF
+# A worker turn that asks a question and writes no plan.
+cat >"$tmp/question.jsonl" <<'EOF'
+{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"Which flag name should the CLI use, --fast or --quick?"}]}}
+{"type":"result","result":"Which flag name should the CLI use, --fast or --quick?"}
+EOF
 begin() { CASE="$1"; cfail=0; }
 # need <what> <command...> — one check of the current case; prints the last output when it fails.
 need() {
@@ -205,7 +256,7 @@ STUB_SEARCH='[{"number":9},{"number":5}]' vb init gh-5 6 '#7' https://github.com
 need "exit 0" test $? -eq 0
 need "tickets in intake order, deduplicated" test "$(tr '\n' ' ' <"$B/tickets")" = "gh-5 gh-6 gh-7 gh-8 t1 gh-9 "
 need "an existing ticket.md is kept" test "$(cat .10x/gh-5/ticket.md)" = kept
-need "gh-5 is not fetched" not grep -q '^issue view 5 ' "$STUB_LOG"
+need "gh-5 is not fetched" not fetched 5
 need "the others are fetched" grep -qx '# Issue 9' .10x/gh-9/ticket.md
 need "#7 and the URL are fetched" eval 'grep -qx "# Issue 7" .10x/gh-7/ticket.md && grep -qx "# Issue 8" .10x/gh-8/ticket.md'
 need "the search is pinned to origin's repo" grep -qxF 'issue list --repo github.com/acme/batch --state open --search label:batch --json number --limit 100' "$STUB_LOG"
@@ -281,6 +332,83 @@ need "prints no roadmap line" not has "roadmap: "
 need "v1 keeps its state" grep -qxF '| v1 | a `t1`; b `t2` | base | Planned |' .10x/roadmap.md
 end
 
+reset; ticket t1
+begin "init: --auto records auto, without it default, and the board shows the mode"
+need "init --auto exits 0" exits 0 init --auto t1
+need "mode holds auto" test "$(cat "$B/mode")" = auto
+need "the file is the word and a newline" test "$(wc -c <"$B/mode" | tr -d ' ')" = 5
+need "board line 1" test "$(sed -n 1p "$B/board.md")" = "# Batch board"
+need "then a blank line" test -z "$(sed -n 2p "$B/board.md")"
+need "then mode: auto" test "$(sed -n 3p "$B/board.md")" = "mode: auto"
+need "then a blank line, then the table" eval 'test -z "$(sed -n 4p "$B/board.md")" && test "$(sed -n 5p "$B/board.md")" = "| # | Ticket | Phase | Session | Outcome | Evidence |"'
+need "status prints mode: auto" eval 'vb status && line "mode: auto"'
+need "a repeated --auto is the same flag" eval 'vb drop t1 && exits 0 init --auto --auto t1 && test "$(cat "$B/mode")" = auto'
+vb drop t1
+need "init without --auto exits 0" exits 0 init t1
+need "mode holds default" test "$(cat "$B/mode")" = default
+need "status prints mode: default" eval 'vb status && line "mode: default"'
+need "the board says default" test "$(sed -n 3p "$B/board.md")" = "mode: default"
+vb drop t1
+need "--search takes --auto as its query" eval 'STUB_SEARCH="[{\"number\":5}]" exits 0 init --search --auto && test "$(cat "$B/mode")" = default && test "$(cat "$B/tickets")" = gh-5'
+echo "junk" >"$B/mode"
+need "anything but auto reads as default" eval 'vb status && line "mode: default"'
+rm -f "$B/mode"
+need "a batch with no mode file is default" eval 'vb status && line "mode: default"'
+end
+
+reset; ticket t1
+roadmap '| v1 | a `gh-5`; b `gh-6` | base | Planned |'
+begin "init: a stranger's issue refuses the whole batch"
+for m in default auto; do
+  fl=(); [ "$m" = auto ] && fl=(--auto)
+  rm -rf "$B" .10x/gh-5 .10x/gh-6
+  STUB_AUTHORS="6:other" vb init ${fl[@]+"${fl[@]}"} gh-5 t1 gh-6
+  need "$m: an argument exits 2" test $? -eq 2
+  need "$m: names the issue and its author" line "10x-batch: not your issue: gh-6 (author other)"
+  need "$m: not wrapped in no ticket" not has "no ticket: gh-6"
+  need "$m: does not name the issue that is mine" not has "gh-5"
+  need "$m: nothing under _batch" test ! -e "$B"
+  need "$m: the stranger's ticket.md is deleted again" test ! -e .10x/gh-6
+  rm -rf "$B" .10x/gh-5 .10x/gh-6
+  STUB_SEARCH='[{"number":5},{"number":6}]' STUB_AUTHORS="6:other" vb init ${fl[@]+"${fl[@]}"} --search "label:batch"
+  need "$m: a search exits 2" test $? -eq 2
+  need "$m: a search names it" has "10x-batch: not your issue: gh-6 (author other)"
+  need "$m: a search writes nothing under _batch" test ! -e "$B"
+  need "$m: a search leaves no ticket" test ! -e .10x/gh-6
+  rm -rf "$B" .10x/gh-5 .10x/gh-6
+  STUB_AUTHORS="6:other" vb init ${fl[@]+"${fl[@]}"} v1
+  need "$m: a roadmap version exits 2" test $? -eq 2
+  need "$m: a version names it" has "10x-batch: not your issue: gh-6 (author other)"
+  need "$m: a version writes nothing under _batch" test ! -e "$B"
+  rm -rf "$B" .10x/gh-5 .10x/gh-6
+  mkdir -p .10x/gh-6 && echo kept >.10x/gh-6/ticket.md
+  STUB_AUTHORS="6:other" vb init ${fl[@]+"${fl[@]}"} t1 gh-6
+  need "$m: an existing ticket.md exits 2" test $? -eq 2
+  need "$m: an existing ticket.md is checked too" has "10x-batch: not your issue: gh-6 (author other)"
+  need "$m: it writes nothing under _batch" test ! -e "$B"
+  need "$m: and the existing ticket stays" test "$(cat .10x/gh-6/ticket.md)" = kept
+  rm -rf .10x/gh-6
+done
+STUB_AUTHORS="6:null" vb init gh-6
+need "an issue with no author is unknown" has "10x-batch: not your issue: gh-6 (author unknown)"
+end
+
+reset; ticket t1
+begin "init: only your own issues and ticket files are batched"
+for m in default auto; do
+  fl=(); [ "$m" = auto ] && fl=(--auto)
+  rm -rf "$B" .10x/gh-5 .10x/gh-6
+  vb init ${fl[@]+"${fl[@]}"} gh-5 t1 gh-6
+  need "$m: exit 0" test $? -eq 0
+  need "$m: all three are batched" test "$(tr '\n' ' ' <"$B/tickets")" = "gh-5 t1 gh-6 "
+  need "$m: the mode is recorded" test "$(cat "$B/mode")" = "$m"
+done
+rm -rf "$B"; : >"$STUB_LOG"
+need "ticket files alone call no gh" eval 'exits 0 init --auto t1 && test ! -s "$STUB_LOG"'
+rm -rf "$B"
+need "logins compare case-insensitively" eval 'STUB_LOGIN=ME exits 0 init --auto gh-5'
+end
+
 # ---------------------------------------------------------------- board
 
 reset; ticket t1 t2 t3
@@ -311,6 +439,29 @@ need "run rewrites it" test -f "$B/board.md"
 need "run prints the phase and the board" eval 'line "phase: waiting" && line "board: $root/.10x/_batch/board.md"'
 end
 
+reset; ticket t1 t2 t3
+begin "board: an auto-approved ticket shows auto-approved with its hash"
+vb init --auto t1 t2 t3
+approved t1 a; approved t2 b
+h="$(sed 's/^Status:.*$/Status:/' .10x/t1/plan.md | shasum -a 256 | cut -d' ' -f1)"
+printf '%s\n' "$h" >"$B/t1/auto-approved"
+vb status
+need "the approved row reads auto-approved (sha256 <12 hex>)" grep -qxF "| 1 | t1 | approved | $(field t1 1 3) | — | auto-approved (sha256 ${h:0:12}) |" "$B/board.md"
+need "a ticket you approved shows none" not grep -q "| t2 |.*auto-approved" "$B/board.md"
+need "t2's row is as before" grep -qxF "| 2 | t2 | approved | $(field t2 1 3) | — | — |" "$B/board.md"
+row t1 implement implement 0; evidence t1 "- AC1 — met: x"; mkdir -p .worktrees/t1
+row t1 close close 0; rmdir .worktrees/t1
+vb status
+need "a landed row keeps it, first" grep -qxF "| 1 | t1 | landed | $(field t1 3 3) | landed | auto-approved (sha256 ${h:0:12}); landed on main at $(git rev-parse --short main) |" "$B/board.md"
+touch "$B/t1/dropped"
+vb status
+need "a dropped ticket shows none" grep -qxF "| 1 | t1 | dropped | $(field t1 3 3) | dropped | dropped by the user |" "$B/board.md"
+row t3 plan plan 0; plan_md t3 draft c; echo "q" >"$B/t3/turn.md"
+printf '%s\n' "0123456789abcdef0123456789abcdef" >"$B/t3/auto-approved"
+vb status
+need "it shows under Needs the human too" grep -qxF -- "- t3 — waiting, plan approvable: auto-approved (sha256 0123456789ab); .10x/_batch/t3/turn.md" "$B/board.md"
+end
+
 # ---------------------------------------------------------------- run, reply and rounds
 
 reset; ticket t1 t2
@@ -328,6 +479,52 @@ need "no --allowedTools" not grep -qF -- --allowedTools "$WORKER_LOG.perm"
 need "no fallback" eval 'test -z "$(find "$B/t1" -name "*-fallback")" && test "$(wc -l <"$B/t1/runs.tsv" | tr -d " ")" = 6'
 need "the plan and plan-reply runs get the ticket dir, implement and close no variable" \
   test "$(tr '\n' ' ' <"$WORKER_LOG.plandir")" = "$root/.10x/t1 $root/.10x/t1 unset unset unset "
+end
+
+reset; ticket t1 t2
+begin "run: every worker has TENX_BATCH=1"
+vb init t1 t2
+vb run t1 plan
+echo "go" >"$B/t1/reply.md"; vb run t1 reply
+approve_plan t1 a; vb run t1 implement
+evidence t1 "- AC1 — met: x"; mkdir -p .worktrees/t1
+echo "go on" >"$B/t1/reply.md"; vb run t1 reply
+vb run t1 close
+need "five runs" test "$(wc -l <"$WORKER_LOG.env" | tr -d ' ')" = 5
+need "each saw TENX_BATCH=1" test "$(sort -u "$WORKER_LOG.env")" = 1
+end
+
+reset; ticket t1
+begin "run: an issue that is no longer yours is refused"
+vb init gh-5 t1
+for k in plan reply implement close; do
+  STUB_AUTHORS="5:other" vb run gh-5 "$k"
+  need "$k: exit 2" test $? -eq 2
+  need "$k: names the issue and its author" line "10x-batch: not your issue: gh-5 (author other)"
+done
+need "no worker started" test ! -s "$WORKER_LOG"
+need "no run recorded" test ! -e "$B/gh-5/runs.tsv"
+STUB_AUTHORS="5:other" lp 30
+need "loop finished" finished
+need "loop reports it failed with the line as evidence" \
+  printed '{"items":[{"id":"gh-5","need":"failed","evidence":"10x-batch: not your issue: gh-5 (author other)"}]}'
+need "still no worker" test ! -s "$WORKER_LOG"
+end
+
+reset; ticket t1
+begin "TENX_BATCH: a worker cannot init, run, drop, approve or loop"
+vb init t1
+row t1 plan plan 0; plan_md t1 draft a
+before="$(snap)"
+for c in "init t1" "run t1 plan" "drop t1" "approve t1" "loop"; do
+  # shellcheck disable=SC2086  # the words of $c are the arguments
+  TENX_BATCH=1 vb $c
+  need "$c: exit 2" test $? -eq 2
+  need "$c: the refusal line" line "10x-batch: refused inside a batch worker"
+  need "$c: nothing changed under .10x or the git dir" test "$(snap)" = "$before"
+done
+need "no worker started" test ! -s "$WORKER_LOG"
+need "status still works" eval 'TENX_BATCH=1 exits 0 status'
 end
 
 reset; ticket t1 t2
@@ -801,6 +998,178 @@ echo "landed on main at abc1234" >"$B/t1/03-landed"
 need "where its close run left it, not the base's tip" eval 'phase_is t1 landed && grep -qF "| landed | landed on main at abc1234 |" "$B/board.md"'
 touch "$B/t1/dropped"
 need "dropped" phase_is t1 dropped
+end
+
+# ---------------------------------------------------------------- loop
+
+reset; ticket t1
+begin "loop: an auto planning worker on a question gets the fixed reply and none of its turn"
+vb init --auto t1
+WORKER_OUT="$tmp/question.jsonl" lp 90
+need "loop finished" finished
+need "the worker's turn is its question" grep -qF "Which flag name" "$B/t1/turn.md"
+for n in 02 03 04; do
+  need "reply $n is the fixed reply byte for byte" cmp -s "$tmp/fixed" "$B/t1/$n-reply.md"
+  need "reply $n holds none of the turn" not grep -qF "Which flag name" "$B/t1/$n-reply.md"
+done
+need "no reply.md is left" test ! -e "$B/t1/reply.md"
+end
+
+reset; ticket t1
+begin "loop: an auto draft that passes plan-check is approved, implemented and closed"
+vb init --auto t1
+WORKER_SCRIPT=flow lp 90
+need "loop finished" finished
+need "t1 landed" phase_is t1 landed
+h="$(sed 's/^Status:.*$/Status:/' .10x/t1/plan.md | shasum -a 256 | cut -d' ' -f1)"
+need "the approval record matches the plan's hash" test "$(cat .git/10x-batch/t1.approved)" = "$h"
+need "auto-approved holds the hash" test "$(cat "$B/t1/auto-approved")" = "$h"
+need "plan, approve reply, implement and close, in one loop run" test "$(sed 1d "$B/t1/runs.tsv" | cut -f2 | tr '\n' ' ')" = "plan reply implement close "
+need "the reply was the approve reply" eval 'grep -qF "Approved. Set \`Status: approved\` in plan.md" "$B/t1/02-reply.md"'
+need "the board says how it was approved" grep -qF "auto-approved (sha256 ${h:0:12})" "$B/board.md"
+end
+
+reset; ticket t1 t2
+echo "a comment" >.10x/t1/comment.md
+echo 1 >.10x/t2/product-questions.md
+begin "loop: comment.md or product-questions.md stops auto approval"
+vb init --auto t1 t2
+WORKER_SCRIPT=flow lp 90
+need "loop finished" finished
+need "both are approve items, with their turn as evidence" \
+  printed '{"items":[{"id":"t1","need":"approve","evidence":".10x/_batch/t1/turn.md"},{"id":"t2","need":"approve","evidence":".10x/_batch/t2/turn.md"}]}'
+need "no approval record" test ! -e .git/10x-batch/t1.approved -a ! -e .git/10x-batch/t2.approved
+need "no auto-approved" test ! -e "$B/t1/auto-approved" -a ! -e "$B/t2/auto-approved"
+need "no reply" test ! -e "$B/t1/reply.md" -a ! -e "$B/t2/reply.md"
+need "both wait on their plan" eval 'phase_is t1 waiting && phase_is t2 waiting'
+end
+
+reset; echo '{"close":"pr-merge"}' >.claude/10x.json; ticket t1
+begin "loop: auto mode closes with the configured close"
+vb init --auto t1
+WORKER_SCRIPT=flow lp 90
+need "loop finished" finished
+need "t1 landed" phase_is t1 landed
+a_prompt="$(tail -n 1 "$WORKER_LOG" | cut -f4)"
+a_perm="$(tail -n 1 "$WORKER_LOG.perm")"
+a_row="$(grep '^| 1 | t1 |' "$B/board.md" | awk -F' [|] ' '{ print $3 "|" $5 "|" $6 }' | sed 's/auto-approved ([^)]*); //')"
+need "the close prompt is /10x:close t1" test "$a_prompt" = "/10x:close t1"
+reset; echo '{"close":"pr-merge"}' >.claude/10x.json; ticket t1
+vb init t1
+WORKER_SCRIPT=flow lp 90
+vb approve t1
+WORKER_SCRIPT=flow lp 90
+need "default mode landed t1 too" phase_is t1 landed
+need "the same worker prompt" test "$(tail -n 1 "$WORKER_LOG" | cut -f4)" = "$a_prompt"
+need "the same permission flags" test "$(tail -n 1 "$WORKER_LOG.perm")" = "$a_perm"
+need "the same board row but for the auto-approved item" test "$(grep '^| 1 | t1 |' "$B/board.md" | awk -F' [|] ' '{ print $3 "|" $5 "|" $6 }')" = "$a_row"
+end
+
+reset; ticket t1 t2
+begin "loop: two auto tickets land and print done"
+vb init --auto t1 t2
+WORKER_SCRIPT=flow lp 120
+need "exit 0" test "$LRC" -eq 0
+need "exactly one JSON line" printed '{"items":[{"need":"done"}]}'
+need "nothing on stderr" test ! -s "$tmp/loop.err"
+need "both landed" eval 'phase_is t1 landed && phase_is t2 landed'
+end
+
+reset; ticket t1
+begin "loop: default mode never replies or approves"
+vb init t1
+lp 60
+need "loop finished" finished
+need "the first waiting ticket is an answer item" \
+  printed '{"items":[{"id":"t1","need":"answer","evidence":".10x/_batch/t1/turn.md"}]}'
+need "no reply.md" test ! -e "$B/t1/reply.md"
+need "no reply was sent" test "$(wc -l <"$B/t1/runs.tsv" | tr -d ' ')" = 2
+reset; ticket t1
+vb init t1
+WORKER_SCRIPT=flow lp 60
+need "loop finished again" finished
+need "an approvable plan is an approve item" \
+  printed '{"items":[{"id":"t1","need":"approve","evidence":".10x/_batch/t1/turn.md"}]}'
+need "no reply.md for it" test ! -e "$B/t1/reply.md"
+need "no approval record" test ! -e .git/10x-batch/t1.approved
+need "no auto-approved" test ! -e "$B/t1/auto-approved"
+end
+
+reset; ticket t1
+begin "loop: a reply.md the human wrote is sent in both modes"
+for m in default auto; do
+  fl=(); [ "$m" = auto ] && fl=(--auto)
+  reset; ticket t1
+  vb init ${fl[@]+"${fl[@]}"} t1
+  WORKER_OUT="$tmp/question.jsonl" lp 90
+  need "$m: first loop finished" finished
+  need "$m: it stops on an answer item" has '"id":"t1","need":"answer"'
+  runs_before="$(wc -l <"$B/t1/runs.tsv" | tr -d ' ')"
+  printf 'Use --fast.' >"$B/t1/reply.md"
+  WORKER_OUT="$tmp/question.jsonl" lp 90
+  need "$m: second loop finished" finished
+  need "$m: one more run" test "$(wc -l <"$B/t1/runs.tsv" | tr -d ' ')" = $((runs_before + 1))
+  last="$(printf '%02d' "$runs_before")"
+  need "$m: the reply landed in <nn>-reply.md byte for byte" eval "printf 'Use --fast.' | cmp -s - \"$B/t1/$last-reply.md\""
+  need "$m: it was sent to the worker" test "$(tail -n 1 "$WORKER_LOG" | cut -f1,4)" = "$(printf -- '--resume\tUse --fast.')"
+  need "$m: reply.md was consumed" test ! -e "$B/t1/reply.md"
+done
+end
+
+reset; ticket t1
+begin "loop: stopped, its runs go on and the next loop waits on them"
+vb init t1
+WORKER_SLEEP=8 10x-batch loop >"$tmp/loop1.out" 2>&1 &
+L1=$!; bgs+=("$L1")
+for _ in $(seq 1 50); do [ -n "$(field t1 1 8 2>/dev/null)" ] && break; sleep 0.1; done
+wpid="$(field t1 1 8 2>/dev/null)"
+need "the first loop started a run" test -n "$wpid"
+kill -TERM "$L1" 2>/dev/null; wait "$L1" 2>/dev/null
+if [ -n "$wpid" ]; then
+  sleepers+=("$wpid")
+  need "the worker outlives the loop's SIGTERM" kill -0 "$wpid"
+  10x-batch loop >"$tmp/loop2.out" 2>&1 &
+  L2=$!; bgs+=("$L2")
+  sleep 1
+  need "a new loop keeps waiting on a run it did not start" kill -0 "$L2"
+  for _ in $(seq 1 200); do [ -n "$(field t1 1 7)" ] && break; sleep 0.1; done
+  ended=$SECONDS
+  for _ in $(seq 1 150); do kill -0 "$L2" 2>/dev/null || break; sleep 0.1; done
+  need "it acts within 10 seconds of the run's end" test $((SECONDS - ended)) -le 12
+  need "the second loop is gone" not kill -0 "$L2"
+  wait "$L2" 2>/dev/null
+  need "it reports the ticket" grep -qF '"id":"t1","need":"answer"' "$tmp/loop2.out"
+fi
+end
+
+reset; ticket t0 t1 t2
+begin "loop: a denied run with no other need is a denied item"
+vb init t0 t1 t2
+row t0 plan plan 0; echo q >"$B/t0/turn.md"
+implemented t1 b; printf 'Bash\tgit push\n' >"$B/t1/02-denials.tsv"
+landed t2 c; printf 'Bash\tgit push\n' >"$B/t2/03-denials.tsv"
+lp 30
+need "loop finished" finished
+need "t0 answers; t1 is denied with the board's evidence; a landed ticket is no item" \
+  printed '{"items":[{"id":"t0","need":"answer","evidence":".10x/_batch/t0/turn.md"},{"id":"t1","need":"denied","evidence":"run 02 (implement) denied: git push"}]}'
+end
+
+reset; ticket t1
+begin "loop: a fourth question stop or a comment.md is an answer item"
+vb init --auto t1
+WORKER_OUT="$tmp/question.jsonl" lp 90
+need "loop finished" finished
+need "three fixed replies and a fourth stop make four runs" test "$(wc -l <"$B/t1/runs.tsv" | tr -d ' ')" = 5
+need "the fourth stop is an answer item" printed '{"items":[{"id":"t1","need":"answer","evidence":".10x/_batch/t1/turn.md"}]}'
+need "no reply.md for it" test ! -e "$B/t1/reply.md"
+need "no fourth fixed reply" test ! -e "$B/t1/05-reply.md"
+reset; ticket t1
+echo "a comment" >.10x/t1/comment.md
+vb init --auto t1
+WORKER_OUT="$tmp/question.jsonl" lp 60
+need "loop finished with a comment.md" finished
+need "a comment.md ticket is an answer item" printed '{"items":[{"id":"t1","need":"answer","evidence":".10x/_batch/t1/turn.md"}]}'
+need "no fixed reply is written or sent" eval 'test ! -e "$B/t1/reply.md" && test "$(wc -l <"$B/t1/runs.tsv" | tr -d " ")" = 2'
 end
 
 [ "$fail" -eq 0 ] && echo "batch: all cases pass"

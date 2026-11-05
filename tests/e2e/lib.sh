@@ -60,7 +60,7 @@ build_path() {
 
 # renv <cmd...> — run in the run's environment: the PATH above, an empty gh config, no gh tokens, the fake ssh.
 renv() {
-  env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GH_HOST -u GH_REPO -u E2E_GH_QUIET \
+  env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GH_HOST -u GH_REPO -u E2E_GH_QUIET -u TENX_BATCH \
     "PATH=$E2E_PATH" "GH_CONFIG_DIR=$RUN/ghconfig" "GIT_CONFIG_GLOBAL=$RUN/gitconfig" \
     "GIT_SSH_COMMAND=$(printf '%q' "$E2E_DIR/bin/ssh")" "E2E_ORIGIN=$ORIGIN" "E2E_GH_DIR=$GHD" \
     "TENX_WAIT_INTERVAL=1" "GIT_TERMINAL_PROMPT=0" "TENX_BATCH_CLAUDE=$RUN/claude-worker" "$@"

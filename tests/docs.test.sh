@@ -177,6 +177,39 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
+// gh-7 AC16 — batch auto mode, loop, the TENX_BATCH refusal and the own-tickets rule in docs/loop.md and docs/scripts.md.
+{
+  const name = "docs describe batch auto mode, loop, TENX_BATCH and the own-tickets rule"
+  const loop = read("docs/loop.md"), scripts = read("docs/scripts.md")
+  const missing = []
+  const need = (f, text, words) => { for (const w of words) if (text === null || !text.includes(w)) missing.push(`${f}: ${w}`) }
+  need("docs/loop.md", loop, ["/10x:batch auto", "10x-batch loop", "TENX_BATCH", "no permission prompt"])
+  need("docs/scripts.md", scripts, ["init --auto", "10x-batch loop", "TENX_BATCH", "refused inside a batch worker", "not your issue", "auto-approved", "mode"])
+  if (loop !== null && !/only your own (issues|tickets)|your own (issues|tickets)/i.test(loop)) missing.push("docs/loop.md: the own-tickets rule")
+  if (loop !== null && !/because/i.test(loop.split("\n").filter((s) => /your own (issues|tickets)/i.test(s)).join("\n"))) missing.push("docs/loop.md: the reason for the own-tickets rule")
+  for (const [f, text] of [["docs/loop.md", loop], ["docs/scripts.md", scripts]])
+    if (text !== null && text.includes("issues you trust")) missing.push(`${f}: still says "issues you trust"`)
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
+// gh-7 AC22 — the changelog and both READMEs name /10x:batch auto; neither README keeps the trust sentence.
+{
+  const name = "README and CHANGELOG mention batch auto mode"
+  const log = read("CHANGELOG.md")
+  const lines = log === null ? [] : log.split("\n")
+  const at = lines.findIndex((s) => s.trim() === "## Unreleased")
+  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
+  const unreleased = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
+  const missing = []
+  if (!unreleased.includes("/10x:batch auto")) missing.push("CHANGELOG.md: /10x:batch auto under ## Unreleased")
+  for (const [f, text, trust] of [["README.md", readme, "issues you trust"], ["README.zh-TW.md", zh, "只批次處理你信任的 issue"]]) {
+    if (text === null) { missing.push(`${f}: missing`); continue }
+    if (!text.includes("/10x:batch auto")) missing.push(`${f}: /10x:batch auto`)
+    if (text.includes(trust)) missing.push(`${f}: still says "${trust}"`)
+  }
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 // AC4 — heading parity and cross-links.
 {
   const name = "README.zh-TW.md has the same ## and ### headings, level by level, as README.md"
