@@ -155,6 +155,28 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
+// gh-8 AC8 — batch workers in auto mode, the fallback to today's modes and the plan-session hook.
+{
+  const name = "docs describe auto-mode batch workers and the plan-session hook"
+  const loop = read("docs/loop.md"), scripts = read("docs/scripts.md"), hooks = read("docs/hooks.md"), log = read("CHANGELOG.md")
+  // The text of section `## <title>` of <text>, up to the next ## heading.
+  const section = (text, title) => {
+    if (text === null) return ""
+    const lines = text.split("\n"), at = lines.findIndex((s) => s.trim() === `## ${title}`)
+    if (at < 0) return ""
+    const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
+    return lines.slice(at, next < 0 ? undefined : next).join("\n")
+  }
+  const missing = []
+  for (const w of ["auto mode", "falls back"]) if (loop === null || !loop.includes(w)) missing.push(`docs/loop.md: ${w}`)
+  if (loop !== null && loop.includes("run in `acceptEdits`")) missing.push("docs/loop.md still says workers run in `acceptEdits`")
+  for (const w of ["--permission-mode auto", "-fallback"]) if (scripts === null || !scripts.includes(w)) missing.push(`docs/scripts.md: ${w}`)
+  for (const w of ["## Plan boundary", "TENX_BATCH_PLAN_DIR"]) if (hooks === null || !hooks.includes(w)) missing.push(`docs/hooks.md: ${w}`)
+  if (!section(hooks, "Grant").includes("10x-test")) missing.push("docs/hooks.md: 10x-test in ## Grant")
+  if (!section(log, "Unreleased").includes("auto mode")) missing.push("CHANGELOG.md: auto mode under ## Unreleased")
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 // AC4 — heading parity and cross-links.
 {
   const name = "README.zh-TW.md has the same ## and ### headings, level by level, as README.md"

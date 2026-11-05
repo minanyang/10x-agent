@@ -36,27 +36,37 @@ case "$1 $2" in
 esac
 exit 0
 STUB
-# The worker: logs <flag> TAB <session> TAB <cwd> TAB <prompt after --> (and its background-task ceiling and its
-# permission flags) and prints
-# $WORKER_OUT (else one text turn), then waits $WORKER_SLEEP seconds as the same process (exit 143 on SIGTERM), or exits
-# $WORKER_EXIT.
+# The worker: logs <flag> TAB <session> TAB <cwd> TAB <prompt after --> (and its background-task ceiling, its
+# permission flags and its TENX_BATCH_PLAN_DIR) and prints
+# $WORKER_OUT (else one text turn whose init reports the mode it was started in), then waits $WORKER_SLEEP seconds as
+# the same process (exit 143 on SIGTERM), or exits $WORKER_EXIT. Started in auto mode with $WORKER_MODE set, its init
+# reports $WORKER_MODE instead and it waits for SIGTERM.
 cat >"$tmp/stub/worker" <<'STUB'
 #!/bin/bash
-prompt="" flag="" session="" all=" $* "
+prompt="" flag="" session="" mode="" all=" $* "
 while [ $# -gt 0 ]; do
   case "$1" in
     --) prompt="$2"; shift 2 ;;
     --session-id|--resume) flag="$1"; session="$2"; shift 2 ;;
+    --permission-mode) mode="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
 printf '%s\t%s\t%s\t%s\n' "$flag" "$session" "$PWD" "${prompt//$'\n'/ }" >>"$WORKER_LOG"
 printf '%s\n' "${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-unset}" >>"$WORKER_LOG.ceiling"
 a="${all%% --session-id *}"; a="${a%% --resume *}"; printf '%s\n' "${a#* --verbose }" >>"$WORKER_LOG.perm"
+printf '%s\n' "${TENX_BATCH_PLAN_DIR-unset}" >>"$WORKER_LOG.plandir"
+if [ "$mode" = auto ] && [ -n "${WORKER_MODE:-}" ]; then
+  printf '{"type":"system","subtype":"init","permissionMode":"%s"}\n' "$WORKER_MODE"
+  trap 'kill "$s" 2>/dev/null; exit 143' TERM INT
+  sleep 300 & s=$!
+  wait "$s"
+  exit 0
+fi
 if [ -n "${WORKER_OUT:-}" ]; then cat "$WORKER_OUT"
 else
-  printf '%s\n' '{"type":"system","subtype":"init"}' \
-    '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"done"}]}}' \
+  printf '{"type":"system","subtype":"init","permissionMode":"%s"}\n' "$mode"
+  printf '%s\n' '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"done"}]}}' \
     '{"type":"result","result":"done"}'
 fi
 if [ -n "${WORKER_SLEEP:-}" ]; then
@@ -69,7 +79,7 @@ STUB
 chmod +x "$tmp/stub/gh" "$tmp/stub/worker"
 export PATH="$tmp/stub:$BIN:$PATH" STUB_LOG="$tmp/stub.log" WORKER_LOG="$tmp/worker.log" STUB_ISSUES="5 6 7 8 9"
 export TENX_BATCH_CLAUDE="$tmp/stub/worker"
-unset CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS
+unset CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS TENX_BATCH_PLAN_DIR
 
 git -c init.defaultBranch=main init -q --bare "$tmp/origin.git"
 git -c init.defaultBranch=main init -q "$tmp/repo"
@@ -91,7 +101,7 @@ reset() {
   for p in ${sleepers[@]+"${sleepers[@]}"} ${bgs[@]+"${bgs[@]}"}; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
   sleepers=(); bgs=()
   rm -rf .10x .worktrees .git/10x-batch
-  : >"$WORKER_LOG"; : >"$WORKER_LOG.perm"; : >"$STUB_LOG"
+  : >"$WORKER_LOG"; : >"$WORKER_LOG.perm"; : >"$WORKER_LOG.plandir"; : >"$STUB_LOG"
   echo '{"close":"local"}' >.claude/10x.json
 }
 begin() { CASE="$1"; cfail=0; }
@@ -299,14 +309,66 @@ end
 # ---------------------------------------------------------------- run, reply and rounds
 
 reset; ticket t1 t2
-begin "run: plan sessions write only under .10x/<id>, implement and close run in acceptEdits"
+begin "run: every worker starts in auto mode with no --allowedTools"
 vb init t1 t2
-vb run t1 plan
+TENX_BATCH_PLAN_DIR=/elsewhere vb run t1 plan
 echo "go" >"$B/t1/reply.md"; vb run t1 reply
-approve_plan t1 a; vb run t1 implement
-need "plan" test "$(sed -n 1p "$WORKER_LOG.perm")" = "--permission-mode default --allowedTools Write(.10x/t1/**) Edit(.10x/t1/**)"
-need "a reply to a plan session" test "$(sed -n 2p "$WORKER_LOG.perm")" = "--permission-mode default --allowedTools Write(.10x/t1/**) Edit(.10x/t1/**)"
-need "implement" test "$(sed -n 3p "$WORKER_LOG.perm")" = "--permission-mode acceptEdits"
+approve_plan t1 a; TENX_BATCH_PLAN_DIR=/elsewhere vb run t1 implement
+evidence t1 "- AC1 — met: x"; mkdir -p .worktrees/t1
+echo "go on" >"$B/t1/reply.md"; vb run t1 reply
+TENX_BATCH_PLAN_DIR=/elsewhere vb run t1 close
+need "five runs" test "$(wc -l <"$WORKER_LOG.perm" | tr -d ' ')" = 5
+need "each in auto mode with no other permission flag" test "$(sort -u "$WORKER_LOG.perm")" = "--permission-mode auto"
+need "no --allowedTools" not grep -qF -- --allowedTools "$WORKER_LOG.perm"
+need "no fallback" eval 'test -z "$(find "$B/t1" -name "*-fallback")" && test "$(wc -l <"$B/t1/runs.tsv" | tr -d " ")" = 6'
+need "the plan and plan-reply runs get the ticket dir, implement and close no variable" \
+  test "$(tr '\n' ' ' <"$WORKER_LOG.plandir")" = "$root/.10x/t1 $root/.10x/t1 unset unset unset "
+end
+
+reset; ticket t1 t2
+begin "run: a worker whose init is not auto is stopped and run again in today's mode"
+vb init t1 t2
+WORKER_MODE=default vb run t1 plan
+need "exit 0" test $? -eq 0
+need "prints the phase of the rerun" line "phase: waiting"
+need "runs.tsv keeps both plan runs" test "$(field t1 1 2)/$(field t1 2 2)" = plan/plan
+need "the stopped run exited 143, the rerun 0" test "$(field t1 1 7)/$(field t1 2 7)" = 143/0
+need "the rerun is a new session" test "$(field t1 2 3)" != "$(field t1 1 3)"
+need "a plan rerun: default with Edit under the ticket dir" \
+  test "$(sed -n 2p "$WORKER_LOG.perm")" = "--permission-mode default --allowedTools Edit(.10x/t1/**)"
+need "its worker still gets the ticket dir" test "$(sed -n 2p "$WORKER_LOG.plandir")" = "$root/.10x/t1"
+echo "go" >"$B/t1/reply.md"
+WORKER_MODE=default vb run t1 reply
+need "a reply: auto, then the plan session's mode" eval 'test "$(sed -n 3p "$WORKER_LOG.perm")" = "--permission-mode auto" &&
+  test "$(sed -n 4p "$WORKER_LOG.perm")" = "--permission-mode default --allowedTools Edit(.10x/t1/**)"'
+need "a reply rerun resumes the same session" test "$(field t1 3 3)/$(field t1 4 3)/$(field t1 4 2)" = "$(field t1 2 3)/$(field t1 2 3)/reply"
+need "with the same reply" eval 'test "$(sed -n 4p "$WORKER_LOG" | cut -f1,4)" = "$(printf -- "--resume\tgo ")" && test "$(cat "$B/t1/04-reply.md")" = go'
+approve_plan t1 a
+WORKER_MODE=default vb run t1 implement
+need "implement: auto, then acceptEdits" eval 'test "$(sed -n 5p "$WORKER_LOG.perm")" = "--permission-mode auto" &&
+  test "$(sed -n 6p "$WORKER_LOG.perm")" = "--permission-mode acceptEdits"'
+need "two implement runs, two sessions" eval 'test "$(field t1 5 2)/$(field t1 6 2)" = implement/implement && test "$(field t1 5 3)" != "$(field t1 6 3)"'
+evidence t1 "- AC1 — met: x"; mkdir -p .worktrees/t1
+WORKER_MODE=default vb run t1 close
+need "close: auto, then acceptEdits" eval 'test "$(sed -n 7p "$WORKER_LOG.perm")" = "--permission-mode auto" &&
+  test "$(sed -n 8p "$WORKER_LOG.perm")" = "--permission-mode acceptEdits"'
+need "two close runs" test "$(field t1 7 2)/$(field t1 8 2)/$(field t1 7 7)" = close/close/143
+need "implement and close reruns get no ticket dir" test "$(sed -n '5,8p' "$WORKER_LOG.plandir" | tr '\n' ' ')" = "unset unset unset unset "
+need "a rerun is never checked again" test "$(wc -l <"$WORKER_LOG.perm" | tr -d ' ')" = 8
+end
+
+reset; ticket t1 t2
+begin "board: a fallback run shows auto mode unavailable"
+vb init t1 t2
+WORKER_MODE=default vb run t1 plan
+need "the rerun's mode is recorded" test "$(cat "$B/t1/02-fallback")" = default
+need "on the ticket's row" grep -qxF "| 1 | t1 | waiting | $(field t1 2 3) | — | .10x/_batch/t1/turn.md; auto mode unavailable: ran in default |" "$B/board.md"
+vb run t2 plan
+need "not when init reports auto" eval 'grep -qxF "| 2 | t2 | waiting | $(field t2 1 3) | — | .10x/_batch/t2/turn.md |" "$B/board.md" && test ! -e "$B/t2/01-fallback"'
+approve_plan t1 a
+WORKER_MODE=default vb run t1 implement
+evidence t1 "- AC1 — met: x"; mkdir -p .worktrees/t1
+need "an implement fallback ran in acceptEdits" eval 'vb status && grep -qxF "| 1 | t1 | implemented | $(field t1 4 3) | — | .10x/_batch/t1/turn.md; auto mode unavailable: ran in acceptEdits |" "$B/board.md"'
 end
 
 reset; ticket t1 t2

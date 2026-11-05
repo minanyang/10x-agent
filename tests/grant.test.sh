@@ -139,6 +139,44 @@ done
 T="does not allow inside a subagent"
 check "$T" nothing "$(bash_ s1 "10x-land merge gh-5" agent_id a1 agent_type 10x:backend-engineer)"
 
+# The copy of work's SKILL.md is given a 10x-security grant, so the refusal below is the subagent rule and not a missing
+# grant, whatever work's own allowed-tools say.
+grep -qF '  - Bash(10x-security *)' "$plugin/skills/work/SKILL.md" ||
+  node -e '
+    const fs = require("fs"), f = process.argv[1]
+    fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace("allowed-tools:\n", "allowed-tools:\n  - Bash(10x-security *)\n"))
+  ' "$plugin/skills/work/SKILL.md"
+prompt s50 "/10x:work gh-5" >/dev/null
+prompt s51 "/10x:work add a flag" >/dev/null
+prompt s52 "/10x:work gh-5" >/dev/null
+cp "$ROOT/skills/work/SKILL.md" "$plugin/skills/work/SKILL.md"
+sub() { bash_ "$@" agent_id a1 agent_type 10x:qa-engineer; } # <session_id> <command> — a PreToolUse from a subagent
+same() { cmp -s "$CLAUDE_PLUGIN_DATA/sessions/$1.json" "$tmp/$1.before"; } # <session_id> — its record is as saved
+save() { cp "$CLAUDE_PLUGIN_DATA/sessions/$1.json" "$tmp/$1.before"; }
+
+T="a subagent runs 10x-test for the session's bound ticket"
+check "$T: the main thread confirms the entry" allow "$(bash_ s50 "git fetch")" "granted by /10x:work"
+check "$T" allow "$(sub s50 "10x-test gh-5")" "granted by /10x:work"
+check "$T: with test files" allow "$(sub s50 "10x-test gh-5 tests/a.test.sh tests/b.test.sh")" "granted by /10x:work"
+check "$T: not with a shell metacharacter" nothing "$(sub s50 "10x-test gh-5; rm x")"
+
+T="a subagent gets no other grant"
+check "$T: the main thread may run 10x-verify" allow "$(bash_ s50 "10x-verify gh-5")" "granted by /10x:work"
+check "$T: the main thread may run 10x-security add" allow "$(bash_ s50 "10x-security add gh-5 /r/.10x/gh-5/out-of-diff.json")" "granted by /10x:work"
+save s50
+check "$T: 10x-test on another ticket" nothing "$(sub s50 "10x-test gh-9")"
+check "$T: 10x-verify" nothing "$(sub s50 "10x-verify gh-5")"
+check "$T: 10x-security add" nothing "$(sub s50 "10x-security add gh-5 /r/.10x/gh-5/out-of-diff.json")"
+check "$T: another granted command" nothing "$(sub s50 "git fetch")"
+same s50; assert "$T: the record is unchanged" $?
+check "$T: the main thread confirms an entry with no id" allow "$(bash_ s51 "git fetch")" "granted by /10x:work"
+save s51
+check "$T: 10x-test before the entry has bound an id" nothing "$(sub s51 "10x-test add-flag")"
+same s51; assert "$T: a subagent binds no id" $?
+save s52
+check "$T: 10x-test matched only by a pending entry" nothing "$(sub s52 "10x-test gh-5")"
+same s52; assert "$T: a subagent confirms no entry" $?
+
 T="does not allow without a record or without CLAUDE_PLUGIN_DATA"
 check "$T: no record" nothing "$(bash_ s9 "10x-land merge gh-5")"
 check "$T: no CLAUDE_PLUGIN_DATA" nothing "$(CLAUDE_PLUGIN_DATA='' bash_ s1 "10x-land merge gh-5")"
