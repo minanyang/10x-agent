@@ -12,10 +12,12 @@
 // entry is confirmed only when the transcript line of that prompt_id is the user's typed skill.
 //
 // PreToolUse: allows a single command (no shell metacharacters) matching a confirmed grant, or a
-// pending one that the transcript confirms, outside a subagent. A 10x script run on a ticket is
+// pending one that the transcript confirms. A 10x script run on a ticket is
 // allowed only for the entry's ticket id: the one typed with the skill, or for a task in words the
 // first one the hook allows (`10x-security list` and `route` take none); an UNBOUND skill's entry (/10x:roadmap creates a ticket per roadmap item,
-// /10x:audit works on audit runs) binds none. Anything else, and any error of its own, prints nothing: Claude Code decides as usual.
+// /10x:audit works on audit runs) binds none. Inside a subagent only `10x-test <id>…` is allowed, on the id a confirmed
+// entry has already bound; a subagent never binds an id or confirms an entry.
+// Anything else, and any error of its own, prints nothing: Claude Code decides as usual.
 
 const fs = require('node:fs')
 const path = require('node:path')
@@ -73,12 +75,12 @@ function main() {
     pass()
   }
   if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash') pass()
-  if (input.agent_id !== undefined) pass()
   const raw = input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : ''
   const command = raw.trim()
   if (!command || META.test(command)) pass()
   const ticket = ticketOf(command)
   const skills = readSkills(file)
+  if (input.agent_id !== undefined) subagent(skills, command, ticket)
   for (const [skill, entry] of Object.entries(skills)) {
     const confirmed = entry && entry.confirmed
     if (!granting(confirmed, command, ticket, skill)) continue
@@ -94,6 +96,17 @@ function main() {
     skills[skill] = { confirmed: ticket && !pending.id && !UNBOUND.has(skill) ? { ...pending, id: ticket } : pending }
     write(file, skills)
     allow(skill)
+  }
+  pass()
+}
+
+// A subagent runs its ticket's tests: `10x-test <id>…` when a confirmed entry has bound <id> and grants the command.
+// Pending entries are never read and nothing is written.
+function subagent(skills, command, ticket) {
+  if (command.split(/\s+/)[0] !== '10x-test' || !ticket) pass()
+  for (const [skill, entry] of Object.entries(skills)) {
+    const confirmed = entry && entry.confirmed
+    if (!UNBOUND.has(skill) && confirmed && confirmed.id === ticket && granting(confirmed, command, ticket, skill)) allow(skill)
   }
   pass()
 }

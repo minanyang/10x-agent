@@ -73,7 +73,8 @@ model has to find out by itself because no command prints the answer:
   `GH_ENTERPRISE_TOKEN`. A flow with the fake also fails when its tool log has more executed `gh <sub> <sub2>`
   commands than the fake's call log has entries.
 - **Permissions.** `claude -p` runs with `--permission-mode acceptEdits`, never `--dangerously-skip-permissions` (a batch
-  worker's plan session: `default`, with writes allowed under `.10x/` only). A
+  worker: `auto`, a plan session's file writes kept under `.10x/<id>/` by the plan boundary hook; `default` or
+  `acceptEdits` when auto mode is unavailable). A
   `permission_denials` entry in the stream-json `result` in the skills' scope — any tool but Bash, a `10x-`, `gh`
   or `glab` command, or one a skill's `allowed-tools` or the runner's grants cover — fails every scenario of the flow
   and names the command. Any other denial is the model's own look around (`git -C … log`, running a repo script, or a
