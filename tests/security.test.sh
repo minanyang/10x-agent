@@ -606,7 +606,7 @@ sec set T1 "$FP_lrej" rejected "a false positive"
 printf '# Roadmap\n\n## Later\n- Fix lplan (security %s)\n' "$FP_lplan" >.10x/roadmap.md
 need "exit 0" exits 0 list --plannable
 need "only the confirmed later entries outside the roadmap, in file order" out_is "$(printf '%s medium later Finding in lib/la.sh\n%s high later Finding in lib/lb.sh' "$FP_la" "$FP_lb")"
-printf '# Roadmap\n\n## Later\n- Fix la (security %s)\n- Fix lb (security %s)\n' "$FP_la" "$FP_lb" >.10x/roadmap.md
+printf '# Roadmap\n\n## Later\n- Fix la (security %s)\n- Fix lb (security %s)\n- Fix lplan (security %s)\n' "$FP_la" "$FP_lb" "$FP_lplan" >.10x/roadmap.md
 need "every candidate planned: exit 0" exits 0 list --plannable
 need "prints nothing" out_is ""
 need "list without --plannable is a usage refusal" exits 2 list
