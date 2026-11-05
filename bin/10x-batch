@@ -27,7 +27,9 @@
 // hooks/plan-boundary.js, a new --session-id for plan, implement and close, --resume of the ticket's latest
 // session for reply, the prompt after `--`. When the worker's stream-json init event reports another permission mode
 // (auto mode unavailable), it is stopped and the turn runs again as a new run in the mode used before auto mode: a plan
-// session in default with Edit(.10x/<id>/**) allowed, implement and close in acceptEdits. It refuses a plan, implement or close that `status` does not list, a reply
+// session in default with Edit(.10x/<id>/**) allowed, implement and close in acceptEdits. Every run gets
+// --disallowedTools for the commands hooks/grant.js always asks for (10x-land issue/comment/advisory, 10x-batch
+// approve/init, 10x-security set/remove/ticket). It refuses a plan, implement or close that `status` does not list, a reply
 // to a planning session while a plan-session run that started before the ticket's latest run ended is open, and a
 // reply whose first line starts with `/`. SIGTERM and SIGINT are forwarded to the worker. It prints
 // `phase: <phase>` and `board: <path>`, exit 0 once the worker ran, whatever its exit code.
@@ -722,6 +724,18 @@ async function run(argv) {
   const env = { ...process.env, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS ?? '0' }
   delete env.TENX_BATCH_PLAN_DIR
   if (sessionKind === 'plan') env.TENX_BATCH_PLAN_DIR = tdir(id)
+  // The commands hooks/grant.js keeps in ALWAYS_ASK — keep the two lists the same. No worker needs them (the conductor
+  // posts comments and approves), so every run is denied them rather than left to auto mode's classifier.
+  const denied = [
+    '10x-land issue',
+    '10x-land comment',
+    '10x-land advisory',
+    '10x-batch approve',
+    '10x-batch init',
+    '10x-security set',
+    '10x-security remove',
+    '10x-security ticket',
+  ].flatMap((c) => [`Bash(${c}:*)`, `Bash(${c} *)`])
   // Today's mode for the session kind, used only when auto mode is unavailable.
   const fallback = sessionKind === 'plan' ? ['default', '--allowedTools', `Edit(.10x/${id}/**)`] : ['acceptEdits']
   const live = { child: null, signalled: false }
@@ -743,7 +757,7 @@ async function run(argv) {
     const log = path.join(bdir(id), `${nn}-${kind}.jsonl`)
     put(turn, '')
     const out = fs.openSync(log, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW)
-    const child = spawn(bin, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', ...mode, flag, sess, '--', prompt], {
+    const child = spawn(bin, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', ...mode, '--disallowedTools', ...denied, flag, sess, '--', prompt], {
       cwd: ROOT,
       stdio: ['ignore', out, 'inherit'],
       env,
