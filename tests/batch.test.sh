@@ -37,25 +37,29 @@ esac
 exit 0
 STUB
 # The worker: logs <flag> TAB <session> TAB <cwd> TAB <prompt after --> (and its background-task ceiling, its
-# permission flags and its TENX_BATCH_PLAN_DIR) and prints
+# permission flags, its --disallowedTools rules joined by | and its TENX_BATCH_PLAN_DIR) and prints
 # $WORKER_OUT (else one text turn whose init reports the mode it was started in, after a SessionStart hook event as a
 # real worker's log has), then waits $WORKER_SLEEP seconds as the same process (exit 143 on SIGTERM), or exits
 # $WORKER_EXIT. Started in auto mode with $WORKER_MODE set, its init reports $WORKER_MODE instead and it waits for SIGTERM.
 cat >"$tmp/stub/worker" <<'STUB'
 #!/bin/bash
-prompt="" flag="" session="" mode="" all=" $* "
+prompt="" flag="" session="" mode="" perm=() deny=() in=""
 hook='{"type":"system","subtype":"hook_started","hook_event":"SessionStart"}'
 while [ $# -gt 0 ]; do
   case "$1" in
     --) prompt="$2"; shift 2 ;;
-    --session-id|--resume) flag="$1"; session="$2"; shift 2 ;;
-    --permission-mode) mode="$2"; shift 2 ;;
-    *) shift ;;
+    --session-id|--resume) flag="$1"; session="$2"; in=""; shift 2 ;;
+    --permission-mode) mode="$2"; perm+=("$1" "$2"); in=perm; shift 2 ;;
+    --allowedTools) perm+=("$1"); in=perm; shift ;;
+    --disallowedTools) in=deny; shift ;;
+    -*) in=""; shift ;;
+    *) case "$in" in perm) perm+=("$1") ;; deny) deny+=("$1") ;; esac; shift ;;
   esac
 done
 printf '%s\t%s\t%s\t%s\n' "$flag" "$session" "$PWD" "${prompt//$'\n'/ }" >>"$WORKER_LOG"
 printf '%s\n' "${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-unset}" >>"$WORKER_LOG.ceiling"
-a="${all%% --session-id *}"; a="${a%% --resume *}"; printf '%s\n' "${a#* --verbose }" >>"$WORKER_LOG.perm"
+printf '%s\n' "${perm[*]}" >>"$WORKER_LOG.perm"
+(IFS='|'; printf '%s\n' "${deny[*]}") >>"$WORKER_LOG.disallowed"
 printf '%s\n' "${TENX_BATCH_PLAN_DIR-unset}" >>"$WORKER_LOG.plandir"
 if [ "$mode" = auto ] && [ -n "${WORKER_MODE:-}" ]; then
   printf '%s\n{"type":"system","subtype":"init","permissionMode":"%s"}\n' "$hook" "$WORKER_MODE"
@@ -102,7 +106,7 @@ reset() {
   for p in ${sleepers[@]+"${sleepers[@]}"} ${bgs[@]+"${bgs[@]}"}; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
   sleepers=(); bgs=()
   rm -rf .10x .worktrees .git/10x-batch
-  : >"$WORKER_LOG"; : >"$WORKER_LOG.perm"; : >"$WORKER_LOG.plandir"; : >"$STUB_LOG"
+  : >"$WORKER_LOG"; : >"$WORKER_LOG.perm"; : >"$WORKER_LOG.disallowed"; : >"$WORKER_LOG.plandir"; : >"$STUB_LOG"
   echo '{"close":"local"}' >.claude/10x.json
 }
 begin() { CASE="$1"; cfail=0; }
@@ -356,6 +360,26 @@ need "close: auto, then acceptEdits" eval 'test "$(sed -n 7p "$WORKER_LOG.perm")
 need "two close runs" test "$(field t1 7 2)/$(field t1 8 2)/$(field t1 7 7)" = close/close/143
 need "implement and close reruns get no ticket dir" test "$(sed -n '5,8p' "$WORKER_LOG.plandir" | tr '\n' ' ')" = "unset unset unset unset "
 need "a rerun is never checked again" test "$(wc -l <"$WORKER_LOG.perm" | tr -d ' ')" = 8
+end
+
+reset; ticket t1 t2
+begin "run: every worker is denied the commands that always ask"
+want=""
+for c in "10x-land issue" "10x-land comment" "10x-land advisory" "10x-batch approve" "10x-batch init" \
+  "10x-security set" "10x-security remove" "10x-security ticket"; do
+  want+="${want:+|}Bash($c:*)|Bash($c *)"
+done
+vb init t1 t2
+WORKER_MODE=default vb run t1 plan
+echo "go" >"$B/t1/reply.md"; vb run t1 reply
+approve_plan t1 a
+WORKER_MODE=default vb run t1 implement
+evidence t1 "- AC1 — met: x"; mkdir -p .worktrees/t1
+vb run t1 close
+need "six runs: plan and its fallback, reply, implement and its fallback, close" test "$(wc -l <"$WORKER_LOG.disallowed" | tr -d ' ')" = 6
+need "each run gets every rule" test "$(sort -u "$WORKER_LOG.disallowed")" = "$want"
+need "the permission flags are unchanged" test "$(tr '\n' ',' <"$WORKER_LOG.perm")" = \
+  "--permission-mode auto,--permission-mode default --allowedTools Edit(.10x/t1/**),--permission-mode auto,--permission-mode auto,--permission-mode acceptEdits,--permission-mode auto,"
 end
 
 reset; ticket t1 t2
