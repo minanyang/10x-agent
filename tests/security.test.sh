@@ -123,12 +123,12 @@ arr "$(r1)" | put T1 out.json
 arr "$(jrec confirmed "$RULE" "$P1" 40 "$JSNIP")" | put T2 out.json
 begin "add leaves audit fingerprint and not seen in byte-identical"
 need "T1 adds" exits 0 add T1 "$root/.10x/T1/out.json"
-sed -e 's/^- audit fingerprint:$/- audit fingerprint: audit-7f3a/' -e 's/^- not seen in:$/- not seen in: T8, T9/' "$S" >"$tmp/edited.md"
+sed -e 's/^- audit fingerprint:$/- audit fingerprint: audit-7f3a/' -e 's|^- not seen in:$|- not seen in: audit/run-8, audit/run-9|' "$S" >"$tmp/edited.md"
 cp "$tmp/edited.md" "$S"
 cp "$S" "$tmp/before.md"
 need "T2 sees it" exits 0 add T2 "$root/.10x/T2/out.json"
 need "audit fingerprint kept" field_is "$FP1" "audit fingerprint" audit-7f3a
-need "not seen in kept" field_is "$FP1" "not seen in" "T8, T9"
+need "not seen in kept" field_is "$FP1" "not seen in" "audit/run-8, audit/run-9"
 need "only the seen in line changed" test "$(diff "$tmp/before.md" "$S" | grep '^[<>]')" = "$(printf '%s\n%s' '< - seen in:' '> - seen in: T2')"
 end
 
@@ -273,7 +273,7 @@ reset
 arr "$(r1)" "$(r2)" | put T1 out.json
 begin "set changes only status and reason"
 need "T1 adds" exits 0 add T1 "$root/.10x/T1/out.json"
-sed -e 's/^- audit fingerprint:$/- audit fingerprint: audit-7f3a/' -e 's/^- not seen in:$/- not seen in: T8, T9/' "$S" >"$tmp/edited.md"
+sed -e 's/^- audit fingerprint:$/- audit fingerprint: audit-7f3a/' -e 's|^- not seen in:$|- not seen in: audit/run-8, audit/run-9|' "$S" >"$tmp/edited.md"
 cp "$tmp/edited.md" "$S"
 cp "$S" "$tmp/before.md"
 need "set exit 0" exits 0 set T1 "$FP1" accepted "not reachable"
@@ -366,7 +366,7 @@ need "run: is run-4, then the earlier runs in order" test "$(grep -v '^skill: ' 
   "$root/.10x/audit/run-4" "$root/.10x/audit/run-1" "$root/.10x/audit/run-3")"
 need "run-4 exists" test -d .10x/audit/run-4
 need "git ignores it" git check-ignore -q .10x/audit/run-4/
-need "a second prepare takes run-5" exits 0 prepare
+HOME="$home" need "a second prepare takes run-5" exits 0 prepare
 need "run-5" line "run: $root/.10x/audit/run-5"
 end
 
