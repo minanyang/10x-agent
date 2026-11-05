@@ -12,7 +12,8 @@
 // ticket <id>/: runs.tsv (`n kind session session_kind start end exit pid`, times in epoch ms, end and exit empty
 // while a run is open), <nn>-<kind>.jsonl (the worker's stream-json), <nn>-denials.tsv (`<tool>\t<command or tool>`),
 // turn.md (every assistant text of the latest run), reply.md (the next reply, moved to <nn>-reply.md once sent),
-// <nn>-landed (the base and sha a close run left) and `dropped`. A phase is never stored: every command derives it from these files and .10x/<id>/.
+// <nn>-landed (the base and sha a close run left), <nn>-fallback (the mode a run started in when auto mode was
+// unavailable) and `dropped`. A phase is never stored: every command derives it from these files and .10x/<id>/.
 //
 // `init` resolves every argument before writing anything (`<n>`, `#<n>`, `gh-<n>`, an issue URL of origin's repo,
 // `--search` once, or an id with .10x/<id>/ticket.md) and exits 2 naming each one that resolves to no ticket. An
@@ -22,9 +23,13 @@
 // `versions.closed`. A previous batch is archived to .10x/_batch.<YYYYMMDD-HHMMSS>/ when every ticket of it is
 // settled, else refused; the approval records of the tickets it takes in are deleted.
 // `run` starts one worker turn and waits for it: ${TENX_BATCH_CLAUDE:-claude} -p … --output-format stream-json
-// --verbose, a plan session with --permission-mode default and writes allowed under .10x/<id>/ only, implement and close
-// with --permission-mode acceptEdits, a new --session-id for plan, implement and close, --resume of the ticket's latest
-// session for reply, the prompt after `--`. It refuses a plan, implement or close that `status` does not list, a reply
+// --verbose --permission-mode auto, a plan session's worker with TENX_BATCH_PLAN_DIR set to .10x/<id> for
+// hooks/plan-boundary.js, a new --session-id for plan, implement and close, --resume of the ticket's latest
+// session for reply, the prompt after `--`. When the worker's stream-json init event reports another permission mode
+// (auto mode unavailable), it is stopped and the turn runs again as a new run in the mode used before auto mode: a plan
+// session in default with Edit(.10x/<id>/**) allowed, implement and close in acceptEdits. Every run gets
+// --disallowedTools for the commands hooks/grant.js always asks for (10x-land issue/comment/advisory, 10x-batch
+// approve/init, 10x-security set/remove/ticket). It refuses a plan, implement or close that `status` does not list, a reply
 // to a planning session while a plan-session run that started before the ticket's latest run ended is open, and a
 // reply whose first line starts with `/`. SIGTERM and SIGINT are forwarded to the worker. It prints
 // `phase: <phase>` and `board: <path>`, exit 0 once the worker ran, whatever its exit code.
@@ -33,9 +38,9 @@
 // recorded version whose ids are all landed or closed to `Done <YYYY-MM-DD>` (local date) in .10x/roadmap.md,
 // changing nothing else, once, and print `roadmap: <version> Done <date>` when they do.
 // `approve` records the user's approval of a draft plan that passes 10x-plan-check: the sha256 of plan.md with its
-// Status line blanked, in <git common dir>/10x-batch/<id>.approved, printing the plan's path and short hash, out of a plan session's reach (it may write
-// only under .10x/<id>/, and Claude Code refuses edits under .git/); a worker of an approved ticket, which can run
-// commands, could still write it. A plan session's ticket is `approved`
+// Status line blanked, in <git common dir>/10x-batch/<id>.approved, printing the plan's path and short hash, out of reach of a plan session's file
+// tools (they may write only under .10x/<id>/); its Bash is auto mode's call, and a worker of an approved ticket, which
+// can run commands, could write it too. A plan session's ticket is `approved`
 // only when plan.md says so and that record matches it. It then writes the approve reply to reply.md.
 // `drop` sends SIGTERM to the ticket's open worker (a process whose command line holds the run's session), marks it
 // dropped and rewrites the board.
@@ -43,7 +48,8 @@
 // A permission denial does not decide a phase: a run that exits 0 is judged by the ticket's files, and its denials are
 // added to the evidence and listed under `## Needs the human`. A ticket waiting on its implement session shows the
 // `asked` texts of evidence.md; each approved entry of .10x/<id>/relock.md adds `relocked: <reason>` to the evidence
-// and, until the ticket lands, under `## Needs the human`.
+// and, until the ticket lands, under `## Needs the human`. A ticket whose latest run has a <nn>-fallback file adds
+// `auto mode unavailable: ran in <mode>` to its evidence.
 //
 // Config (.claude/10x.json): `close`, `worktreeDir`, `batch.parallel` (implement runs at once, an integer ≥ 1,
 // default 1). Refusals print `10x-batch: <why>` and exit 2.
@@ -415,6 +421,11 @@ function deriveAll(ids) {
     r.relocked = r.phase === 'dropped' ? [] : relocks(r.id)
     if (r.relocked.length) r.evidence = [r.evidence, ...r.relocked.map((x) => `relocked: ${x}`)].filter(Boolean).join('; ')
   }
+  // The latest run fell back from auto mode: the mode it ran in.
+  for (const r of rows) {
+    const mode = r.last ? (readOr(path.join(bdir(r.id), `${pad(r.last.n)}-fallback`)) || '').trim() : ''
+    if (mode) r.evidence = [r.evidence, `auto mode unavailable: ran in ${mode}`].filter(Boolean).join('; ')
+  }
   return rows
 }
 
@@ -703,59 +714,124 @@ async function run(argv) {
     ;[flag, session, sessionKind] = ['--session-id', randomUUID(), kind]
   }
 
-  const prev = runs(id)
-  const n = prev.length + 1
-  const nn = pad(n)
   fs.mkdirSync(bdir(id), { recursive: true })
-  const log = path.join(bdir(id), `${nn}-${kind}.jsonl`)
   const turn = path.join(bdir(id), 'turn.md')
-  put(turn, '')
-  const out = fs.openSync(log, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW)
   const bin = process.env.TENX_BATCH_CLAUDE || 'claude'
-  // A plan session writes only under .10x/<id>/, so nothing a ticket says is edited and run before its plan is approved;
-  // implement and close run in acceptEdits. The prompt goes after `--`, so a reply starting with `-` is never an option.
-  const own = `.10x/${id}/**`
-  const perm = sessionKind === 'plan' ? ['--permission-mode', 'default', '--allowedTools', `Write(${own})`, `Edit(${own})`] : ['--permission-mode', 'acceptEdits']
-  const child = spawn(bin, ['-p', '--output-format', 'stream-json', '--verbose', ...perm, flag, session, '--', prompt], {
-    cwd: ROOT,
-    stdio: ['ignore', out, 'inherit'],
-    // `claude -p` stops background tasks 10 minutes after the last turn unless this is 0, which would kill
-    // /10x:work's delegated engineer agents; a value the user set is kept.
-    env: { ...process.env, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS ?? '0' },
-  })
-  fs.closeSync(out)
-  const exited = new Promise((res) => {
-    child.on('error', (e) => {
-      process.stderr.write(`10x-batch: cannot start ${bin}: ${e.message}\n`)
-      res(null)
-    })
-    child.on('exit', (code, sig) => res(code ?? 128 + (os.constants.signals[sig] || 0)))
-  })
-  const row = { n: String(n), kind, session, session_kind: sessionKind, start: String(Date.now()), end: '', exit: '', pid: child.pid ? String(child.pid) : '' }
-  writeRuns(id, [...prev, row])
-  // The board shows the running worker and its session for as long as it runs.
-  writeBoard(deriveAll(ids))
-  if (kind === 'reply' && child.pid) fs.renameSync(replyFile, path.join(bdir(id), `${nn}-reply.md`))
+  // Every worker starts in auto mode. A plan session's writes are kept under .10x/<id>/ by hooks/plan-boundary.js, which
+  // reads TENX_BATCH_PLAN_DIR; no other worker gets the variable, whatever this process inherited.
+  // `claude -p` stops background tasks 10 minutes after the last turn unless CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS is 0,
+  // which would kill /10x:work's delegated engineer agents; a value the user set is kept.
+  const env = { ...process.env, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS ?? '0' }
+  delete env.TENX_BATCH_PLAN_DIR
+  if (sessionKind === 'plan') env.TENX_BATCH_PLAN_DIR = tdir(id)
+  // The commands hooks/grant.js keeps in ALWAYS_ASK — keep the two lists the same. No worker needs them (the conductor
+  // posts comments and approves), so every run is denied them rather than left to auto mode's classifier.
+  const denied = [
+    '10x-land issue',
+    '10x-land comment',
+    '10x-land advisory',
+    '10x-batch approve',
+    '10x-batch init',
+    '10x-security set',
+    '10x-security remove',
+    '10x-security ticket',
+  ].flatMap((c) => [`Bash(${c}:*)`, `Bash(${c} *)`])
+  // Today's mode for the session kind, used only when auto mode is unavailable.
+  const fallback = sessionKind === 'plan' ? ['default', '--allowedTools', `Edit(.10x/${id}/**)`] : ['acceptEdits']
+  const live = { child: null, signalled: false }
   for (const s of ['SIGTERM', 'SIGINT'])
     process.on(s, () => {
+      live.signalled = true
       try {
-        child.kill(s)
+        live.child?.kill(s)
       } catch {}
     })
 
-  const code = await exited
-  const { texts, denials } = readLog(log)
-  put(turn, texts.length ? texts.join('\n\n') + '\n' : '')
-  put(path.join(bdir(id), `${nn}-denials.tsv`), denials.map((d) => d + '\n').join(''))
-  const now = runs(id).map((x) => (x.n === row.n ? { ...x, end: String(Date.now()), exit: String(code ?? 127) } : x))
-  writeRuns(id, now)
-  // Where it landed, read now: the base moves on as later tickets land.
-  if (kind === 'close' && code === 0 && !fs.existsSync(path.join(WT_DIR, id))) put(path.join(bdir(id), `${nn}-landed`), landedOn() + '\n')
+  // One worker run, recorded in runs.tsv. Started in auto mode, its stream-json's init event is read as soon as its line
+  // is complete: reporting another permission mode, it means auto mode is unavailable, and the worker is stopped.
+  // The prompt goes after `--`, so a reply starting with `-` is never an option.
+  const once = async (mode, sess) => {
+    const prev = runs(id)
+    const n = prev.length + 1
+    const nn = pad(n)
+    const log = path.join(bdir(id), `${nn}-${kind}.jsonl`)
+    put(turn, '')
+    const out = fs.openSync(log, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW)
+    const child = spawn(bin, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', ...mode, '--disallowedTools', ...denied, flag, sess, '--', prompt], {
+      cwd: ROOT,
+      stdio: ['ignore', out, 'inherit'],
+      env,
+    })
+    live.child = child
+    fs.closeSync(out)
+    let ended = false
+    const exited = new Promise((res) => {
+      child.on('error', (e) => {
+        process.stderr.write(`10x-batch: cannot start ${bin}: ${e.message}\n`)
+        res(null)
+      })
+      child.on('exit', (code, sig) => res(code ?? 128 + (os.constants.signals[sig] || 0)))
+    }).finally(() => (ended = true))
+    const row = { n: String(n), kind, session: sess, session_kind: sessionKind, start: String(Date.now()), end: '', exit: '', pid: child.pid ? String(child.pid) : '' }
+    writeRuns(id, [...prev, row])
+    if (mode[0] !== 'auto') put(path.join(bdir(id), `${nn}-fallback`), mode[0] + '\n')
+    // The board shows the running worker and its session for as long as it runs.
+    writeBoard(deriveAll(ids))
+    if (kind === 'reply' && child.pid) {
+      put(path.join(bdir(id), `${nn}-reply.md`), prompt)
+      fs.rmSync(replyFile, { force: true })
+    }
+    let init = null
+    if (mode[0] === 'auto' && child.pid) {
+      while ((init = initMode(log)) === undefined && !ended) await new Promise((res) => setTimeout(res, 100))
+      if (init === undefined) init = initMode(log) ?? null
+      if (typeof init === 'string' && init !== 'auto') {
+        try {
+          child.kill('SIGTERM')
+        } catch {}
+      }
+    }
+
+    const code = await exited
+    const { texts, denials } = readLog(log)
+    put(turn, texts.length ? texts.join('\n\n') + '\n' : '')
+    put(path.join(bdir(id), `${nn}-denials.tsv`), denials.map((d) => d + '\n').join(''))
+    const now = runs(id).map((x) => (x.n === row.n ? { ...x, end: String(Date.now()), exit: String(code ?? 127) } : x))
+    writeRuns(id, now)
+    // Where it landed, read now: the base moves on as later tickets land.
+    if (kind === 'close' && code === 0 && !fs.existsSync(path.join(WT_DIR, id))) put(path.join(bdir(id), `${nn}-landed`), landedOn() + '\n')
+    return { code, unavailable: typeof init === 'string' && init !== 'auto' }
+  }
+
+  let res = await once(['auto'], session)
+  // The turn again in today's mode, unless the ticket was dropped or this process stopped meanwhile. A rerun is never
+  // checked for its own init; plan, implement and close start a new session, a reply resumes the same one.
+  if (res.unavailable && !live.signalled && !fs.existsSync(path.join(bdir(id), 'dropped')))
+    res = await once(fallback, kind === 'reply' ? session : randomUUID())
   const after = deriveAll(ids)
   writeBoard(after)
-  if (code === null) process.exit(2)
+  if (res.code === null) process.exit(2)
   process.stdout.write(`phase: ${after[i].phase}\nboard: ${BOARD}\n`)
   process.exit(0)
+}
+
+// The permissionMode of a stream-json log's init event, read from its complete lines: other system events (SessionStart
+// hooks) may come first. undefined while no init line is there yet; null when the init names no mode, or when an event
+// that is not a system one comes first (init precedes every turn).
+function initMode(file) {
+  const text = readOr(file) || ''
+  for (const l of text.slice(0, text.lastIndexOf('\n') + 1).split('\n')) {
+    if (!l.trim()) continue
+    let ev
+    try {
+      ev = JSON.parse(l)
+    } catch {
+      continue
+    }
+    if (!ev || ev.type !== 'system') return null
+    if (ev.subtype === 'init') return typeof ev.permissionMode === 'string' ? ev.permissionMode : null
+  }
+  return undefined
 }
 
 // Every top-level assistant text block of a stream-json log, in order, and its permission denials.

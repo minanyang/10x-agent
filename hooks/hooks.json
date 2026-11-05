@@ -7,6 +7,12 @@
           { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/guard-bash.sh\"" },
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/grant.js\"" }
         ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/plan-boundary.js\"" }
+        ]
       }
     ],
     "UserPromptSubmit": [
