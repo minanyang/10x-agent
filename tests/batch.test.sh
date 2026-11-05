@@ -494,9 +494,9 @@ need "five runs" test "$(wc -l <"$WORKER_LOG.env" | tr -d ' ')" = 5
 need "each saw TENX_BATCH=1" test "$(sort -u "$WORKER_LOG.env")" = 1
 end
 
-reset; ticket t1
+reset
 begin "run: an issue that is no longer yours is refused"
-vb init gh-5 t1
+vb init gh-5
 for k in plan reply implement close; do
   STUB_AUTHORS="5:other" vb run gh-5 "$k"
   need "$k: exit 2" test $? -eq 2
