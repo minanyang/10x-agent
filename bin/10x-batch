@@ -1038,13 +1038,11 @@ async function loop(argv) {
     const rows = deriveAll(ids)
     writeBoard(rows)
     let started = false
-    // An issue that is no longer the user's stops the batch: nothing more starts until the human has seen it.
     for (const a of actions(rows)) {
-      if (refused.size) break
       const m = /^(plan|implement|close|answer) (\S+)( approvable)?$/.exec(a)
       if (!m) continue
       const [, kind, id] = m
-      if (own.get(id)?.exited === false) continue
+      if (own.get(id)?.exited === false || refused.has(id)) continue
       if (kind !== 'answer') {
         started = (await start(id, kind)) || started
         continue
