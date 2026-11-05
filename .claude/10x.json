@@ -2,12 +2,14 @@
   "base": "main",
   "gates": [
     "shellcheck bin/10x-grill bin/10x-land bin/10x-plan-check bin/10x-red-proof bin/10x-review-packet bin/10x-test bin/10x-verify bin/10x-worktree scripts/*.sh tests/*.sh tests/e2e/*.sh tests/e2e/bin/ssh tests/e2e/fixture/bin/greet tests/e2e/fixture/scripts/*.sh",
-    "node --check bin/10x-ticket && node --check hooks/context-gate.js && node --check hooks/stop-gate.js && node --check scripts/md-check.js && node --check scripts/issue-form.js && node --check hooks/grant.js && node --check tests/e2e/bin/gh && node --check tests/e2e/toollog.js && node --check tests/e2e/fixture/test/greet.test.mjs && node --check bin/10x-batch && node --check bin/10x-roadmap && node --check scripts/roadmap.js",
+    "node --check bin/10x-ticket && node --check hooks/context-gate.js && node --check hooks/stop-gate.js && node --check scripts/md-check.js && node --check scripts/issue-form.js && node --check hooks/grant.js && node --check tests/e2e/bin/gh && node --check tests/e2e/toollog.js && node --check tests/e2e/fixture/test/greet.test.mjs && node --check bin/10x-batch && node --check bin/10x-roadmap && node --check scripts/roadmap.js && node --check bin/10x-security && node --check scripts/security.js",
     "bash tests/guard-bash.test.sh",
     "bash tests/context-gate.test.sh",
     "bash tests/stop-gate.test.sh",
     "bash tests/grant.test.sh",
     "bash tests/scripts.test.sh",
+    "bash tests/security.test.sh",
+    "bash tests/security-fixes.test.sh",
     "bash tests/batch.test.sh",
     "bash tests/roadmap.test.sh",
     "bash tests/red-proof-runners.test.sh",
@@ -22,7 +24,7 @@
   },
   "preReviewGates": [
     "shellcheck bin/10x-grill bin/10x-land bin/10x-plan-check bin/10x-red-proof bin/10x-review-packet bin/10x-test bin/10x-verify bin/10x-worktree scripts/*.sh tests/*.sh tests/e2e/*.sh tests/e2e/bin/ssh tests/e2e/fixture/bin/greet tests/e2e/fixture/scripts/*.sh",
-    "node --check bin/10x-ticket && node --check hooks/context-gate.js && node --check hooks/stop-gate.js && node --check scripts/md-check.js && node --check scripts/issue-form.js && node --check hooks/grant.js && node --check tests/e2e/bin/gh && node --check tests/e2e/toollog.js && node --check tests/e2e/fixture/test/greet.test.mjs && node --check bin/10x-batch && node --check bin/10x-roadmap && node --check scripts/roadmap.js"
+    "node --check bin/10x-ticket && node --check hooks/context-gate.js && node --check hooks/stop-gate.js && node --check scripts/md-check.js && node --check scripts/issue-form.js && node --check hooks/grant.js && node --check tests/e2e/bin/gh && node --check tests/e2e/toollog.js && node --check tests/e2e/fixture/test/greet.test.mjs && node --check bin/10x-batch && node --check bin/10x-roadmap && node --check scripts/roadmap.js && node --check bin/10x-security && node --check scripts/security.js"
   ],
   "close": "pr-merge",
   "contextGate": {
