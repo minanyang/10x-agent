@@ -693,6 +693,8 @@ need "a missing file: exit 2" route_exits 2 PUBLIC "$FP_rf"
 need "names the line and the file" has "location line 1 of lib/gone.sh no longer exists at HEAD"
 need "an unreadable visibility: exit 2" route_exits 2 "" "$FP_rh"
 need "an unknown visibility: exit 2" route_exits 2 WEIRD "$FP_rh"
+mkdir -p .claude
+printf '{"tickets":"github"}\n' >.claude/10x.json
 git remote set-url origin https://gitlab.example.com/acme/sec.git
 need "an origin that is not github.com: exit 2" route_exits 2 PUBLIC "$FP_rh"
 need "says so" has "route needs a github.com origin"
