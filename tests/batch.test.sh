@@ -1049,7 +1049,7 @@ end
 
 reset
 begin "loop: a comment by someone else on the issue stops auto approval"
-vb init --auto gh-5 gh-6 gh-7
+vb init --auto gh-6 gh-5 gh-7
 STUB_COMMENTERS="5:me 5:other 6:me 6:ME" STUB_COMMENTS_FAIL="7" WORKER_SCRIPT=flow lp 120
 need "loop finished" finished
 need "gh-5 (a stranger's comment) and gh-7 (comments unknown) are approve items" \
