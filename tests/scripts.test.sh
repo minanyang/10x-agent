@@ -994,6 +994,57 @@ for t in github files; do
 done
 rm -r .claude
 [ "$combo_bad" = 0 ] && ok "check accepts every tickets and close combination" || bad "check accepts every tickets and close combination"
+
+# security.md fixtures: an entry is written in the layout 10x-security writes. sec_entry <n> <verdict> <severity> <title> <location> <status> <found in> [<seen in> [<reason>]]
+sec_fp() { printf 'sha256:%064d' "$1"; }
+sec_entry() {
+  printf '\n## %s\n- title: %s\n- verdict: %s\n- severity:%s\n- rule: command-injection\n- location: %s\n- trace: reaches a shell\n- status: %s\n- reason:%s\n- found in: %s\n- seen in:%s\n- audit fingerprint:\n- not seen in:\n' \
+    "$(sec_fp "$1")" "$4" "$2" "${3:+ $3}" "$5" "$6" "${9:+ $9}" "$7" "${8:+ $8}"
+}
+# The one entry the disclosure cases use, whatever its status.
+sec_disclosed() { { printf '# Security entries\n'; sec_entry 1 confirmed high 'Shell injection in deploy hook' bin/deploy.sh:12 later gh-1; } >"$tmp/land/.10x/security.md"; }
+sec_fp1="$(sec_fp 1)"
+
+# check with security.blockClose: confirmed entries found in or seen in L1, new or fix-now, at or above the level
+sf="$tmp/land/.10x/security.md"
+{
+  printf '# Security entries\n'
+  sec_entry 1 confirmed high 'Open high' src/a.js:1 new L1
+  sec_entry 2 confirmed critical 'Seen critical' src/b.js:2 fix-now gh-30 'gh-31, L1'
+  sec_entry 3 confirmed medium 'Below high' src/c.js:3 new L1
+  sec_entry 4 confirmed high 'Later high' src/d.js:4 later L1
+  sec_entry 5 confirmed high 'Accepted high' src/e.js:5 accepted L1 '' 'not reachable'
+  sec_entry 6 needs_validation '' 'Unvalidated' src/f.js:6 new L1
+  sec_entry 7 confirmed critical 'Other ticket' src/g.js:7 new gh-30
+} >"$sf"
+run_check() { STUB_STATE="OPEN https://github.com/acme/land/pull/1" 10x-land check L1 >"$tmp/out" 2>&1; }
+# open_is <level> <entry numbers…> — check exits 1, prints security: <level> as line 6, and one security entry open: line per entry, after clean:
+open_is() {
+  local level=$1 n want=""; shift
+  printf '{"security":{"blockClose":"%s"}}\n' "$level" >.claude/10x.json
+  run_check; local rc=$?
+  for n in "$@"; do want+="security entry open: $(sec_fp "$n")"$'\n'; done
+  local c o
+  c="$(grep -n '^clean: ' "$tmp/out" | head -n 1 | cut -d: -f1)"; o="$(grep -n '^security entry open: ' "$tmp/out" | head -n 1 | cut -d: -f1)"
+  [ "$rc" -eq 1 ] && [ "$(sed -n 6p "$tmp/out")" = "security: $level" ] && [ "${c:-99}" -lt "${o:-0}" ] &&
+    [ "$(grep '^security entry open: ' "$tmp/out" | sort)" = "$(printf '%s' "$want" | sort)" ]
+}
+mkdir -p .claude
+open_is high 1 2 && open_is medium 1 2 3 && ok "check names open entries at or above security.blockClose" ||
+  { bad "check names open entries at or above security.blockClose"; cat "$tmp/out"; }
+rm -r .claude
+off_is() { run_check; local rc=$?; [ "$rc" -eq 0 ] && [ "$(sed -n 6p "$tmp/out")" = "security: off" ] && ! grep -q 'security entry open' "$tmp/out"; }
+# Without the key check never reads security.md, so a file that does not parse changes nothing either.
+off_is && { printf 'not a security file\n' >"$sf"; off_is; } && ok "check ignores security.md without security.blockClose" ||
+  { bad "check ignores security.md without security.blockClose"; cat "$tmp/out"; }
+bad_block() { # <JSON value> <the value as check shows it>
+  mkdir -p .claude; printf '{"security":{"blockClose":%s}}\n' "$1" >.claude/10x.json
+  run_check; local rc=$?
+  [ "$rc" -eq 2 ] && grep -qF "unknown security.blockClose '$2' in .claude/10x.json (want critical, high, medium, low or informational)" "$tmp/out"
+}
+bad_block '"High"' High && bad_block '""' '' && bad_block 5 5 && ok "check refuses an unknown security.blockClose" ||
+  { bad "check refuses an unknown security.blockClose"; cat "$tmp/out"; }
+rm -r .claude; rm -f "$sf"
 : >"$tmp/stub.log"
 STUB_VIEW="develop OPEN false" expect "merge refuses a PR into another base" 2 10x-land merge L1
 ! grep -q 'pr merge' "$tmp/stub.log" && ok "no merge call for a wrong base" || bad "no merge call for a wrong base"
@@ -1574,6 +1625,33 @@ ln "$tmp/real-body.md" "$td/pr-body.md"
 expect "pr refuses a hard-linked body" 2 10x-land pr L1
 rm "$td/pr-body.md"; printf 'Closes #1\n' >"$td/pr-body.md"
 
+# security entries: pr refuses a title, a body or a commit message that names an entry, and names only the file or
+# commit and the fingerprint. refused <case> <label> <command…> — exit 2, the label and the fingerprint named, never the title or the location.
+refused() {
+  local d=$1 label=$2; shift 2
+  "$@" >"$tmp/out" 2>&1; local rc=$?
+  [ "$rc" -eq 2 ] && grep -qF "$sec_fp1" "$tmp/out" && grep -qF "$label" "$tmp/out" && ! grep -qiE 'injection|deploy' "$tmp/out" &&
+    ok "$d" || { bad "$d (exit $rc)"; sed 's/^/      /' "$tmp/out"; }
+}
+git remote set-url origin git@github.com:acme/land.git
+sec_disclosed
+: >"$tmp/stub.log"
+printf 'fix: SHELL injection in deploy HOOK\n' >"$td/pr-title"
+STUB_VIEW_RC=1 refused "pr refuses a title naming a security entry" "$td/pr-title" 10x-land pr L1
+printf 'feat: the feature\n' >"$td/pr-title"
+printf 'Closes #1\n\nTouches bin/deploy.sh:12 in the hook.\n' >"$td/pr-body.md"
+STUB_VIEW_RC=1 refused "pr refuses a body naming a security entry" "$td/pr-body.md" 10x-land pr L1
+printf 'Closes #1\n' >"$td/pr-body.md"
+git -C "$lw" commit -q --allow-empty -m 'fix: bin/deploy.sh:12 hardening'
+STUB_VIEW_RC=1 refused "pr refuses a commit message naming a security entry" "commit $(git -C "$lw" rev-parse --short=7 HEAD)" 10x-land pr L1
+git -C "$lw" reset -q --hard HEAD~1
+[ ! -s "$tmp/stub.log" ] && ok "no gh call for a disclosed security entry" || { bad "no gh call for a disclosed security entry"; cat "$tmp/stub.log"; }
+# a path that only contains the location, or a longer line number, is not the entry
+printf 'Closes #1\n\nSee lib/bin/deploy.sh:12 and bin/deploy.sh:123.\n' >"$td/pr-body.md"
+STUB_VIEW_RC=1 expect "pr allows text that only resembles a security entry" 0 10x-land pr L1
+printf 'Closes #1\n' >"$td/pr-body.md"
+rm "$tmp/land/.10x/security.md"
+
 # comment: posts .10x/gh-<n>/comment.md on issue <n> of origin's repo, without a worktree
 mkdir -p "$tmp/land/.10x/gh-7"
 gd="$(cd "$tmp/land/.10x/gh-7" && pwd -P)"
@@ -1608,6 +1686,13 @@ printf 'Decisions from planning:\nnew\n' >"$gd/comment.md"
 expect "comment posts a new comment.md after an earlier one" 0 10x-land comment gh-7
 grep -qx new "$gd/comment.posted.md" && ok "comment.posted.md holds the latest comment" || bad "comment.posted.md holds the latest comment"
 printf 'Decisions from planning:\n' >"$gd/comment.md"
+sec_disclosed
+: >"$tmp/stub.log"
+printf 'Decisions: %s is tracked.\n' "$sec_fp1" >"$gd/comment.md"
+refused "comment refuses a comment.md naming a security entry" "$gd/comment.md" 10x-land comment gh-7
+[ ! -s "$tmp/stub.log" ] && [ -s "$gd/comment.md" ] && ok "a refused comment is neither posted nor moved" || { bad "a refused comment is neither posted nor moved"; cat "$tmp/stub.log"; }
+printf 'Decisions from planning:\n' >"$gd/comment.md"
+rm "$tmp/land/.10x/security.md"
 git remote set-url origin https://gitlab.example.com/grp/land.git
 : >"$tmp/stub.log"
 expect "comment refuses a GitLab origin" 2 10x-land comment gh-7
@@ -1692,8 +1777,13 @@ expect "squash refuses an empty commit message" 2 10x-land squash L1
 rm "$td/commit-msg"; echo outside >"$tmp/outside-msg"; ln -s "$tmp/outside-msg" "$td/commit-msg"
 expect "squash refuses a symlinked commit message" 2 10x-land squash L1
 rm "$td/commit-msg"
-printf 'feat: land L1\n\nBody line.\n' >"$td/commit-msg"
 before="$(git rev-parse main)"
+sec_disclosed
+printf 'feat: land L1\n\nFixes the Shell Injection in deploy hook.\n' >"$td/commit-msg"
+refused "squash refuses a commit-msg naming a security entry" "$td/commit-msg" 10x-land squash L1
+git reset -q --hard "$before" # without the refusal the squash has already moved the base: put it back so the cases below still start from the same state
+rm "$tmp/land/.10x/security.md"
+printf 'feat: land L1\n\nBody line.\n' >"$td/commit-msg"
 expect "squash lands the branch" 0 10x-land squash L1
 [ "$(git rev-parse main^)" = "$before" ] && ok "one commit on the base" || bad "one commit on the base"
 [ "$(git rev-parse 'main^{tree}')" = "$(git rev-parse 'feat/L1^{tree}')" ] && ok "base has the branch's tree" || bad "base has the branch's tree"

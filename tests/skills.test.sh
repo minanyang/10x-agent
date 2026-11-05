@@ -322,6 +322,69 @@ for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/S
     : bad("work: tdd false and an all-— Tests table skip the tests half")
 }
 
+// The security reviewer judges by Cloudflare's guidance-mode criteria (pinned commit, MIT notice) and splits its output
+// into the confirmed findings in the diff and everything else, which work hands to 10x-security and never publishes.
+{
+  const flat = (s) => s.replace(/\s+/g, " ")
+  const reviewer = flat(fs.readFileSync(`${dir}/../agents/security-reviewer.md`, "utf8"))
+  const work = fs.readFileSync(`${dir}/work/SKILL.md`, "utf8")
+  const anchors = [
+    "an unauthenticated actor gains code execution, full data-store access, or takeover of arbitrary accounts",
+    "an actor fully defeats an explicit security control with real consequences: authentication bypass, cross-tenant read or write, stored script execution affecting other users, authenticated code execution, or an unauthenticated remote stop of a shared service",
+    "a real boundary violation with limited blast radius, uncommon preconditions, or consequences confined to a narrow resource set",
+    "disclosure of non-secret internals, or an effect requiring sustained effort for minimal gain",
+    "a confirmed but minimal-impact observation, useful mainly as a prerequisite inside a larger finding",
+  ]
+  const antiPatterns = [
+    "Checklist deviations presented as vulnerabilities",
+    "Defense-in-depth advice with no reachable boundary violation",
+    "Guessing provider, proxy, browser, identity, or deployment behavior not present in source",
+    "Treating intended same-principal authority or self-impact as a cross-boundary result",
+    "Reporting a parser or runtime effect stronger than the observed effect",
+    "Assigning severity to `needs_validation` records",
+  ]
+  const missing = [
+    ["## Judging criteria", "a ## Judging criteria section"],
+    ["https://github.com/cloudflare/security-audit-skill/tree/c1c8a8c1471069fb0e188eeaff69b8e8db6564a8", "the link to Cloudflare's repo at the pinned commit"],
+    ["Adapted from Cloudflare's security-audit-skill, MIT License, Copyright (c) 2025-2026 Cloudflare, Inc.", "the MIT notice"],
+    ["overall severity cannot exceed demonstrated impact", "the overall-severity rule"],
+    ...["critical", "high", "medium", "low", "informational"].map((s) => [`**${s}**`, `the ${s} anchor`]),
+    ...anchors.map((a) => [a, `the anchor "${a.slice(0, 40)}…"`]),
+    ...antiPatterns.map((a) => [a, `the anti-pattern "${a.slice(0, 40)}…"`]),
+    ...["`confirmed`", "`needs_validation`", "`rejected`"].map((v) => [v, `the ${v} verdict`]),
+  ].filter(([s]) => !reviewer.includes(s)).map(([, w]) => w)
+  // The six element names are Cloudflare's; the plan gives no list to pin them to, so only their two halves are required.
+  if (!/boundary/i.test(reviewer) || !/observed result/i.test(reviewer)) missing.push("the boundary + result elements")
+  if (reviewer.includes("Critical, High, Medium, Low, Info")) missing.push("no `Critical, High, Medium, Low, Info` scale (still there)")
+  missing.length === 0 ? ok("security-reviewer: carries Cloudflare's criteria with attribution")
+    : bad(`security-reviewer: carries Cloudflare's criteria with attribution (missing: ${missing.join("; ")})`)
+
+  const contract = flat((/^## Output contract[\s\S]*/m.exec(fs.readFileSync(`${dir}/../agents/security-reviewer.md`, "utf8")) || [""])[0])
+  const keys = ["verdict", "rule", "title", "path", "line", "snippet", "trace", "severity"]
+  contract.includes("## Findings") && contract.includes("## Out of diff") && contract.includes("```json") &&
+    keys.every((k) => contract.includes(`\`${k}\``)) && contract.includes("- **[<severity>] <title>** (`path:line`)") &&
+    /severity[^.]*\bonly\b[^.]*confirmed/i.test(contract)
+    ? ok("security-reviewer: output has ## Findings and ## Out of diff")
+    : bad("security-reviewer: output has ## Findings and ## Out of diff")
+
+  const w = flat(work)
+  w.includes("Only `## Findings` goes to `review.md`") && w.includes("nothing from `## Out of diff` goes into `review.md`, the report, a commit or a PR")
+    ? ok("work: writes only ## Findings to review.md") : bad("work: writes only ## Findings to review.md")
+
+  const step = (n) => (new RegExp(`^## Step ${n}\\b[\\s\\S]*?(?=^## )`, "m").exec(work) || [""])[0]
+  const front = (/^---\n([\s\S]*?)\n---/.exec(work) || ["", ""])[1].split("\n")
+  const header = work.slice(0, work.search(/^## Step 0\b/m))
+  const step8 = work.slice(work.search(/^## Step 8\b/m), work.search(/^## Replies$/m))
+  const handsOver = (s) => s.includes("10x-security add <id>") && s.includes("out-of-diff.json")
+  front.includes("  - Bash(10x-security *)") && header.includes("`10x-security`") && handsOver(step(6)) && handsOver(step("7a")) &&
+    flat(step(7)).includes("`blocker`, `major`, a plan check, any confirmed security finding in the diff") &&
+    flat(step8).includes("Step 8 security entries: <fp>") && step8.includes("10x-security set <id> <fp> <status> [reason]") &&
+    ["fix-now", "later", "accepted", "rejected"].every((s) => step8.includes(`\`${s}\``)) &&
+    step8.indexOf("10x-security set") < step8.indexOf("10x-worktree memory")
+    ? ok("work: hands Out of diff to 10x-security and asks about new entries in Step 8")
+    : bad("work: hands Out of diff to 10x-security and asks about new entries in Step 8")
+}
+
 for (const skill of ["open", "work", "close", "batch", "roadmap"])
   /^## Replies$/m.test(fs.readFileSync(`${dir}/${skill}/SKILL.md`, "utf8"))
     ? ok(`${skill}: has a ## Replies section`) : bad(`${skill}: lacks a ## Replies section`)
