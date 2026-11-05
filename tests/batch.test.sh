@@ -31,7 +31,10 @@ case "$1 $2" in
         state=OPEN; case " ${STUB_CLOSED-} " in *" $3 "*) state=CLOSED ;; esac
         author=me; for p in ${STUB_AUTHORS-}; do [ "${p%%:*}" = "$3" ] && author="${p#*:}"; done
         who="{\"login\":\"$author\"}"; [ "$author" = null ] && who=null
-        printf '{"number":%s,"title":"Issue %s","body":"b","url":"https://github.com/acme/batch/issues/%s","state":"%s","labels":[],"issueType":null,"comments":[],"author":%s}\n' "$3" "$3" "$3" "$state" "$who" ;;
+        case " ${STUB_COMMENTS_FAIL-} " in *" $3 "*) case " $* " in *" author,comments "*) echo "HTTP 502: Bad Gateway" >&2; exit 1 ;; esac ;; esac
+        cs=""
+        for p in ${STUB_COMMENTERS-}; do [ "${p%%:*}" = "$3" ] && cs="$cs${cs:+,}{\"author\":{\"login\":\"${p#*:}\"},\"body\":\"c\",\"createdAt\":\"2026-01-01T00:00:00Z\"}"; done
+        printf '{"number":%s,"title":"Issue %s","body":"b","url":"https://github.com/acme/batch/issues/%s","state":"%s","labels":[],"issueType":null,"comments":[%s],"author":%s}\n' "$3" "$3" "$3" "$state" "$cs" "$who" ;;
       *) echo "GraphQL: Could not resolve to an issue or pull request with the number of $3." >&2; exit 1 ;;
     esac ;;
   "issue list") echo "${STUB_SEARCH-[]}" ;;
@@ -1042,6 +1045,20 @@ need "no approval record" test ! -e .git/10x-batch/t1.approved -a ! -e .git/10x-
 need "no auto-approved" test ! -e "$B/t1/auto-approved" -a ! -e "$B/t2/auto-approved"
 need "no reply" test ! -e "$B/t1/reply.md" -a ! -e "$B/t2/reply.md"
 need "both wait on their plan" eval 'phase_is t1 waiting && phase_is t2 waiting'
+end
+
+reset
+begin "loop: a comment by someone else on the issue stops auto approval"
+vb init --auto gh-5 gh-6 gh-7
+STUB_COMMENTERS="5:me 5:other 6:me 6:ME" STUB_COMMENTS_FAIL="7" WORKER_SCRIPT=flow lp 120
+need "loop finished" finished
+need "gh-5 (a stranger's comment) and gh-7 (comments unknown) are approve items" \
+  printed '{"items":[{"id":"gh-5","need":"approve","evidence":".10x/_batch/gh-5/turn.md"},{"id":"gh-7","need":"approve","evidence":".10x/_batch/gh-7/turn.md"}]}'
+need "no approval record for them" test ! -e .git/10x-batch/gh-5.approved -a ! -e .git/10x-batch/gh-7.approved
+need "no auto-approved for them" test ! -e "$B/gh-5/auto-approved" -a ! -e "$B/gh-7/auto-approved"
+need "both wait on their plan" eval 'phase_is gh-5 waiting && phase_is gh-7 waiting'
+need "gh-6, commented on only by its author in any case, was auto-approved and landed" \
+  eval 'test -s "$B/gh-6/auto-approved" && phase_is gh-6 landed'
 end
 
 reset; echo '{"close":"pr-merge"}' >.claude/10x.json; ticket t1
