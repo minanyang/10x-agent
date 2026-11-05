@@ -804,10 +804,19 @@ esac
 case "$1 $2" in
   "pr view"|"mr view") echo "${STUB_VIEW-}"; exit "${STUB_VIEW_RC:-0}" ;;
   "label list") printf '%s\n' "${STUB_LABELS-}" ;;
-  "issue create") exit "${STUB_CREATE_RC:-0}" ;;
+  "repo view") echo "${STUB_VIS-PUBLIC}"; exit "${STUB_VIS_RC:-0}" ;;
+  "issue create")
+    # STUB_BODY_COPY: where to keep the --body-file the issue was created with.
+    prev=""; for a in "$@"; do [ "$prev" = --body-file ] && [ -n "${STUB_BODY_COPY-}" ] && cp "$a" "$STUB_BODY_COPY"; prev=$a; done
+    exit "${STUB_CREATE_RC:-0}" ;;
   "api --hostname") case "$*" in *" graphql "*)
     none='{"data":{"repository":{"issueTypes":null}}}'; echo "${STUB_GRAPHQL-$none}"
-    [ "${STUB_GRAPHQL_RC:-0}" = 0 ] || echo "gh: Could not resolve to a Repository" >&2; exit "${STUB_GRAPHQL_RC:-0}" ;; esac ;;
+    [ "${STUB_GRAPHQL_RC:-0}" = 0 ] || echo "gh: Could not resolve to a Repository" >&2; exit "${STUB_GRAPHQL_RC:-0}" ;;
+  *security-advisories*)
+    # STUB_ADV_COPY: where to keep the --input JSON the advisory was requested with.
+    prev=""; for a in "$@"; do [ "$prev" = --input ] && [ -n "${STUB_ADV_COPY-}" ] && cp "$a" "$STUB_ADV_COPY"; prev=$a; done
+    if [ "${STUB_ADV_RC:-0}" != 0 ]; then echo "gh: Resource not accessible by integration" >&2; exit "$STUB_ADV_RC"; fi
+    echo '{"ghsa_id":"GHSA-abcd-efgh-ijkl","html_url":"https://github.com/acme/adv/security/advisories/GHSA-abcd-efgh-ijkl"}'; exit 0 ;; esac ;;
   "issue view") echo '{"number":7,"title":"T","body":"b","url":"https://github.com/acme/land/issues/7","state":"OPEN","labels":[],"issueType":null,"comments":[]}' ;;
 esac
 exit 0
@@ -1403,6 +1412,12 @@ for h in 'Labels: bug' 'Labels:' 'Type: Bug' 'Form: bug.yml'; do
 done
 rm "$dr/hdr.md"
 [ "$header_bad" = 0 ] && ok "ticket refuses a GitHub header line" || bad "ticket refuses a GitHub header line"
+sec_hdr="Security: sha256:$(printf 'a%.0s' {1..64})"
+printf '# T\n%s\n\n## Context\nx\n\n## Acceptance criteria\n- [ ] AC1 — ok\n' "$sec_hdr" >"$dr/sechdr.md"
+cp "$dr/sechdr.md" "$tmp/sechdr.want"
+expect "ticket: accepts a Security header" 0 10x-land ticket sechdr
+cmp -s "$tmp/land/.10x/sechdr/ticket.md" "$tmp/sechdr.want" && grep -qxF "$sec_hdr" "$tmp/land/.10x/sechdr/ticket.md" && [ ! -e "$dr/sechdr.md" ] &&
+  ok "ticket keeps a Security header line" || { bad "ticket keeps a Security header line"; cat "$tmp/out"; }
 printf '# T\n\n## Acceptance criteria\n- [ ] AC1 — ok\n' >"$dr/gh-7.md"; cp "$dr/gh-7.md" "$dr/drafts.md"
 expect "ticket exits 2 on a gh-<n> slug" 2 10x-land ticket gh-7
 grep -qF "slug 'gh-7' is the id of a GitHub issue ticket" "$tmp/out" && [ ! -e "$tmp/land/.10x/gh-7" ] && reserved=ok || reserved=bad
@@ -1421,6 +1436,137 @@ expect "ticket exits 2 in github mode" 2 10x-land ticket ongh
 grep -qF "ticket needs tickets: files, but this repo's tickets are github" "$tmp/out" && [ -f "$dr/ongh.md" ] && [ ! -e "$tmp/land/.10x/ongh" ] &&
   ok "ticket refuses github mode" || { bad "ticket refuses github mode"; cat "$tmp/out"; }
 rm "$dr/ongh.md"
+
+# advisory and the issue route guard, on a public repo with one release and a security log of two entries: 1 is confirmed
+# high in the released bin/deploy.sh (route: advisory), 2 is low (route: issue).
+adv="$tmp/adv"
+git -c init.defaultBranch=main init -q "$adv"
+cd "$adv" || exit 2
+git config user.email t@t; git config user.name t
+mkdir bin; seq 1 15 | sed 's/^/echo line /' >bin/deploy.sh
+git add -A && git commit -qm "init" && git tag v1.0.0
+git remote add origin git@github.com:acme/adv.git
+advp="$(pwd -P)"
+mkdir -p .10x/drafts
+{
+  printf '# Security entries\n'
+  sec_entry 1 confirmed high 'Shell injection in deploy hook' bin/deploy.sh:12 later gh-1
+  sec_entry 2 confirmed low 'Weak temp file in backup job' bin/deploy.sh:3 later gh-1
+} >.10x/security.md
+cp .10x/security.md "$tmp/adv-sec.before"
+AF1="$(sec_fp 1)"; AF2="$(sec_fp 2)"
+ZERO_FP="sha256:$(printf 'f%.0s' {1..64})"
+GHSA_URL="https://github.com/acme/adv/security/advisories/GHSA-abcd-efgh-ijkl"
+# adv_draft <slug> <fingerprint> [<context line>] — a draft whose one header line is `Security: <fingerprint>`.
+adv_draft() {
+  printf '# Fix security entry 00000000\nSecurity: %s\n\n## Context\n%s\n\n## Acceptance criteria\n- [ ] AC1 — The entry is fixed.\n' \
+    "$2" "${3:-Security entry in the local security log.}" >"$adv/.10x/drafts/$1.md"
+}
+# api_calls — the number of advisory requests gh was given.
+api_calls() { grep -c 'security-advisories' "$tmp/stub.log"; }
+
+adv_draft security-00000000 "$AF1"
+cp .10x/drafts/security-00000000.md "$tmp/adv-draft.want"
+awk -v l="Advisory: GHSA-abcd-efgh-ijkl $GHSA_URL" '{ print } /^Security: / { print l }' "$tmp/adv-draft.want" >"$tmp/adv-ticket.want"
+: >"$tmp/stub.log"
+STUB_ADV_COPY="$tmp/adv-req.json" expect "advisory: runs on a released high entry" 0 10x-land advisory security-00000000
+adv_ok=1
+grep -qxF "advisory: $GHSA_URL" "$tmp/out" || adv_ok=0
+{ grep -qxF "ticket: $adv/.10x/security-00000000/ticket.md" "$tmp/out" || grep -qxF "ticket: $advp/.10x/security-00000000/ticket.md" "$tmp/out"; } || adv_ok=0
+grep -qE -- '^api --hostname github.com -X POST repos/acme/adv/security-advisories --input .+$' "$tmp/stub.log" || adv_ok=0
+grep -qxF "repo view github.com/acme/adv --json visibility --jq .visibility" "$tmp/stub.log" || adv_ok=0
+# shellcheck disable=SC2016  # JavaScript, not shell
+node -e '
+  const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")), v = (r.vulnerabilities || [])[0] || {}
+  const ok = r.summary === "Fix security entry 00000000" && r.severity === "high" && r.description.startsWith("## Context") &&
+    !r.description.includes("Security: ") && v.package && v.package.ecosystem === "other" && v.package.name === "adv" &&
+    v.vulnerable_version_range === "<= v1.0.0" && !("start_private_fork" in r) && !("patched_versions" in v)
+  process.exit(ok ? 0 : 1)
+' "$tmp/adv-req.json" || { adv_ok=0; cat "$tmp/adv-req.json" 2>&1; }
+cmp -s ".10x/security-00000000/ticket.md" "$tmp/adv-ticket.want" || adv_ok=0
+[ ! -e .10x/drafts/security-00000000.md ] || adv_ok=0
+[ "$adv_ok" = 1 ] && ok "advisory creates a draft advisory and a local ticket" || { bad "advisory creates a draft advisory and a local ticket"; cat "$tmp/out" "$tmp/stub.log"; }
+
+adv_draft security-0000000f "$AF1"
+cp .10x/drafts/security-0000000f.md "$tmp/adv-draft.want"
+: >"$tmp/stub.log"
+STUB_ADV_RC=1 expect "advisory: exits 0 when gh api fails" 0 10x-land advisory security-0000000f
+adv_ok=1
+grep -qxF "10x: gh api failed (exit 1):" "$tmp/out" || adv_ok=0
+grep -qxF "gh: Resource not accessible by integration" "$tmp/out" || adv_ok=0
+{ grep -qxF "ticket: $adv/.10x/security-0000000f/ticket.md" "$tmp/out" || grep -qxF "ticket: $advp/.10x/security-0000000f/ticket.md" "$tmp/out"; } || adv_ok=0
+! grep -q '^advisory:' "$tmp/out" || adv_ok=0
+cmp -s ".10x/security-0000000f/ticket.md" "$tmp/adv-draft.want" || adv_ok=0
+[ ! -e .10x/drafts/security-0000000f.md ] || adv_ok=0
+[ "$adv_ok" = 1 ] && ok "advisory keeps the local ticket when gh api fails" || { bad "advisory keeps the local ticket when gh api fails"; cat "$tmp/out" "$tmp/stub.log"; }
+
+mkdir -p .claude && echo '{"tickets":"files"}' >.claude/10x.json
+adv_draft security-0000000e "$AF1"
+: >"$tmp/stub.log"
+expect "advisory: exits 2 with tickets files" 2 10x-land advisory security-0000000e
+[ ! -s "$tmp/stub.log" ] && [ ! -e .10x/security-0000000e ] && [ -f .10x/drafts/security-0000000e.md ] &&
+  ok "advisory refuses with tickets files and creates nothing" || { bad "advisory refuses with tickets files and creates nothing"; cat "$tmp/out" "$tmp/stub.log"; }
+rm -r .claude .10x/drafts/security-0000000e.md
+
+# refused <slug> <text the message names> — advisory exits 2, names the text, calls no advisory API and creates nothing.
+adv_refused() {
+  : >"$tmp/stub.log"
+  10x-land advisory "$1" >"$tmp/out" 2>&1; local rc=$?
+  [ "$rc" -eq 2 ] && grep -qF -- "$2" "$tmp/out" && [ "$(api_calls)" = 0 ] && [ ! -e ".10x/$1" ] && [ -f ".10x/drafts/$1.md" ]
+}
+adv_bad=0
+printf '# Fix security entry 00000000\n\n## Context\nNo Security line.\n\n## Acceptance criteria\n- [ ] AC1 — The entry is fixed.\n' >.10x/drafts/advnosec.md
+adv_refused advnosec "Security" || { adv_bad=1; echo "      no Security line:"; cat "$tmp/out"; }
+adv_draft advunknown "$ZERO_FP"
+adv_refused advunknown "no security entry $ZERO_FP" || { adv_bad=1; echo "      unknown fingerprint:"; cat "$tmp/out"; }
+adv_draft advlow "$AF2"
+adv_refused advlow "routes to issue, not advisory" || { adv_bad=1; echo "      low entry:"; cat "$tmp/out"; }
+adv_draft advprivate "$AF1"
+STUB_VIS=PRIVATE adv_refused advprivate "routes to issue, not advisory" || { adv_bad=1; echo "      private repo:"; cat "$tmp/out"; }
+adv_draft advloc "$AF1" "The sink is bin/deploy.sh:12."
+adv_refused advloc "the draft names the location of security entry $AF1" && ! grep -qF 'deploy.sh' "$tmp/out" || { adv_bad=1; echo "      named location:"; cat "$tmp/out"; }
+printf '# Fix security entry 00000000\nSecurity: %s\nLabels: bug\n\n## Context\nx\n\n## Acceptance criteria\n- [ ] AC1 — The entry is fixed.\n' "$AF1" >.10x/drafts/advlabel.md
+adv_refused advlabel "Labels" || { adv_bad=1; echo "      Labels line:"; cat "$tmp/out"; }
+[ "$adv_bad" = 0 ] && ok "advisory refuses a draft without Security, an unknown or non-advisory entry, or a named location" ||
+  bad "advisory refuses a draft without Security, an unknown or non-advisory entry, or a named location"
+
+# issue: the Security: line routes the draft. An advisory route is refused, naming the fingerprint and nothing else.
+adv_draft advissue "$AF1"
+: >"$tmp/stub.log"
+10x-land issue advissue >"$tmp/out" 2>&1; rc=$?
+[ "$rc" -ne 0 ] && grep -qF "draft security entry $AF1 routes to advisory: use 10x-land advisory advissue" "$tmp/out" &&
+  ! grep -qiE 'injection|deploy' "$tmp/out" && ! grep -qE 'issue create|label list' "$tmp/stub.log" && [ -f .10x/drafts/advissue.md ] &&
+  ok "issue refuses a draft whose security entry routes to advisory" || { bad "issue refuses a draft whose security entry routes to advisory (exit $rc)"; cat "$tmp/out" "$tmp/stub.log"; }
+
+# On the issue route, a title or body that names the entry is refused before anything is created.
+named_bad=0
+for v in title fingerprint location entry-title; do
+  case "$v" in
+    title) printf '# Fix Weak temp file in backup job\nSecurity: %s\n\n## Context\nx\n\n## Acceptance criteria\n- [ ] AC1 — Fixed.\n' "$AF2" ;;
+    fingerprint) printf '# Fix\nSecurity: %s\n\n## Context\nEntry %s.\n\n## Acceptance criteria\n- [ ] AC1 — Fixed.\n' "$AF2" "$AF2" ;;
+    location) printf '# Fix\nSecurity: %s\n\n## Context\nSee bin/deploy.sh:3.\n\n## Acceptance criteria\n- [ ] AC1 — Fixed.\n' "$AF2" ;;
+    entry-title) printf '# Fix\nSecurity: %s\n\n## Context\nThe weak TEMP FILE in backup job is the issue.\n\n## Acceptance criteria\n- [ ] AC1 — Fixed.\n' "$AF2" ;;
+  esac >.10x/drafts/advnamed.md
+  : >"$tmp/stub.log"
+  10x-land issue advnamed >"$tmp/out" 2>&1; rc=$?
+  { [ "$rc" -eq 2 ] && grep -qF "10x: draft advnamed contains security entry $AF2" "$tmp/out" && ! grep -qE 'issue create|label list' "$tmp/stub.log" &&
+    [ -f .10x/drafts/advnamed.md ]; } || { named_bad=1; echo "      $v (exit $rc):"; cat "$tmp/out" "$tmp/stub.log"; }
+done
+rm -f .10x/drafts/advnamed.md
+[ "$named_bad" = 0 ] && ok "issue refuses a security draft that names its entry" || bad "issue refuses a security draft that names its entry"
+
+# A draft that names nothing is created, and its Security: line is a header, not part of the issue body.
+adv_draft advclean "$AF2" 'A security fix planned in roadmap version v1; the entry is in `.10x/security.md`.'
+: >"$tmp/stub.log"
+STUB_BODY_COPY="$tmp/adv-body.md" expect "issue: creates a security draft that names nothing" 0 10x-land issue advclean
+grep -qE -- '^issue create --repo github.com/acme/adv --title Fix security entry 00000000 --body-file .+' "$tmp/stub.log" &&
+  [ "$(head -n 1 "$tmp/adv-body.md")" = "## Context" ] && ! grep -qF 'Security:' "$tmp/adv-body.md" && ! grep -qF "$AF2" "$tmp/adv-body.md" &&
+  [ ! -e .10x/drafts/advclean.md ] &&
+  ok "issue keeps the Security line out of the issue body" || { bad "issue keeps the Security line out of the issue body"; cat "$tmp/out" "$tmp/stub.log"; cat "$tmp/adv-body.md" 2>&1; }
+
+cmp -s .10x/security.md "$tmp/adv-sec.before" && ok "advisory and issue leave security.md byte-identical" ||
+  bad "advisory and issue leave security.md byte-identical"
+cd "$tmp/land" || exit 2
 
 # grill: prints the shared grill verbatim, takes no argument
 10x-grill >"$tmp/grill.out" 2>&1 && cmp -s "$tmp/grill.out" "$BIN/../references/grill.md" \

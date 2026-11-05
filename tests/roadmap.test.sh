@@ -148,6 +148,16 @@ end
 
 # ---------------------------------------------------------------- apply
 
+reset
+begin "check: accepts a security item"
+FPX="sha256:$(printf 'a%.0s' {1..64})"
+roadmap | sed "s/^| v2 | use /| v2 | Fix the deploy hook (security $FPX); use /" >"$D"
+need "exit 0" exits 0 check
+need "the security item is no new id" out_is "new id: v1 gh-77"
+need "apply writes it" exits 0 apply
+need "show lists the item whole" eval 'exits 0 show v2 && line "  1. Fix the deploy hook (security '"$FPX"')"'
+end
+
 reset; roadmap >"$D"
 begin "apply: writes the draft to .10x/roadmap.md and deletes the draft"
 need "exit 0" exits 0 apply
@@ -188,7 +198,7 @@ need "says so" out_is "no roadmap: .10x/roadmap.md"
 roadmap >"$R"
 need "exit 0" exits 0 show
 need "every version, its items and the next one" out_is "$(printf '%s\n' 'v1 — Done 2026-10-01' '  1. Roadmap skill `gh-77`' '  2. batch by version' \
-  'v2 — Planned' '  1. use `md-check.js` sections' '  2. a | pipe' 'next: v2')"
+  'v2 — Planned' '  1. use `md-check.js` sections' '  2. a | pipe' 'next: v2' 'audit: no tag — a diff-scope audit needs a previous release')"
 need "one version" eval 'exits 0 show v2 && out_is "$(printf "%s\n" "v2 — Planned" "  1. use \`md-check.js\` sections" "  2. a | pipe")"'
 need "an unknown version exits 2" exits 2 show v9
 need "names it" line "10x-roadmap: no version v9 in .10x/roadmap.md"
@@ -197,6 +207,24 @@ need "next: none when all are done" eval 'exits 0 show && line "next: none"'
 roadmap | sed 's/| Needs v1.s parser |/|  |/' >"$R"
 need "a roadmap.md that fails check exits 2" exits 2 show
 need "naming the fault" line "10x-roadmap: .10x/roadmap.md:6: version v2 has an empty Why this order"
+end
+
+reset; roadmap >"$R"
+begin "show: suggests an audit since the last tag"
+git tag v0.1.0
+need "HEAD is the tag: exit 0" exits 0 show
+need "no audit line" not has "audit:"
+git commit -q --allow-empty -m "after the tag"
+need "HEAD is ahead of the tag: exit 0" exits 0 show
+need "the audit line ends the output, after next:" test "$(tail -n 2 "$tmp/out")" = "$(printf '%s\n%s' 'next: v2' 'audit: /10x:audit v0.1.0..HEAD')"
+need "a version argument prints no audit line" eval 'exits 0 show v2 && ! has "audit:"'
+git tag -d v0.1.0 >/dev/null
+need "no tag: exit 0" exits 0 show
+need "the no-tag line" line "audit: no tag — a diff-scope audit needs a previous release"
+rm "$R"
+need "no roadmap: exit 0" exits 0 show
+need "no audit line without a roadmap" not has "audit:"
+git reset -q --hard HEAD~1
 end
 
 reset; roadmap >"$R"
@@ -234,6 +262,16 @@ need "a symlinked roadmap.md" exits 2 link v1 2 gh-13
 need "names it" line "10x-roadmap: .10x/roadmap.md is a symlink"
 rm "$R"; roadmap | sed 's/| Needs v1.s parser |/|  |/' >"$R"
 need "a roadmap.md that fails check" exits 2 link v1 2 gh-13
+end
+
+reset
+FPX="sha256:$(printf 'b%.0s' {1..64})"
+roadmap | sed "s/^| v2 | use /| v2 | Fix the deploy hook (security $FPX); use /" >"$R"
+mkdir -p .10x/security-bbbbbbbb && echo '# Fix security entry bbbbbbbb' >.10x/security-bbbbbbbb/ticket.md
+begin "link: links an advisory ticket slug"
+need "exit 0" exits 0 link v2 1 security-bbbbbbbb
+need "the id follows the fingerprint, in backticks" eval 'exits 0 show v2 && line "  1. Fix the deploy hook (security '"$FPX"') \`security-bbbbbbbb\`"'
+need "the roadmap still passes check" eval 'cp "$R" "$D" && exits 0 check'
 end
 
 [ "$fail" -eq 0 ] && echo "roadmap: all cases pass"

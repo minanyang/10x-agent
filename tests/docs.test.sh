@@ -137,6 +137,24 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
+// gh-3 AC12 — the security requirements of /10x:roadmap: the two 10x-security subcommands, 10x-land advisory and the audit
+// prompt in docs/scripts.md; the hook rules in docs/hooks.md; the /10x:roadmap row of both READMEs.
+{
+  const name = "docs describe list --plannable, route, advisory and the audit prompt"
+  const scripts = read("docs/scripts.md"), hooks = read("docs/hooks.md")
+  const missing = []
+  for (const w of ["10x-security list --plannable", "10x-security route", "10x-land advisory", "audit:", "Security:"])
+    if (scripts === null || !scripts.includes(w)) missing.push(`docs/scripts.md: ${w}`)
+  if (hooks === null || !hooks.includes("10x-land advisory")) missing.push("docs/hooks.md: 10x-land advisory")
+  for (const f of ["README.md", "README.zh-TW.md"]) {
+    const text = read(f)
+    const row = text === null ? undefined : text.split("\n").find((s) => s.startsWith("| `/10x:roadmap` |"))
+    if (row === undefined) { missing.push(`${f}: the /10x:roadmap row`); continue }
+    for (const w of ["security", "advisory", "/10x:audit"]) if (!row.includes(w)) missing.push(`${f}: the /10x:roadmap row lacks ${w}`)
+  }
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 // AC4 — heading parity and cross-links.
 {
   const name = "README.zh-TW.md has the same ## and ### headings, level by level, as README.md"
