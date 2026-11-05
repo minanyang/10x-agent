@@ -24,7 +24,7 @@ const bad = (m) => { console.log(`FAIL  ${m}`); fail = 1 }
 // Commands left to the user's own permissions, per skill (prefix of the placeholder-normalised line).
 const userOwn = {
   close: [],
-  work: ["git -C X add ", "git -C X commit ", "10x-land comment "],
+  work: ["git -C X add ", "git -C X commit ", "10x-land comment ", "10x-security set ", "10x-security remove "],
   open: ["10x-land issue "],
   batch: ["10x-land comment ", "10x-batch approve "],
   roadmap: ["10x-land issue "],
@@ -376,7 +376,7 @@ for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/S
   const header = work.slice(0, work.search(/^## Step 0\b/m))
   const step8 = work.slice(work.search(/^## Step 8\b/m), work.search(/^## Replies$/m))
   const handsOver = (s) => s.includes("10x-security add <id>") && s.includes("out-of-diff.json")
-  front.includes("  - Bash(10x-security *)") && header.includes("`10x-security`") && handsOver(step(6)) && handsOver(step("7a")) &&
+  front.includes("  - Bash(10x-security add *)") && !front.includes("  - Bash(10x-security *)") && header.includes("`10x-security`") && handsOver(step(6)) && handsOver(step("7a")) &&
     flat(step(7)).includes("`blocker`, `major`, a plan check, any confirmed security finding in the diff") &&
     flat(step8).includes("Step 8 security entries: <fp>") && step8.includes("10x-security set <id> <fp> <status> [reason]") &&
     ["fix-now", "later", "accepted", "rejected"].every((s) => step8.includes(`\`${s}\``)) &&
