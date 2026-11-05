@@ -1,10 +1,11 @@
 ---
 name: batch
-description: Conduct a backlog from one terminal — each ticket runs /10x:work then /10x:close in its own background worker, and the user answers grills and approves plans in batched rounds. Use when the user runs /10x:batch <tickets>.
+description: Conduct a backlog from one terminal — each ticket runs /10x:work then /10x:close in its own background worker, and the user answers grills and approves plans in batched rounds. Use when the user runs /10x:batch <tickets> or /10x:batch auto <tickets>.
 disable-model-invocation: true
 allowed-tools:
   - Bash(10x-batch init *)
   - Bash(10x-batch run *)
+  - Bash(10x-batch loop)
   - Bash(10x-batch status)
   - Bash(10x-batch drop *)
 ---
@@ -24,6 +25,11 @@ With arguments (`gh-<n>`, `<n>`, `#<n>`, an issue URL, existing ticket ids, `--s
 ```
 
 With none, run `10x-batch status`. An exit 2 from either is a stop: quote its `10x-batch:` line and ask the user how to go on.
+
+A first argument `auto` always means auto mode, so a ticket named `auto` is written `/10x:batch auto auto`:
+
+- `auto` followed by tickets: run `10x-batch init --auto <tickets>`, then go to Step 4.
+- `/10x:batch auto` alone, with no tickets, or no arguments when the board `status` printed says `mode: auto`: go to Step 4, which resumes with `10x-batch loop`.
 
 ## Step 1 — Act on `status`
 
@@ -52,6 +58,21 @@ Write each ticket's reply to `.10x/_batch/<id>/reply.md`, then start `10x-batch 
 
 On `done`, end with the board.
 
+## Step 4 — Auto mode
+
+Start `10x-batch loop` with `run_in_background` and `timeout: 7200000`, then end your turn. It plans, approves a plan with no product question, implements and closes by itself, and exits when a human is needed. When it wakes you:
+
+- No JSON line (it was stopped at its limit): start `10x-batch loop` again the same way.
+- Exit 2: quote its `10x-batch:` line and ask the user how to go on.
+- Otherwise read its one line, `{"items":[…]}`, and relay only the items it printed, grouped by ticket, in one message:
+  - `answer`: Read and show `.10x/_batch/<id>/turn.md`, and `.10x/<id>/product-questions.md` when it exists.
+  - `approve`: as in Step 2 — show the turn and `plan.md` verbatim; on the user's `approve`, `10x-land comment <id>` when `.10x/<id>/comment.md` exists, then `10x-batch approve <id>`, which still asks permission.
+  - `failed` and `denied`: show its evidence, for the user to decide on.
+
+After the user's reply, write each `reply.md` or approve as in Step 2, then start `10x-batch loop` again (not `10x-batch run`).
+
+On `done`, run `10x-batch status`. The final reply is the board, then, for each ticket under its id, the `## Auto decisions` section of `.10x/<id>/plan.md` verbatim, or `(none)` when the plan has no such section.
+
 ## Replies
 
 - Lead with the result. No first sentence that announces what comes next, and no closing recap or offer.
@@ -60,7 +81,7 @@ On `done`, end with the board.
 
 Some things are exempt from these rules and are written in full: a security warning; a question to the user; a worker's turn shown to the user; and anything persisted, such as `reply.md`.
 
-The final reply is the board.
+The final reply is the board; in auto mode, followed by each ticket's `## Auto decisions` (Step 4).
 
 ## Never
 

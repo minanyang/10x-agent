@@ -77,7 +77,7 @@ Optional settings — base branch, gates, close mode, where tickets live — liv
 
 - `batch.parallel` caps implementation workers (default `1`); tickets land one at a time.
 - `claude --resume <session id>` opens a worker.
-- Planning writes only under `.10x/`. After approval, workers edit and run commands from the ticket unattended: batch only issues you trust.
+- `/10x:batch auto <tickets>` approves plans with no product question itself; batches take only your own issues, because a stranger's could steer workers.
 - Allow `Bash(git -C * add *)` and `Bash(git -C * commit *)` ([caveat](tests/e2e/README.md)); the board lists other denials.
 - In `pr` mode, tickets sharing files give overlapping PRs; above 1, agent memory lands on several branches.
 
