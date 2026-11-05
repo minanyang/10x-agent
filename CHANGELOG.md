@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `10x:security-reviewer` judges by Cloudflare's security-audit-skill criteria (boundary and result, five severity anchors, `confirmed` / `needs_validation` / `rejected`) and blocks a ticket only on confirmed findings its diff introduces or makes reachable. Everything else goes to `.10x/security.md`, never committed, through the new `10x-security` script, and `/10x:work` asks what to do with each new entry before its report.
+- `10x-land pr`, `comment` and `squash` refuse text that names a recorded security entry; `security.blockClose` in `.claude/10x.json` makes `/10x:close` refuse a ticket with an open confirmed entry at or above a severity.
+
 ## 0.1.0 — 2026-11-05
 
 Initial release.

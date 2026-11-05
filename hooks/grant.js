@@ -41,6 +41,7 @@ const ID_WORD = {
   '10x-test': 1,
   '10x-review-packet': 1,
   '10x-plan-check': 1,
+  '10x-security': 2,
 }
 const CHUNK = 1 << 20
 const MAX_SCAN = 16 << 20
