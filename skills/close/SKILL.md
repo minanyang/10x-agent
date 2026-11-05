@@ -93,7 +93,7 @@ It must pass on the rebased tree. A failure here is new (the base moved): fix it
 
    Never merge around a refusal.
 
-   `10x-land pr`, `squash` and `comment` refuse text that names an entry of `.10x/security.md` — its fingerprint, title or `path:line` — naming only the file or commit and the fingerprint. For `pr-title`, `pr-body.md` or `commit-msg`, rewrite the text without it and run the command again; a commit message on the branch is the user's to reword — stop and name the commit. Never remove or re-set an entry to get past the refusal.
+   `10x-land push`, `pr`, `squash` and `comment` refuse text that names an entry of `.10x/security.md` — its fingerprint, title or `path:line` — naming only the file or commit and the fingerprint; `push` checks the branch's commit messages before anything leaves the machine. For `pr-title`, `pr-body.md` or `commit-msg`, rewrite the text without it and run the command again; a commit message on the branch is the user's to reword — stop and name the commit. Never remove or re-set an entry to get past the refusal.
 4. `pr`: report the PR URL and stop. The worktree stays until the PR is merged.
 
 **`local`:**

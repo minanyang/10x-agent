@@ -29,8 +29,9 @@ const META = /[;&|<>$`\n\r]/
 // later turn cannot start a new batch the user never named.
 const TYPED_ONLY = new Set(['10x-batch init *'])
 // Commands that always ask, whatever a session's record holds — one saved by an older SKILL.md included: the public
-// writes, a batch's plan approval, and starting a batch.
-const ALWAYS_ASK = /^(10x-land (issue|comment)|10x-batch (approve|init))(\s|$)/
+// writes, a batch's plan approval, starting a batch, and settling or removing a security entry (a session can put its
+// own ticket into any entry's `seen in` with `10x-security add`, so the ticket binding alone does not protect them).
+const ALWAYS_ASK = /^(10x-land (issue|comment)|10x-batch (approve|init)|10x-security (set|remove))(\s|$)/
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 // The word that carries the ticket id: `10x-land <sub> <id>`, `10x-verify <id>`, ….
 const ID_WORD = {
