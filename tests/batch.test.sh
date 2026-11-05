@@ -38,12 +38,13 @@ exit 0
 STUB
 # The worker: logs <flag> TAB <session> TAB <cwd> TAB <prompt after --> (and its background-task ceiling, its
 # permission flags and its TENX_BATCH_PLAN_DIR) and prints
-# $WORKER_OUT (else one text turn whose init reports the mode it was started in), then waits $WORKER_SLEEP seconds as
-# the same process (exit 143 on SIGTERM), or exits $WORKER_EXIT. Started in auto mode with $WORKER_MODE set, its init
-# reports $WORKER_MODE instead and it waits for SIGTERM.
+# $WORKER_OUT (else one text turn whose init reports the mode it was started in, after a SessionStart hook event as a
+# real worker's log has), then waits $WORKER_SLEEP seconds as the same process (exit 143 on SIGTERM), or exits
+# $WORKER_EXIT. Started in auto mode with $WORKER_MODE set, its init reports $WORKER_MODE instead and it waits for SIGTERM.
 cat >"$tmp/stub/worker" <<'STUB'
 #!/bin/bash
 prompt="" flag="" session="" mode="" all=" $* "
+hook='{"type":"system","subtype":"hook_started","hook_event":"SessionStart"}'
 while [ $# -gt 0 ]; do
   case "$1" in
     --) prompt="$2"; shift 2 ;;
@@ -57,7 +58,7 @@ printf '%s\n' "${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-unset}" >>"$WORKER_LOG.cei
 a="${all%% --session-id *}"; a="${a%% --resume *}"; printf '%s\n' "${a#* --verbose }" >>"$WORKER_LOG.perm"
 printf '%s\n' "${TENX_BATCH_PLAN_DIR-unset}" >>"$WORKER_LOG.plandir"
 if [ "$mode" = auto ] && [ -n "${WORKER_MODE:-}" ]; then
-  printf '{"type":"system","subtype":"init","permissionMode":"%s"}\n' "$WORKER_MODE"
+  printf '%s\n{"type":"system","subtype":"init","permissionMode":"%s"}\n' "$hook" "$WORKER_MODE"
   trap 'kill "$s" 2>/dev/null; exit 143' TERM INT
   sleep 300 & s=$!
   wait "$s"
@@ -65,7 +66,7 @@ if [ "$mode" = auto ] && [ -n "${WORKER_MODE:-}" ]; then
 fi
 if [ -n "${WORKER_OUT:-}" ]; then cat "$WORKER_OUT"
 else
-  printf '{"type":"system","subtype":"init","permissionMode":"%s"}\n' "$mode"
+  printf '%s\n{"type":"system","subtype":"init","permissionMode":"%s"}\n' "$hook" "$mode"
   printf '%s\n' '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"done"}]}}' \
     '{"type":"result","result":"done"}'
 fi
