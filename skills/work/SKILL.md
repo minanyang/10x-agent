@@ -13,7 +13,7 @@ allowed-tools:
   - Bash(10x-test *)
   - Bash(10x-review-packet *)
   - Bash(10x-verify *)
-  - Bash(10x-security *)
+  - Bash(10x-security add *)
   - Bash(git fetch)
   - Bash(gh pr list *)
   - Bash(glab mr list *)
@@ -298,7 +298,7 @@ First, the security entries this ticket found or saw: when `.10x/security.md` ha
 10x-security set <id> <fp> <status> [reason]
 ```
 
-then remove the `asked` line. `10x-security set` and `remove` always ask for the user's permission, whatever this skill grants. A `fix-now` reopens the plan through Step 7b. The question is conversation text: it is never written to `review.md`, the report, a commit or a PR.
+then remove the `asked` line. `10x-security set` and `remove` always ask for the user's permission: this skill grants only `10x-security add`, and the grant hook never allows the other two. A `fix-now` reopens the plan through Step 7b. The question is conversation text: it is never written to `review.md`, the report, a commit or a PR.
 
 Agents write their memory (`.claude/agent-memory/`) under the session's working directory — the main checkout, or the worktree once the session has moved there. Once the last round is over, commit it on the ticket branch — also again after a Step 7b loop that reopened the work after an earlier report. Not after each round: moving memory out of the main checkout would hide it from the next round's reviewers. The packets leave `.claude/agent-memory` out of their diff, so a memory commit is never reviewed; they list each commit that touches it, with its paths, and one that is not the memory commit is a finding.
 

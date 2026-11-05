@@ -128,7 +128,8 @@ function allow(skill) {
 }
 
 function granting(part, command, ticket, skill) {
-  if (ALWAYS_ASK.test(command)) return false
+  // Judged on the words, as bash splits them: two spaces or a tab between them must not get past it.
+  if (ALWAYS_ASK.test(command.split(/\s+/).join(' '))) return false
   if (!part || !Array.isArray(part.grants) || !part.grants.some((g) => typeof g === 'string' && matches(g, command))) return false
   if (ticket === undefined) return true
   return !!ticket && (UNBOUND.has(skill) || part.id === undefined || part.id === ticket)

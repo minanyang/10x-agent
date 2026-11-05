@@ -52,5 +52,11 @@ hook() { # <command> — the hook's stdout for a PreToolUse Bash call in session
 [ -n "$(hook "10x-security add gh-5 /r/.10x/gh-5/out-of-diff.json")" ] &&
   [ -z "$(hook "10x-security set gh-5 $fp later")" ] && [ -z "$(hook "10x-security remove gh-5 $fp")" ] &&
   ok "grant hook always asks for 10x-security set and remove" || bad "grant hook always asks for 10x-security set and remove"
+[ -z "$(hook "10x-security  set gh-5 $fp later")" ] && [ -z "$(hook "$(printf '10x-security \tremove gh-5 %s' "$fp")")" ] &&
+  ok "grant hook always asks for set and remove with extra whitespace" || bad "grant hook always asks for set and remove with extra whitespace"
+# work grants only 10x-security add: set and remove are never granted by the skill either
+front="$(sed -n '/^---$/,/^---$/p' "$ROOT_DIR/skills/work/SKILL.md")"
+printf '%s\n' "$front" | grep -qxF '  - Bash(10x-security add *)' && ! printf '%s\n' "$front" | grep -qE '^  - Bash\(10x-security (\*|set|remove)' &&
+  ok "work grants only 10x-security add" || bad "work grants only 10x-security add"
 
 exit "$fail"
