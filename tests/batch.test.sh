@@ -1061,6 +1061,18 @@ need "gh-6, commented on only by its author in any case, was auto-approved and l
   eval 'test -s "$B/gh-6/auto-approved" && phase_is gh-6 landed'
 end
 
+reset
+begin "loop: a stranger's comment in ticket.md holds the plan though it is gone from the issue"
+STUB_COMMENTERS="8:other" vb init --auto gh-8
+need "ticket.md carries the stranger's comment" grep -qF '**other** (2026-01-01):' .10x/gh-8/ticket.md
+WORKER_SCRIPT=flow lp 90
+need "loop finished" finished
+need "gh-8 is an approve item" \
+  printed '{"items":[{"id":"gh-8","need":"approve","evidence":".10x/_batch/gh-8/turn.md"}]}'
+need "no approval record" test ! -e .git/10x-batch/gh-8.approved
+need "no auto-approved" test ! -e "$B/gh-8/auto-approved"
+end
+
 reset; echo '{"close":"pr-merge"}' >.claude/10x.json; ticket t1
 begin "loop: auto mode closes with the configured close"
 vb init --auto t1
