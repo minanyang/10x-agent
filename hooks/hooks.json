@@ -1,0 +1,53 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/guard-bash.sh\"" },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/grant.js\"" }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/context-gate.js\"" }
+        ]
+      },
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-gate.js\"" }
+        ]
+      },
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/grant.js\"" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-gate.js\"" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-gate.js\"" }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "10x:code-reviewer|10x:security-reviewer",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-gate.js\"" }
+        ]
+      }
+    ]
+  }
+}

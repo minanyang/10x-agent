@@ -1,0 +1,73 @@
+#!/bin/bash
+# Run a ticket's test files in its worktree, with the runner 10x-red-proof would use.
+#
+#   10x-test <id> [test file…]
+#
+# Files are relative to the worktree root and run in the order given. With none, every test file the
+# branch changed runs: committed against the merge base, uncommitted, and untracked. A test file is one
+# `redProof.tests` names when `redProof.command` is set, else a `*.test|spec.(ts|tsx|js|jsx|mjs|cjs|mts|cts)`.
+# Runners: jest and vitest once for all files, `node --test` and `redProof.command` once per file.
+# The tree is never edited, staged or restored; a dirty tree is fine. The ticket lock is shared with
+# 10x-verify and 10x-red-proof.
+# Prints a header, the runner's output, then `pass <file>` or `FAIL <file>` per file.
+# Exit: 0 every file passed · 1 a test failed (or the runner could not start) · 2 could not run.
+
+set -uo pipefail
+# shellcheck source=../scripts/lib.sh
+source "$(dirname "$(readlink -f "$0")")/../scripts/lib.sh"
+
+id="${1:-}"; [ -n "$id" ] || die "usage: 10x-test <id> [test file…]"
+check_id "$id"
+shift
+path="$(wt_path "$id")"
+rp_config "$path"
+
+files=()
+add_file() { local f; for f in "${files[@]:-}"; do [ "$f" = "$1" ] && return 0; done; files+=("$1"); }
+
+if [ $# -gt 0 ]; then
+  for f in "$@"; do
+    [[ "$f" != /* ]] || die "$id: $f is not a path relative to the worktree root"
+    [[ "/$f/" != */../* ]] || die "$id: $f has a .. component"
+    [ -e "$path/$f" ] || die "$id: $f does not exist in the worktree"
+    add_file "$f"
+  done
+else
+  base="$(git -C "$path" merge-base "$(base_ref)" HEAD)" || die "no merge base with $(base_ref)"
+  listed=""
+  [ -z "$rp_cmd" ] || listed="$(git -C "$path" ls-files --cached --others --exclude-standard -- "${rp_globs[@]}")"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if [ -n "$rp_cmd" ]; then printf '%s\n' "$listed" | grep -qxF -- "$f" || continue
+    else [[ "$f" =~ \.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$ ]] || continue; fi
+    files+=("$f")
+  done < <({ git -C "$path" diff --name-only --no-renames --diff-filter=d "$base" -- . "$MEMORY_EXCLUDE"
+             git -C "$path" ls-files --others --exclude-standard -- . "$MEMORY_EXCLUDE"; } | sort -u)
+  [ ${#files[@]} -gt 0 ] || die "$id: no changed test file — name the files to run"
+fi
+
+take_lock "$id"
+trap release_lock EXIT
+
+runner_exec "$path"
+runner="$(test_runner "$path")"
+say "$id · 10x-test · runner: $runner · ${#files[@]} file(s)"
+
+results=()
+case "$runner" in
+  jest|vitest)
+    if [ "$runner" = jest ]; then ( cd "$path" && "${exec_cmd[@]}" jest --ci "${files[@]}" )
+    else ( cd "$path" && "${exec_cmd[@]}" vitest run "${files[@]}" ); fi
+    st=$?
+    for f in "${files[@]}"; do results+=("$st"); done ;;
+  custom)
+    for f in "${files[@]}"; do ( cd "$path" && bash -c "$(rp_fill "$f")" ); results+=("$?"); done ;;
+  *)
+    for f in "${files[@]}"; do ( cd "$path" && node --test "$f" ); results+=("$?"); done ;;
+esac
+
+rc=0
+for i in "${!files[@]}"; do
+  if [ "${results[$i]}" -eq 0 ]; then say "pass ${files[$i]}"; else say "FAIL ${files[$i]}"; rc=1; fi
+done
+exit "$rc"

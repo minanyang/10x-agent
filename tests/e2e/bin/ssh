@@ -1,0 +1,21 @@
+#!/bin/bash
+# A fake ssh for GIT_SSH_COMMAND: runs git-upload-pack / git-receive-pack on the bare repo $E2E_ORIGIN, whatever
+# the remote path says. GIT_PROTOCOL arrives through the environment, as git sets it for ssh.
+set -euo pipefail
+: "${E2E_ORIGIN:?E2E_ORIGIN is not set}"
+# Options before the host; the ones that take a value are skipped with it.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -[bcDEeFIiJLlmOopQRSWw]) shift 2 ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+[ $# -ge 2 ] || { echo "fake ssh: no command" >&2; exit 255; }
+cmd="${!#}"
+read -r service _ <<<"$cmd"
+case "$service" in
+  git-upload-pack) exec git upload-pack "$E2E_ORIGIN" ;;
+  git-receive-pack) exec git receive-pack "$E2E_ORIGIN" ;;
+  *) echo "fake ssh: unsupported command: $cmd" >&2; exit 255 ;;
+esac

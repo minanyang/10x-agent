@@ -1,0 +1,324 @@
+#!/bin/bash
+# Build a cold reviewer's starting material in one place, so the review opens with one Read
+# and one parallel batch instead of many one-slice-per-turn reads.
+#
+#   10x-review-packet <id>            full packet: the whole branch
+#   10x-review-packet <id> --fixes    fixes packet: only the commits made after the last full review
+#
+# review.md is a sequence of "## Round <n> — full" and "## Round <n> — fixes" sections.
+#
+# The full packet writes .10x/<id>/review.diff (merge base...HEAD, generated files and lockfiles
+# excluded) and .10x/<id>/review-packet.md (tree identity, convention files, changed files
+# with line counts, stat, commits, the last verify summary), and records the reviewed HEAD in
+# .10x/<id>/review-head.
+#
+# --fixes writes fixes.diff and fixes-packet.md for review-head...HEAD, with the findings of the last
+# "## Round <n>" section of review.md (to the end of the file) minus its "### Fixes applied" subsection,
+# so the implementer's account of the fixes never reaches the reviewer; its "### Decisions" stay.
+# Exit 2 when review.md has no round heading or its last round is a fixes round; exit 3 when there
+# are no commits since review-head.
+#
+# Both modes leave .claude/agent-memory out of the diff, the changed-files table, the stat and the counts,
+# and list the commits that touch it, with their paths, so a memory edit is never hidden.
+#
+# Both modes write a `## Plan checks` section (`none` when empty), always against the whole branch (merge
+# base...HEAD), so cases added before the full review do not show as missing in the fixes packet: each `## Tests` case name of
+# .10x/<id>/plan.md not found in the added lines of its test file, and each `(gone)` Readers term still at
+# HEAD on a line that diff did not add (lockfiles, `generated` paths and CHANGELOG* excluded).
+# Both write `- security review: required (<reasons>)` when the packet's diff touches a bin/ script named in a
+# `Bash(<name> …)` entry of any skills/*/SKILL.md's allowed-tools, the frontmatter of a skills/*/SKILL.md or agents/*.md,
+# hooks/hooks.json, a file its commands name under ${CLAUDE_PLUGIN_ROOT}, or a file one of those scripts loads (one
+# level) by a `source "$(dirname …)/…"` or a relative `require` resolvable without running it; no such line otherwise.
+#
+# Both write a `## Relocks` section after it (`none` when .10x/<id>/relock.md is missing or empty): each entry's
+# `### Relock <n> — approved|rejected` heading; for an approved entry 10x-red-proof accepted, `git diff <the lock it
+# replaced> <its commit>` of the locked files, in a fence longer than any backtick run in it; then its reason and
+# ruling under `Written by the implementer, not verified:`.
+#
+# Both exit 2 before the gates when a file 10x-red-proof --lock locked differs at HEAD from the lock: a change to
+# a locked test is accepted only by 10x-red-proof, through a relock.
+#
+# Before anything is built, the `preReviewGates` commands from .claude/10x.json run in the
+# worktree (logs in .10x/<id>/pre-review/). The first that fails exits 1, naming it and printing
+# the log tail; no packet and no review-head are written. Fix, commit, rebuild.
+#
+# The packet holds only what the tree says. It never carries the implementer's report or a
+# summary of intent: the reviewer must not have them.
+
+set -euo pipefail
+# shellcheck source=../scripts/lib.sh
+source "$(dirname "$(readlink -f "$0")")/../scripts/lib.sh"
+
+usage="usage: 10x-review-packet <id> [--fixes]"
+id="${1:-}"; [ -n "$id" ] || die "$usage"
+check_id "$id"
+fixes=""
+case "${2:-}" in "") ;; --fixes) fixes=1 ;; *) die "$usage" ;; esac
+path="$(wt_path "$id")"
+dir="$(task_dir "$id")"
+mkdir -p "$dir"
+locked="$(lock_changed "$path")"
+[ -z "$locked" ] || die "locked file(s) changed since the lock: ${locked//$'\n'/ } — run 10x-red-proof $id (a relock is accepted there)"
+
+pre_review() { # run the preReviewGates in the worktree; the first failure exits 1
+  local n=0 c log
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    n=$((n + 1)); mkdir -p "$dir/pre-review"; log="$dir/pre-review/gate-$n.log"
+    if ! ( cd "$path" && bash -c "$c" ) </dev/null >"$log" 2>&1; then
+      say "pre-review gate failed: $c" >&2
+      tail -25 "$log" >&2
+      say "(log: $log) fix, commit and rebuild the packet" >&2
+      exit 1
+    fi
+  done < <(wt_cfg "$path" preReviewGates)
+}
+
+if [ -n "$fixes" ]; then
+  [ -f "$dir/review-head" ] || die "no $dir/review-head: build the full packet first"
+  [ -f "$dir/review.md" ] || die "no $dir/review.md: the last round's findings must be written first"
+  last="$(awk '/^## Round [0-9]+ — (full|fixes)[ \t]*$/ { l = NR ": " $0 } END { print l }' "$dir/review.md")"
+  [[ "$last" =~ ^([0-9]+):\ ##\ Round\ ([0-9]+)\ —\ (full|fixes) ]] || die "no \"## Round <n> — full|fixes\" heading in $dir/review.md"
+  round_line="${BASH_REMATCH[1]}"; round="${BASH_REMATCH[2]}"
+  [ "${BASH_REMATCH[3]}" = full ] || die "round $round in $dir/review.md is already a fixes review: its fixes are verified, not reviewed again"
+  base="$(cat "$dir/review-head")"
+  git -C "$path" merge-base --is-ancestor "$base" HEAD 2>/dev/null || die "review head ${base:0:9} is not an ancestor of HEAD"
+  if [ "$(git -C "$path" rev-parse HEAD)" = "$base" ]; then say "no fix commits since ${base:0:9}"; exit 3; fi
+  pre_review
+  diff_file="$dir/fixes.diff"
+  index="$dir/fixes-packet.md"
+else
+  base="$(git -C "$path" merge-base "$(base_ref)" HEAD)" || die "no merge base with $(base_ref)"
+  diff_file="$dir/review.diff"
+  index="$dir/review-packet.md"
+  pre_review
+  git -C "$path" rev-parse HEAD >"$dir/review-head"
+fi
+
+excludes=(':(exclude)pnpm-lock.yaml' ':(exclude)package-lock.json' ':(exclude)yarn.lock' ':(exclude)bun.lock' ':(exclude)bun.lockb' "$MEMORY_EXCLUDE")
+while IFS= read -r g; do [ -n "$g" ] && excludes+=(":(exclude)$g"); done < <(cfg generated)
+
+git -C "$path" diff "$base" HEAD -- . "${excludes[@]}" >"$diff_file"
+
+here="$(dirname "$(readlink -f "$0")")/.."
+if [ -n "$fixes" ]; then mb="$(git -C "$path" merge-base "$(base_ref)" HEAD)" || die "no merge base with $(base_ref)"; else mb="$base"; fi
+# shellcheck disable=SC2016  # JavaScript, not shell
+plan_checks="$(node -e '
+  const fs = require("fs"), { execFileSync } = require("child_process")
+  const [wt, planPath, mb, mdCheck, ...excl] = process.argv.slice(1)
+  const { blank, sections } = require(mdCheck)
+  if (!fs.existsSync(planPath)) process.exit(0)
+  const git = (args) => {
+    try { return execFileSync("git", ["-C", wt, ...args], { encoding: "utf8", maxBuffer: 1 << 30 }) }
+    catch (e) { if (e.status === 1) return ""; throw e }
+  }
+  // Added lines per file of merge base..HEAD: their text, and their line numbers at HEAD.
+  const added = new Map()
+  let file = null, n = 0, header = false
+  for (const l of git(["-c", "core.quotePath=false", "diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", mb, "HEAD"]).split("\n")) {
+    if (l.startsWith("diff --git ")) { header = true; file = null; continue }
+    if (header && l.startsWith("+++ ")) { file = l === "+++ /dev/null" ? null : l.slice(6); if (file) added.set(file, { text: [], nums: new Set() }); continue }
+    const h = l.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
+    if (h) { header = false; n = Number(h[1]); continue }
+    if (!header && file && l.startsWith("+")) { const a = added.get(file); a.text.push(l.slice(1)); a.nums.add(n++) }
+  }
+  const src = fs.readFileSync(planPath, "utf8"), lines = src.split("\n"), text = blank(lines)
+  const sec = (name) => sections(src).find((s) => s.name.toLowerCase() === name.toLowerCase())
+  const unquote = (c) => c.replace(/^`+|`+$/g, "").trim()
+  const out = []
+  const tests = sec("Tests")
+  if (tests) {
+    const rows = []
+    for (let k = tests.from; k < tests.to; k++) if (text[k] !== null && /^\s*\|/.test(lines[k]) && !/^\s*\|[\s:|-]+$/.test(lines[k])) rows.push(k)
+    for (const k of rows.slice(1)) {
+      const c = lines[k].trim().replace(/^\||\|$/g, "").split("|").map((s) => s.trim())
+      const tf = unquote(c[1] || ""), name = unquote(c[2] || "")
+      if (!tf || /^[—–-]+$/.test(tf) || !name) continue
+      if (!(added.get(tf) || { text: [] }).text.some((t) => t.includes(name)))
+        out.push("- test case `" + name + "` (" + c[0] + ") is not among the lines `" + tf + "` adds")
+    }
+  }
+  const readers = sec("Readers")
+  if (readers) for (let k = readers.from; k < readers.to; k++) {
+    if (text[k] === null || !/^[-*+]\s/.test(text[k]) || !/\(gone\)\s*$/.test(lines[k])) continue
+    const m = lines[k].match(/`([^`]+)`/)
+    if (!m) continue
+    for (const r of git(["grep", "-nzF", "-e", m[1], "HEAD", "--", ".", ...excl]).split("\n")) {
+      const [p, num] = r.split("\0")
+      if (num === undefined) continue
+      const f = p.replace(/^HEAD:/, "")
+      if (!(added.get(f) && added.get(f).nums.has(Number(num)))) out.push("- gone term `" + m[1] + "` still at `" + f + ":" + num + "`")
+    }
+  }
+  console.log(out.join("\n"))
+' "$path" "$dir/plan.md" "$mb" "$here/scripts/md-check.js" "${excludes[@]}" ':(exclude,glob)**/CHANGELOG*')" || die "could not run the plan checks"
+# shellcheck disable=SC2016  # JavaScript, not shell
+security="$(node -e '
+  const path = require("path"), { execFileSync } = require("child_process")
+  const [wt, base] = process.argv.slice(1)
+  const git = (args) => {
+    try { return execFileSync("git", ["-C", wt, ...args], { encoding: "utf8", maxBuffer: 1 << 30, stdio: ["ignore", "pipe", "ignore"] }) }
+    catch (e) { return null }
+  }
+  const show = (rev, p) => git(["show", rev + ":" + p])
+  const changed = git(["-c", "core.quotePath=false", "diff", "--name-only", "--no-renames", base, "HEAD"]).split("\n").filter(Boolean)
+  const skillRe = /^skills\/[^/]+\/SKILL\.md$/
+  const fmRe = /^(?:skills\/[^/]+\/SKILL|agents\/[^/]+)\.md$/ // files whose frontmatter grants tools
+  const frontmatter = (s) => { // [1, n] of the --- block opening a file, or null
+    if (s === null) return null
+    const l = s.split("\n")
+    if (l[0].trim() !== "---") return null
+    const e = l.findIndex((x, i) => i > 0 && x.trim() === "---")
+    return e < 0 ? null : [1, e + 1]
+  }
+  // bin/<name> -> the skills whose allowed-tools grant Bash(<name> ...), at HEAD
+  const granted = new Map()
+  for (const p of (git(["ls-tree", "-r", "--name-only", "HEAD", "--", "skills"]) || "").split("\n").filter((p) => skillRe.test(p))) {
+    const s = show("HEAD", p), fm = frontmatter(s)
+    if (!fm) continue
+    for (const m of s.split("\n").slice(0, fm[1]).join("\n").matchAll(/Bash\(([^\s:)]+)/g)) {
+      const b = "bin/" + m[1]
+      if (git(["cat-file", "-e", "HEAD:" + b]) === null) continue
+      if (!granted.has(b)) granted.set(b, [])
+      if (!granted.get(b).includes(p)) granted.get(b).push(p)
+    }
+  }
+  const hooks = show("HEAD", "hooks/hooks.json") || ""
+  const registered = new Set([...hooks.matchAll(/\$\{CLAUDE_PLUGIN_ROOT\}\/([^"\x27\s\\]+)/g)].map((m) => m[1]))
+  // file -> the granted scripts and registered hooks that load it by a static, script-relative path; one level only
+  const isFile = (p) => [base, "HEAD"].some((rev) => git(["cat-file", "-t", rev + ":" + p]) === "blob\n")
+  const loaded = new Map()
+  for (const loader of new Set([...granted.keys(), ...registered])) {
+    const s = show("HEAD", loader)
+    if (s === null) continue
+    const found = [] // [path relative to the loader, is a require]
+    for (const m of s.matchAll(/(?:^|\s)(?:source|\.) +"(?:\$\(dirname "\$\(readlink -f "\$0"\)"\)|\$\(dirname "\$0"\))(\/[^$`"]*)"/gm)) found.push([m[1], false])
+    for (const m of s.matchAll(/\brequire\(\s*(?:path\.)?join\(\s*__dirname\s*((?:,\s*(?:\x27[^\x27]*\x27|"[^"]*")\s*)+)\)\s*\)/g))
+      found.push([[...m[1].matchAll(/\x27([^\x27]*)\x27|"([^"]*)"/g)].map((l) => l[1] ?? l[2]).join("/"), true])
+    for (const m of s.matchAll(/\brequire\(\s*(\x27|")(\.\.?\/[^\x27"]*)\1\s*\)/g)) found.push([m[2], true])
+    for (const [rel, req] of found) {
+      const p = path.posix.normalize(path.posix.join(path.posix.dirname(loader), rel))
+      if (p === ".." || p.startsWith("../")) continue
+      const f = [p, ...(req ? [p + ".js", p + ".json", p + "/index.js"] : [])].find(isFile)
+      if (f === undefined) continue
+      if (!loaded.has(f)) loaded.set(f, [])
+      if (!loaded.get(f).includes(loader)) loaded.get(f).push(loader)
+    }
+  }
+  const reasons = []
+  for (const f of changed) {
+    if (granted.has(f)) reasons.push(f + " is in the allowed-tools of " + granted.get(f).join(", "))
+    if (f === "hooks/hooks.json") reasons.push(f + " changed")
+    if (registered.has(f)) reasons.push(f + " is registered in hooks/hooks.json")
+    if (fmRe.test(f)) {
+      const was = frontmatter(show(base, f)), now = frontmatter(show("HEAD", f))
+      const meets = (r, a, n) => r && n > 0 && a <= r[1] && a + n - 1 >= r[0]
+      for (const h of (git(["diff", "-U0", "--no-color", "--no-ext-diff", base, "HEAD", "--", f]) || "").matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
+        const [a, b, c, d] = [h[1], h[2] ?? "1", h[3], h[4] ?? "1"].map(Number)
+        if (meets(was, a, b) || meets(now, c, d)) { reasons.push(f + ": frontmatter changed"); break }
+      }
+    }
+    if (loaded.has(f)) reasons.push(f + " is loaded by " + loaded.get(f).join(", "))
+  }
+  console.log(reasons.join("; "))
+' "$path" "$base")" || die "could not work out whether a security review is required"
+
+relocks=""
+lock_shas="$(lock_commits "$path")"
+locked_files=()
+while IFS= read -r f; do [ -z "$f" ] || locked_files+=("$f"); done < <(lock_files "$path")
+while IFS=$'\x1f' read -r n verdict commit reason ruling; do
+  [ -z "$relocks" ] || relocks+=$'\n'
+  relocks+="### Relock $n — ${verdict:-no ruling}"$'\n\n'
+  sha=""; prev=""
+  if [ "$verdict" = approved ] && [ -n "$commit" ] && sha="$(git -C "$path" rev-parse -q --verify "$commit^{commit}")"; then
+    # Only a relock red-proof accepted is a lock commit; the one before it is the lock it replaced.
+    prev="$(printf '%s\n' "$lock_shas" | awk -v s="$sha" '$0 == s { print p; exit } { p = $0 }')"
+  fi
+  if [ -n "$prev" ]; then
+    d="$(git -C "$path" --literal-pathspecs diff "$prev" "$sha" -- "${locked_files[@]}")"
+    # A fence longer than any backtick run in the diff, so a ``` line in a test cannot close it.
+    ticks="$(printf '%s\n' "$d" | awk '{ while (match($0, /`+/)) { if (RLENGTH > m) m = RLENGTH; $0 = substr($0, RSTART + RLENGTH) } } END { print (m < 3 ? 3 : m + 1) }')"
+    fence="$(printf '%*s' "$ticks" '' | tr ' ' '`')"
+    relocks+="${fence}diff"$'\n'"$d"$'\n'"$fence"$'\n\n'
+  fi
+  relocks+="Written by the implementer, not verified:"$'\n\n'"- reason: $reason"$'\n'"- ruling: $ruling"$'\n'
+done < <(relock_entries "$dir/relock.md")
+relocks="${relocks%$'\n'}"
+
+{
+  if [ -n "$fixes" ]; then echo "# Review packet — $id, fix commits"; else echo "# Review packet — $id"; fi
+  echo
+  echo "- worktree: \`$path\`"
+  echo "- branch: \`$(git -C "$path" rev-parse --abbrev-ref HEAD)\` at \`$(git -C "$path" rev-parse --short HEAD)\`"
+  if [ -n "$fixes" ]; then echo "- range: round $round reviewed up to \`${base:0:9}\`; this diff is the commits since"
+  else echo "- base: \`$(base_ref)\`, merge base \`${base:0:9}\`"; fi
+  echo "- uncommitted paths: $(git -C "$path" status --porcelain | wc -l | tr -d ' ') (the diff is committed work only)"
+  [ -z "$security" ] || echo "- security review: required ($security)"
+  echo
+  echo "## Plan checks"
+  echo
+  echo "${plan_checks:-none}"
+  echo
+  echo "## Relocks"
+  echo
+  echo "${relocks:-none}"
+  echo
+  echo "## Read these first, in one message"
+  echo
+  echo "- \`$diff_file\` — the full diff ($(wc -l <"$diff_file" | tr -d ' ') lines)"
+  [ -f "$dir/plan.md" ] && echo "- \`$dir/plan.md\` — what the ticket asks for"
+  for f in CLAUDE.md AGENTS.md; do [ -f "$path/$f" ] && echo "- \`$path/$f\`"; done
+  if [ -d "$path/.claude/rules" ]; then
+    for f in "$path"/.claude/rules/*.md; do [ -f "$f" ] && echo "- \`$f\`"; done
+  fi
+  echo
+  echo "## Changed files — read whole, batched in parallel"
+  echo
+  echo "| status | lines | path |"
+  echo "|---|---|---|"
+  git -C "$path" diff --name-status --no-renames "$base" HEAD -- . "${excludes[@]}" | while IFS=$'\t' read -r st f; do
+    if [ "$st" = D ]; then echo "| D | — | \`$f\` (deleted) |"
+    else echo "| $st | $(wc -l <"$path/$f" | tr -d ' ') | \`$path/$f\` |"; fi
+  done
+  echo
+  memory="$(git -C "$path" -c core.quotePath=false log --format='%h %s' --name-status "$base"..HEAD -- .claude/agent-memory)"
+  if [ -n "$memory" ]; then
+    echo "## Agent memory — left out of the diff, paths only"
+    echo
+    echo "Only the \`chore(memory): commit agent memory written during $id\` commit should touch these; any other commit that does is a finding."
+    echo
+    echo '```'
+    echo "$memory"
+    echo '```'
+    echo
+  fi
+  echo "## Stat (generated files and lockfiles included here, excluded from the diff)"
+  echo
+  echo '```'
+  git -C "$path" diff --stat "$base" HEAD -- . "$MEMORY_EXCLUDE"
+  echo '```'
+  echo
+  echo "## Commits"
+  echo
+  echo '```'
+  git -C "$path" log --oneline "$base"..HEAD
+  echo '```'
+  if [ -n "$fixes" ]; then
+    echo
+    echo "## Round $round findings — what these commits respond to"
+    echo
+    awk -v from="$round_line" 'NR <= from { next } /^### Fixes applied/ { skip = 1; next } skip && /^###? / { skip = 0 } !skip' "$dir/review.md"
+  fi
+  if [ -f "$dir/verify/summary.txt" ]; then
+    echo
+    echo "## Last 10x-verify run — gates already ran; do not re-run them"
+    echo
+    echo '```'
+    cat "$dir/verify/summary.txt"
+    echo '```'
+  fi
+} >"$index"
+
+say "$index"
+say "  diff: $(wc -l <"$diff_file" | tr -d ' ') lines · changed files: $(git -C "$path" diff --name-only "$base" HEAD -- . "${excludes[@]}" | wc -l | tr -d ' ')"

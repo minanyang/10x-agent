@@ -1,0 +1,109 @@
+#!/bin/bash
+# Refuse a plan that is vague, misses the places its change touches, or names a test nobody can find, before
+# the user sees it.
+#
+#   10x-plan-check <id>
+#
+# Reads .10x/<id>/plan.md and names every line at fault, then exits 1, for: a criterion (`- AC<n> — …` under
+# `## Acceptance criteria`) with no `## Tests` row; a `## Tests` table missing or whose header is not
+# `| AC | Test file | Case |`; a phrase of references/banned-phrases.txt outside code; `## Readers` missing or
+# empty, or an entry with no nested hit line; a `## Tool behaviour relied on` entry with no fenced block whose
+# first line is `$ <command>` and which holds an output line; `## Overlap` missing or empty. A plan whose
+# `## Files` has more than 3 top-level bullets also needs the cold read saved as a non-blank regular file
+# .10x/<id>/cold-read.md: without it, the last line printed is `cold read required: <n> files — …`, exit 1.
+# Exit 0 when none of these holds, 2 on a usage error or a missing plan.md.
+
+set -euo pipefail
+# shellcheck source=../scripts/lib.sh
+source "$(dirname "$(readlink -f "$0")")/../scripts/lib.sh"
+
+[ $# -eq 1 ] || die "usage: 10x-plan-check <id>"
+id="$1"
+check_id "$id"
+plan="$(task_dir "$id")/plan.md"
+[ -f "$plan" ] || die "no plan at $plan"
+here="$(dirname "$(readlink -f "$0")")/.."
+banned="$here/references/banned-phrases.txt"
+[ -f "$banned" ] || die "$banned is missing"
+
+# shellcheck disable=SC2016  # JavaScript, not shell
+node -e '
+  const fs = require("fs")
+  const [planPath, bannedPath, mdCheck, coldPath] = process.argv.slice(1)
+  const { blank, bannedHits, sections, criteria } = require(mdCheck)
+  const src = fs.readFileSync(planPath, "utf8"), lines = src.split("\n"), text = blank(lines)
+  const secs = sections(src)
+  const sec = (name) => secs.find((s) => s.name.toLowerCase() === name.toLowerCase())
+  const problems = []
+  const bad = (line, m) => problems.push({ line, m })
+  const top = (k) => text[k] !== null && /^[-*+]\s/.test(text[k])
+  const nested = (k) => text[k] !== null && /^\s+[-*+]\s/.test(text[k])
+
+  const tests = sec("Tests"), covered = new Set()
+  if (!tests) bad(0, "no \"## Tests\" section")
+  else {
+    const rows = []
+    for (let k = tests.from; k < tests.to; k++) if (text[k] !== null && /^\s*\|/.test(lines[k])) rows.push(k)
+    const cells = (k) => lines[k].trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim())
+    if (!rows.length) bad(tests.line, "\"## Tests\" has no table")
+    else if (cells(rows[0]).join("|") !== "AC|Test file|Case") bad(rows[0] + 1, "Tests table header must be \"| AC | Test file | Case |\"")
+    else {
+      for (const k of rows.slice(1)) for (const m of cells(k)[0].matchAll(/AC(\d+)/g)) covered.add("AC" + m[1])
+      for (const c of criteria(src)) if (!covered.has(c.id)) bad(c.line, c.id + " has no row in \"## Tests\"")
+    }
+  }
+
+  for (const h of bannedHits(text, bannedPath)) bad(h.line, "banned phrase \"" + h.phrase + "\"")
+
+  const readers = sec("Readers")
+  if (!readers) bad(0, "no \"## Readers\" section")
+  else {
+    const entries = []
+    for (let k = readers.from; k < readers.to; k++) if (top(k)) entries.push(k)
+    if (!entries.length) bad(readers.line, "\"## Readers\" is empty")
+    entries.forEach((k, i) => {
+      const end = i + 1 < entries.length ? entries[i + 1] : readers.to
+      let hit = false
+      for (let j = k + 1; j < end; j++) if (nested(j)) hit = true
+      if (!hit) bad(k + 1, "Readers entry has no hit line (a nested `- <path>` bullet, or `- no hits`)")
+    })
+  }
+
+  const tools = sec("Tool behaviour relied on")
+  if (tools) {
+    const entries = []
+    for (let k = tools.from; k < tools.to; k++) if (top(k)) entries.push(k)
+    entries.forEach((k, i) => {
+      const end = i + 1 < entries.length ? entries[i + 1] : tools.to
+      let ok = false
+      for (let j = k + 1; j < end; j++) {
+        const f = lines[j].match(/^\s*(`{3,}|~{3,})/)
+        if (!f) continue
+        const close = new RegExp("^\\s*\\" + f[1][0] + "{" + f[1].length + ",}\\s*$"), body = []
+        for (j++; j < end && !close.test(lines[j]); j++) body.push(lines[j])
+        if (/^\s*\$\s+\S/.test(body[0] || "") && body.slice(1).some((s) => s.trim() !== "")) ok = true
+      }
+      if (!ok) bad(k + 1, "tool claim has no fenced `$ <command>` block with the output seen")
+    })
+  }
+
+  const overlap = sec("Overlap")
+  if (!overlap) bad(0, "no \"## Overlap\" section")
+  else if (!lines.slice(overlap.from, overlap.to).some((s) => s.trim() !== "")) bad(overlap.line, "\"## Overlap\" is empty")
+
+  const files = sec("Files")
+  let bound = 0
+  if (files) for (let k = files.from; k < files.to; k++) if (top(k)) bound++
+  let cold = false
+  try { cold = fs.lstatSync(coldPath).isFile() && fs.readFileSync(coldPath, "utf8").trim() !== "" } catch {}
+  const coldMissing = bound > 3 && !cold
+
+  if (!problems.length && !coldMissing) { console.log("plan ok: " + planPath); process.exit(0) }
+  if (problems.length) {
+    problems.sort((a, b) => a.line - b.line)
+    console.log(planPath + ":")
+    for (const p of problems) console.log(p.line ? "  line " + p.line + ": " + p.m : "  " + p.m)
+  }
+  if (coldMissing) console.log("cold read required: " + bound + " files — spawn Explore before showing the plan")
+  process.exit(1)
+' "$plan" "$banned" "$here/scripts/md-check.js" "$(task_dir "$id")/cold-read.md"

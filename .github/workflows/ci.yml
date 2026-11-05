@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: gates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # Pinned on both runners: the preinstalled and Homebrew versions disagree on what they report.
+      - name: Install shellcheck 0.11.0
+        run: |
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64) asset=linux.x86_64; sum=b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6 ;;
+            macOS-ARM64) asset=darwin.aarch64; sum=339b930feb1ea764467013cc1f72d09cd6b869ebf1013296ba9055ab2ffbd26f ;;
+            *) echo "no pinned shellcheck for $RUNNER_OS-$RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          f="shellcheck-v0.11.0.$asset.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$f" "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/$f"
+          echo "$sum  $RUNNER_TEMP/$f" | shasum -a 256 -c -
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/shellcheck-v0.11.0" >>"$GITHUB_PATH"
+          "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" --version
+      - name: Install the claude CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.300
+      - name: Gates
+        run: scripts/ci-gates.sh "${{ github.event.pull_request.base.sha }}"

@@ -1,0 +1,5 @@
+#!/bin/bash
+# greet [name] — print a greeting.
+# shellcheck source=../scripts/lib.sh
+source "$(dirname "$(readlink -f "$0")")/../scripts/lib.sh"
+greet_line "${1:-world}"

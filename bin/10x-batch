@@ -1,0 +1,821 @@
+#!/usr/bin/env node
+// Schedules, records and lands a batch of tickets, each through `/10x:work` and `/10x:close` in its own
+// `claude -p` worker; /10x:batch relays the workers' turns and the user's answers.
+//
+//   10x-batch init <ticket>... [--search "<query>"]
+//   10x-batch run <id> plan|reply|implement|close
+//   10x-batch status
+//   10x-batch drop <id>
+//   10x-batch approve <id>
+//
+// State lives in the main checkout's .10x/_batch/: `tickets` (one id per line, board order), `board.md`, and per
+// ticket <id>/: runs.tsv (`n kind session session_kind start end exit pid`, times in epoch ms, end and exit empty
+// while a run is open), <nn>-<kind>.jsonl (the worker's stream-json), <nn>-denials.tsv (`<tool>\t<command or tool>`),
+// turn.md (every assistant text of the latest run), reply.md (the next reply, moved to <nn>-reply.md once sent),
+// <nn>-landed (the base and sha a close run left) and `dropped`. A phase is never stored: every command derives it from these files and .10x/<id>/.
+//
+// `init` resolves every argument before writing anything (`<n>`, `#<n>`, `gh-<n>`, an issue URL of origin's repo,
+// `--search` once, or an id with .10x/<id>/ticket.md) and exits 2 naming each one that resolves to no ticket. An
+// argument that resolves to no ticket, is a valid id and not a number is tried as a version of .10x/roadmap.md
+// (scripts/roadmap.js): it resolves to the ticket ids of its row, each resolved as an argument, except a gh-<n> whose
+// issue is closed, which is left out; a row with no id exits 2. The version names go to `versions`, the closed ids to
+// `versions.closed`. A previous batch is archived to .10x/_batch.<YYYYMMDD-HHMMSS>/ when every ticket of it is
+// settled, else refused; the approval records of the tickets it takes in are deleted.
+// `run` starts one worker turn and waits for it: ${TENX_BATCH_CLAUDE:-claude} -p … --output-format stream-json
+// --verbose, a plan session with --permission-mode default and writes allowed under .10x/<id>/ only, implement and close
+// with --permission-mode acceptEdits, a new --session-id for plan, implement and close, --resume of the ticket's latest
+// session for reply, the prompt after `--`. It refuses a plan, implement or close that `status` does not list, a reply
+// to a planning session while a plan-session run that started before the ticket's latest run ended is open, and a
+// reply whose first line starts with `/`. SIGTERM and SIGINT are forwarded to the worker. It prints
+// `phase: <phase>` and `board: <path>`, exit 0 once the worker ran, whatever its exit code.
+// `status` writes and prints the board, then the actions allowed now: `plan <id>`, `implement <id>`, `close <id>`,
+// `answer <id>[ approvable]`, and `done` when every ticket is settled. `status` and `init` also set the State of each
+// recorded version whose ids are all landed or closed to `Done <YYYY-MM-DD>` (local date) in .10x/roadmap.md,
+// changing nothing else, once, and print `roadmap: <version> Done <date>` when they do.
+// `approve` records the user's approval of a draft plan that passes 10x-plan-check: the sha256 of plan.md with its
+// Status line blanked, in <git common dir>/10x-batch/<id>.approved, printing the plan's path and short hash, out of a plan session's reach (it may write
+// only under .10x/<id>/, and Claude Code refuses edits under .git/); a worker of an approved ticket, which can run
+// commands, could still write it. A plan session's ticket is `approved`
+// only when plan.md says so and that record matches it. It then writes the approve reply to reply.md.
+// `drop` sends SIGTERM to the ticket's open worker (a process whose command line holds the run's session), marks it
+// dropped and rewrites the board.
+//
+// A permission denial does not decide a phase: a run that exits 0 is judged by the ticket's files, and its denials are
+// added to the evidence and listed under `## Needs the human`. A ticket waiting on its implement session shows the
+// `asked` texts of evidence.md; each approved entry of .10x/<id>/relock.md adds `relocked: <reason>` to the evidence
+// and, until the ticket lands, under `## Needs the human`.
+//
+// Config (.claude/10x.json): `close`, `worktreeDir`, `batch.parallel` (implement runs at once, an integer ≥ 1,
+// default 1). Refusals print `10x-batch: <why>` and exit 2.
+
+const { execFileSync, spawn, spawnSync } = require('node:child_process')
+const { createHash, randomUUID } = require('node:crypto')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const md = require(path.join(__dirname, '..', 'scripts', 'md-check.js'))
+const roadmap = require(path.join(__dirname, '..', 'scripts', 'roadmap.js'))
+
+const ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const KINDS = ['plan', 'reply', 'implement', 'close']
+const HEADER = ['n', 'kind', 'session', 'session_kind', 'start', 'end', 'exit', 'pid']
+const RUNNING = { plan: 'planning', implement: 'implementing', close: 'closing' }
+const SETTLED = new Set(['landed', 'pr-open', 'failed', 'held', 'dropped'])
+const USAGE = 'usage: 10x-batch init <ticket>... [--search "<query>"] | run <id> plan|reply|implement|close | status | drop <id> | approve <id>'
+const APPROVE_REPLY = 'Approved. Set `Status: approved` in plan.md and stop; the implementation runs in a new session.\n'
+
+const die = (msg) => {
+  process.stderr.write(`10x-batch: ${msg}\n`)
+  process.exit(2)
+}
+
+let common
+try {
+  common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+} catch {
+  die('not in a git repository')
+}
+const ROOT = path.dirname(common)
+const config = readConfig()
+const CLOSE = config.close == null ? 'pr' : String(config.close)
+const WT_DIR = path.join(ROOT, typeof config.worktreeDir === 'string' && config.worktreeDir ? config.worktreeDir : '.worktrees')
+const PARALLEL = parallel()
+const TENX_DIR = path.join(ROOT, '.10x')
+const BATCH = path.join(TENX_DIR, '_batch')
+const TICKETS = path.join(BATCH, 'tickets')
+const BOARD = path.join(BATCH, 'board.md')
+const VERSIONS = path.join(BATCH, 'versions')
+const CLOSED = path.join(BATCH, 'versions.closed')
+const ROADMAP = path.join(TENX_DIR, 'roadmap.md')
+for (const p of [TENX_DIR, BATCH]) if (fs.lstatSync(p, { throwIfNoEntry: false })?.isSymbolicLink()) die(`${p} is a symlink`)
+
+const tdir = (id) => path.join(TENX_DIR, id)
+const approval = (id) => path.join(common, '10x-batch', `${id}.approved`)
+// What the user approved: plan.md with its Status line blanked, so the worker's `Status: approved` keeps the hash.
+const planHash = (text) => createHash('sha256').update(text.replace(/^Status:.*$/m, 'Status:')).digest('hex')
+const bdir = (id) => {
+  const d = path.join(BATCH, id)
+  if (fs.lstatSync(d, { throwIfNoEntry: false })?.isSymbolicLink()) die(`${d} is a symlink`)
+  return d
+}
+const rel = (p) => path.relative(ROOT, p)
+const pad = (n) => String(n).padStart(2, '0')
+const flat = (s) => String(s).replace(/[\r\n]+/g, ' ')
+
+function readOr(f) {
+  try {
+    return fs.readFileSync(f, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+function readConfig() {
+  const f = path.join(ROOT, '.claude', '10x.json')
+  const text = readOr(f)
+  if (text === null) return {}
+  try {
+    const c = JSON.parse(text)
+    return c && typeof c === 'object' ? c : {}
+  } catch (e) {
+    die(`cannot read ${f}: ${e.message}`)
+  }
+}
+
+function parallel() {
+  const v = config.batch && typeof config.batch === 'object' ? config.batch.parallel : undefined
+  if (v == null) return 1
+  if (!Number.isInteger(v) || v < 1) die(`batch.parallel must be an integer ≥ 1, got ${JSON.stringify(v)}`)
+  return v
+}
+
+// A fresh file renamed into place, so a concurrent reader never sees half of it; `wx` never follows a planted path.
+function put(file, text) {
+  const tmp = `${file}.${process.pid}.tmp`
+  fs.writeFileSync(tmp, text, { flag: 'wx' })
+  fs.renameSync(tmp, file)
+}
+
+function git(argv) {
+  try {
+    return execFileSync('git', ['-C', ROOT, ...argv], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    return null
+  }
+}
+
+// ---------------------------------------------------------------- init
+
+function init(argv) {
+  const items = []
+  let searched = false
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== '--search') items.push({ arg: argv[i] })
+    else if (searched || i + 1 >= argv.length) die(USAGE)
+    else {
+      searched = true
+      items.push({ search: argv[++i] })
+    }
+  }
+  if (!items.length) die(USAGE)
+  const ids = []
+  const errors = []
+  const versions = []
+  const closed = []
+  const add = (id) => ids.includes(id) || ids.push(id)
+  for (const it of items) {
+    if (it.search === undefined) {
+      const r = resolve(it.arg)
+      const v = r.id || !ID.test(it.arg) || /^[0-9]+$/.test(it.arg) ? null : version(it.arg)
+      if (r.id) add(r.id)
+      else if (!v) errors.push(`no ticket: ${it.arg}${r.why ? ` (${flat(r.why)})` : ''}`)
+      else if (v.why) errors.push(v.why)
+      else {
+        versions.includes(it.arg) || versions.push(it.arg)
+        for (const id of v.ids) {
+          const m = roadmap.GH.test(id) ? id.slice(3) : null
+          const s = m ? issueState(m) : {}
+          if (s.why) errors.push(`no ticket: ${it.arg} → ${id} (${flat(s.why)})`)
+          else if (s.state === 'CLOSED') closed.includes(id) || closed.push(id)
+          else {
+            const t = resolve(id)
+            if (t.id) add(t.id)
+            else errors.push(`no ticket: ${it.arg} → ${id}${t.why ? ` (${flat(t.why)})` : ''}`)
+          }
+        }
+      }
+      continue
+    }
+    const label = `--search ${JSON.stringify(it.search)}`
+    const s = search(it.search)
+    if (s.why) {
+      errors.push(`no ticket: ${label} (${flat(s.why)})`)
+      continue
+    }
+    for (const n of s.numbers) {
+      const r = fetchGh(n)
+      if (r.id) add(r.id)
+      else errors.push(`no ticket: ${label} → #${n} (${flat(r.why)})`)
+    }
+  }
+  if (errors.length) {
+    for (const e of errors) process.stderr.write(`10x-batch: ${e}\n`)
+    process.exit(2)
+  }
+  if (fs.existsSync(BATCH)) {
+    if (fs.existsSync(TICKETS)) {
+      const open = deriveAll(readIds()).filter((r) => !SETTLED.has(r.phase))
+      if (open.length) die(`the batch in ${rel(BATCH)} has unsettled tickets: ${open.map((r) => `${r.id} (${r.phase})`).join(', ')}`)
+    }
+    archive()
+  }
+  // A ticket batched again needs a new approval.
+  for (const id of ids) fs.rmSync(approval(id), { force: true })
+  fs.mkdirSync(BATCH, { recursive: true })
+  put(TICKETS, ids.join('\n') + '\n')
+  if (versions.length) put(VERSIONS, versions.join('\n') + '\n')
+  if (closed.length) put(CLOSED, closed.join('\n') + '\n')
+  report(deriveAll(ids))
+}
+
+// The ticket ids of roadmap version <v>, { why } for a version that cannot be batched, or null when the roadmap has no
+// such version.
+function version(v) {
+  const text = readOr(ROADMAP)
+  if (text === null) return null
+  const p = roadmap.parse(text, roadmap.ticketTest(TENX_DIR))
+  const row = p.rows.find((r) => r.version === v)
+  if (!row) return null
+  if (p.faults.length) return { why: `no ticket: ${v} (${rel(ROADMAP)}:${p.faults[0].line}: ${p.faults[0].why})` }
+  if (!row.ids.length) return { why: `version ${v} has no ticket ids: run /10x:roadmap tickets ${v}` }
+  return { ids: row.ids }
+}
+
+// The state gh reports for issue <n> of origin's repo: { state } or { why }.
+function issueState(n) {
+  const o = originRepo()
+  if (o.why) return o
+  const r = spawnSync('gh', ['issue', 'view', n, '--repo', `github.com/${o.repo}`, '--json', 'state'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  if (r.error) return { why: r.error.code === 'ENOENT' ? '`gh` is not installed' : r.error.message }
+  if (r.status !== 0) return { why: (r.stderr || 'gh failed').trim() }
+  try {
+    return { state: String(JSON.parse(r.stdout).state) }
+  } catch {
+    return { why: `gh answered with something other than JSON: ${r.stdout.trim().slice(0, 200)}` }
+  }
+}
+
+function resolve(a) {
+  let m
+  if ((m = /^(?:#|gh-)?([1-9][0-9]*)$/.exec(a))) return fetchGh(m[1])
+  if ((m = /^https:\/\/github\.com\/([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)\/issues\/([1-9][0-9]*)\/?$/.exec(a))) {
+    const o = originRepo()
+    if (o.why) return o
+    if (m[1].toLowerCase() !== o.repo.toLowerCase()) return { why: `not an issue of origin's repo ${o.repo}` }
+    return fetchGh(m[2])
+  }
+  if (!ID.test(a)) return { why: 'neither a ticket id, an issue number nor an issue URL' }
+  if (!fs.existsSync(path.join(tdir(a), 'ticket.md'))) return { why: `no ${rel(path.join(tdir(a), 'ticket.md'))}` }
+  return { id: a }
+}
+
+// gh-<n>, its ticket.md kept when it exists, else written by 10x-ticket.
+function fetchGh(n) {
+  const id = `gh-${n}`
+  const ticket = path.join(tdir(id), 'ticket.md')
+  if (fs.existsSync(ticket)) return { id }
+  const existed = fs.existsSync(tdir(id))
+  const step = (bin, argv) => {
+    const r = spawnSync(path.join(__dirname, bin), argv, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    return r.status === 0 ? null : (r.stderr || r.stdout || `${bin} failed`).trim() || `${bin} failed`
+  }
+  const why = step('10x-worktree', ['init', id]) || step('10x-ticket', ['github', n, '--out', ticket])
+  if (!why) return { id }
+  if (!existed) fs.rmSync(tdir(id), { recursive: true, force: true })
+  return { why }
+}
+
+function search(q) {
+  const o = originRepo()
+  if (o.why) return o
+  const r = spawnSync('gh', ['issue', 'list', '--repo', `github.com/${o.repo}`, '--state', 'open', '--search', q, '--json', 'number', '--limit', '100'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  if (r.error) return { why: r.error.code === 'ENOENT' ? '`gh` is not installed' : r.error.message }
+  if (r.status !== 0) return { why: (r.stderr || 'gh failed').trim() }
+  let numbers
+  try {
+    numbers = JSON.parse(r.stdout).map((i) => String(i.number))
+  } catch {
+    return { why: `gh answered with something other than a JSON list: ${r.stdout.trim().slice(0, 200)}` }
+  }
+  numbers = numbers.filter((n) => /^[1-9][0-9]*$/.test(n))
+  return numbers.length ? { numbers } : { why: 'no open issue matches' }
+}
+
+// OWNER/REPO of origin on github.com, derived as 10x-ticket derives it.
+function originRepo() {
+  let url = git(['remote', 'get-url', 'origin'])
+  if (url === null) return { why: 'no origin remote' }
+  url = url.replace(/\/$/, '').replace(/\.git$/, '')
+  let host = ''
+  let p = ''
+  const scheme = /^[^:/]+:\/\/([^/]*)\/(.*)$/.exec(url)
+  const scp = /^(?:[^/:]+@)?([^/:]+):(.+)$/.exec(url)
+  if (scheme) [host, p] = [scheme[1].replace(/^.*@/, '').replace(/:.*$/, ''), scheme[2]]
+  else if (scp) [host, p] = [scp[1], scp[2]]
+  if (host !== 'github.com') return { why: `needs a github.com origin, got '${url}'` }
+  const repo = p.split('/').slice(-2).join('/')
+  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) return { why: 'cannot derive OWNER/REPO from origin' }
+  return { repo }
+}
+
+const today = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+
+function archive() {
+  const d = new Date()
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  let to = `${BATCH}.${stamp}`
+  for (let k = 2; fs.existsSync(to); k++) to = `${BATCH}.${stamp}-${k}`
+  fs.renameSync(BATCH, to)
+}
+
+// ---------------------------------------------------------------- records and phases
+
+function readIds() {
+  const text = readOr(TICKETS)
+  if (text === null) die('no batch: run `10x-batch init <tickets>` first')
+  return text
+    .split('\n')
+    .map((s) => s.trim())
+    .filter((s) => ID.test(s))
+}
+
+function runs(id) {
+  const text = readOr(path.join(bdir(id), 'runs.tsv'))
+  if (text === null) return []
+  return text
+    .split('\n')
+    .slice(1)
+    .filter(Boolean)
+    .map((l) => {
+      const c = l.split('\t')
+      return Object.fromEntries(HEADER.map((h, i) => [h, c[i] ?? '']))
+    })
+}
+
+function writeRuns(id, rows) {
+  put(path.join(bdir(id), 'runs.tsv'), [HEADER, ...rows.map((r) => HEADER.map((h) => r[h]))].map((c) => c.join('\t') + '\n').join(''))
+}
+
+function alive(pid) {
+  const n = Number(pid)
+  if (!Number.isInteger(n) || n <= 0) return false
+  try {
+    process.kill(n, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// The run's worker, not a pid runs.tsv was made to name: a live process whose arguments hold the run's session uuid
+// right after --session-id or --resume.
+function ours(r) {
+  if (!alive(r.pid) || !UUID.test(r.session)) return false
+  const ps = spawnSync('ps', ['-o', 'command=', '-p', String(Number(r.pid))], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  const args = ps.status === 0 ? ps.stdout.trim().split(/\s+/) : []
+  return args.some((a, k) => (a === '--session-id' || a === '--resume') && args[k + 1] === r.session)
+}
+
+const isOpen = (r) => r.end === '' && r.exit === ''
+
+// The shared path of two `## Files` lists: equal, or one a directory (`…/`) holding the other.
+function overlap(a, b) {
+  for (const x of a)
+    for (const y of b) {
+      if (x === y || (x.endsWith('/') && y.startsWith(x))) return x
+      if (y.endsWith('/') && x.startsWith(y)) return y
+    }
+  return null
+}
+
+function deriveAll(ids) {
+  const rows = []
+  for (const id of ids) {
+    const r = derive(id)
+    if (!r.implemented && ['queued', 'waiting', 'approved'].includes(r.phase)) {
+      for (const e of rows) {
+        if (e.phase !== 'failed' && e.phase !== 'held') continue
+        const p = overlap(r.files, e.files)
+        if (p) {
+          Object.assign(r, { phase: 'held', evidence: `shares ${p} with ${e.id} (${e.phase})`, approvable: false })
+          break
+        }
+      }
+    }
+    rows.push(r)
+  }
+  // An approved ticket whose files a later ticket already holds — implemented, not landed — waits for it to land.
+  rows.forEach((r, i) => {
+    if (r.phase !== 'approved' || r.implemented) return
+    for (const e of rows.slice(i + 1)) {
+      if (!e.implemented || ['landed', 'pr-open', 'dropped'].includes(e.phase)) continue
+      const p = overlap(r.files, e.files)
+      if (p) {
+        Object.assign(r, { phase: 'held', evidence: `shares ${p} with ${e.id} (${e.phase}), which implemented first` })
+        break
+      }
+    }
+  })
+  // An approved relock changed a locked test: shown in every phase but dropped.
+  for (const r of rows) {
+    r.relocked = r.phase === 'dropped' ? [] : relocks(r.id)
+    if (r.relocked.length) r.evidence = [r.evidence, ...r.relocked.map((x) => `relocked: ${x}`)].filter(Boolean).join('; ')
+  }
+  return rows
+}
+
+function derive(id) {
+  const rs = runs(id)
+  const last = rs[rs.length - 1]
+  const planText = readOr(path.join(tdir(id), 'plan.md'))
+  const turn = path.join(bdir(id), 'turn.md')
+  const row = {
+    id,
+    last,
+    session: last ? last.session : '',
+    files: planText ? md.files(planText) : [],
+    implemented: rs.some((r) => r.session_kind === 'implement'),
+    approvable: false,
+  }
+  const set = (phase, evidence = fs.existsSync(turn) ? rel(turn) : '') =>
+    Object.assign(row, { phase, evidence: row.denied ? [evidence, row.denied].filter(Boolean).join('; ') : evidence })
+  if (fs.existsSync(path.join(bdir(id), 'dropped'))) return set('dropped', 'dropped by the user')
+  if (!last) return set('queued', '')
+  const open = isOpen(last)
+  if (open && alive(last.pid)) return set(RUNNING[last.session_kind] || 'planning')
+  const exit = open ? '?' : last.exit
+  const tag = `run ${pad(last.n)} (${last.kind})`
+  const denied = (readOr(path.join(bdir(id), `${pad(last.n)}-denials.tsv`)) || '').split('\n').filter(Boolean)
+  if (denied.length) row.denied = `${tag} denied: ${denied.map((d) => d.split('\t').pop()).join('; ')}`
+  if (exit !== '0') return set('failed', exit === '?' ? `${tag} ended without an exit code` : `${tag} exited ${exit}`)
+
+  if (last.session_kind === 'plan') {
+    if (planText && /^Status:\s*approved\s*$/m.test(planText)) {
+      if ((readOr(approval(id)) || '').trim() === planHash(planText)) return set('approved')
+      return set('failed', `plan.md says approved, but no approval of yours matches it (10x-batch approve ${id})`)
+    }
+    row.approvable = !!planText && /^Status:\s*draft\s*$/m.test(planText) && planCheck(id)
+    return set('waiting')
+  }
+  if (last.session_kind === 'implement') {
+    const gate = failedGate(id)
+    if (gate) return set('failed', `gate FAIL: ${gate}`)
+    const ev = evidence(id, planText)
+    if (ev.open && !ev.asked) return set('failed', `open criterion: ${ev.open}`)
+    if (ev.asked) return set('waiting', [...ev.asks, fs.existsSync(turn) ? rel(turn) : ''].filter(Boolean).join('; '))
+    return set('implemented')
+  }
+  if (last.session_kind === 'close') {
+    if (!fs.existsSync(path.join(WT_DIR, id))) return set('landed', (readOr(path.join(bdir(id), `${pad(last.n)}-landed`)) || '').trim() || landedOn())
+    const url = CLOSE === 'pr' ? prOpen(id) : null
+    if (url) return set('pr-open', url)
+    return set('failed', `close did not land${fs.existsSync(turn) ? `; see ${rel(turn)}` : ''}`)
+  }
+  return set('failed', `${tag} has an unknown session kind '${last.session_kind}'`)
+}
+
+function planCheck(id) {
+  return spawnSync(path.join(__dirname, '10x-plan-check'), [id], { cwd: ROOT, stdio: 'ignore' }).status === 0
+}
+
+// The first gate whose result column is FAIL in verify/summary.txt; its log tail lines are indented and skipped.
+function failedGate(id) {
+  const text = readOr(path.join(tdir(id), 'verify', 'summary.txt')) || ''
+  for (const l of text.split('\n')) {
+    if (/^\s/.test(l) || l.length < 34) continue
+    if (/^FAIL\s/.test(l.slice(29))) return l.slice(0, 28).trim()
+  }
+  return null
+}
+
+// The first criterion of the plan that evidence.md leaves neither met, deferred nor asked, and the texts of its asked
+// lines; the last line for a criterion wins, as in hooks/stop-gate.js.
+function evidence(id, planText) {
+  const crit = planText ? md.criteria(planText).map((c) => `AC${c.n}`) : []
+  const raw = (readOr(path.join(tdir(id), 'evidence.md')) || '').split('\n')
+  const outside = md.blank(raw, 0)
+  const state = new Map()
+  const asks = []
+  raw.forEach((line, k) => {
+    if (outside[k] === null) return
+    const ac = /^\s*[-*+]\s+(AC\d+)\s*[—–:-]\s*(.*?)\s*$/.exec(line)
+    if (ac) state.set(ac[1], ac[2])
+    else if (/^\s*[-*+]\s+asked:\s*\S/.test(line)) asks.push(line.replace(/^\s*[-*+]\s+asked:\s*/, '').trim())
+  })
+  let open = null
+  for (const ac of crit) {
+    const v = state.get(ac)
+    if (v === undefined) open ??= `${ac} has no line`
+    else if (/^asked:/.test(v)) asks.push(v.replace(/^asked:\s*/, ''))
+    else if (!/^(met|deferred):\s*\S/.test(v)) open ??= `${ac} — ${v}`
+  }
+  return { open, asked: asks.length > 0, asks }
+}
+
+// The reasons of relock.md's approved entries (`## Relock <n>` with a `reason` and an `approved` ruling), in order.
+function relocks(id) {
+  const raw = (readOr(path.join(tdir(id), 'relock.md')) || '').split('\n')
+  const outside = md.blank(raw, 0)
+  const entries = []
+  raw.forEach((line, k) => {
+    if (outside[k] === null) return
+    if (/^##\s+Relock\b/.test(line)) entries.push({})
+    const m = /^\s*[-*+]\s+(reason|ruling):\s*(.*?)\s*$/.exec(line)
+    if (m && entries.length) entries[entries.length - 1][m[1]] = m[2]
+  })
+  return entries.filter((e) => e.reason && /^approved\s*[—:-]/i.test(e.ruling || '')).map((e) => e.reason)
+}
+
+function landedOn() {
+  let base = typeof config.base === 'string' && config.base ? config.base : ''
+  if (!base) {
+    if (git(['show-ref', '--verify', '--quiet', 'refs/remotes/origin/develop']) !== null) base = 'develop'
+    else base = (git(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']) || '').replace(/^origin\//, '') || 'main'
+  }
+  const remote = git(['show-ref', '--verify', '--quiet', `refs/remotes/origin/${base}`]) !== null
+  const ref = remote && CLOSE !== 'local' ? `refs/remotes/origin/${base}` : `refs/heads/${base}`
+  const sha = git(['rev-parse', '--short', ref])
+  return sha ? `landed on ${base} at ${sha}` : `landed (worktree removed)`
+}
+
+// The PR url when `10x-land check <id>` prints `pr: OPEN <url>`; only that line is read.
+function prOpen(id) {
+  const r = spawnSync(path.join(__dirname, '10x-land'), ['check', id], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  const m = /^pr: OPEN (\S+)$/m.exec(r.stdout || '')
+  return m ? m[1] : null
+}
+
+// ---------------------------------------------------------------- schedule
+
+// Why ticket <i> cannot implement now, or null: an earlier unsettled ticket whose `## Files` are not known yet, or a
+// shared path with a running ticket or an earlier one that has not landed.
+function implementBlock(rows, i) {
+  const r = rows[i]
+  const unknown = rows.slice(0, i).find((e) => !SETTLED.has(e.phase) && !e.files.length)
+  if (unknown) return `${unknown.id} (${unknown.phase}) has no plan with ## Files yet`
+  for (const [j, e] of rows.entries()) {
+    if (j === i) continue
+    const busy = Object.values(RUNNING).includes(e.phase) || (j < i && !['landed', 'pr-open', 'dropped'].includes(e.phase))
+    const p = busy && overlap(r.files, e.files)
+    if (p) return `${r.id} shares ${p} with ${e.id} (${e.phase})`
+  }
+  return null
+}
+
+function actions(rows) {
+  const out = []
+  const planning = rows.some((r) => r.phase === 'planning')
+  for (const r of rows) if (r.phase === 'queued') out.push(`plan ${r.id}`)
+  for (const r of rows)
+    if (r.phase === 'waiting' && (r.last.session_kind !== 'plan' || !planning)) out.push(`answer ${r.id}${r.approvable ? ' approvable' : ''}`)
+  let slots = PARALLEL - implementing(rows).length
+  rows.forEach((r, i) => {
+    if (r.phase !== 'approved' || slots <= 0 || implementBlock(rows, i)) return
+    out.push(`implement ${r.id}`)
+    slots--
+  })
+  const c = closeCandidate(rows)
+  if (c) out.push(`close ${c.id}`)
+  if (rows.every((r) => SETTLED.has(r.phase))) out.push('done')
+  return out
+}
+
+// The tickets holding a batch.parallel slot: implementing, or waiting on a question of their implement session.
+const implementing = (rows) => rows.filter((r) => r.phase === 'implementing' || (r.phase === 'waiting' && r.last.session_kind === 'implement'))
+
+function closeCandidate(rows) {
+  if (rows.some((r) => r.phase === 'closing')) return null
+  const i = rows.findIndex((r) => r.phase === 'implemented')
+  return i >= 0 && rows.slice(0, i).every((r) => SETTLED.has(r.phase)) ? rows[i] : null
+}
+
+// Why `status` does not list <kind> for ticket <i>.
+function refusal(rows, i, kind) {
+  const r = rows[i]
+  const want = { plan: 'queued', implement: 'approved', close: 'implemented' }[kind]
+  if (r.phase !== want) return `${kind} ${r.id} refused: ${r.id} is ${r.phase}, not ${want}`
+  if (kind === 'implement') {
+    const open = implementing(rows).map((e) => `${e.id} (${e.phase})`)
+    if (open.length >= PARALLEL) return `implement ${r.id} refused: batch.parallel is ${PARALLEL} and ${open.join(', ')} ${open.length > 1 ? 'hold' : 'holds'} the slots`
+    const why = implementBlock(rows, i)
+    if (why) return `implement ${r.id} refused: ${why}`
+    return `implement ${r.id} refused: earlier approved tickets take the batch.parallel (${PARALLEL}) slots`
+  }
+  if (kind === 'close') {
+    const closing = rows.find((e) => e.phase === 'closing')
+    if (closing) return `close ${r.id} refused: ${closing.id} is closing`
+    const early = rows.slice(0, i).find((e) => !SETTLED.has(e.phase))
+    if (early) return `close ${r.id} refused: the earlier ticket ${early.id} is ${early.phase}`
+  }
+  return `${kind} ${r.id} refused`
+}
+
+// ---------------------------------------------------------------- board
+
+function board(rows) {
+  const cell = (s) => (s ? flat(s).replace(/\|/g, '\\|') : '—')
+  const lines = ['# Batch board', '', '| # | Ticket | Phase | Session | Outcome | Evidence |', '|---|---|---|---|---|---|']
+  rows.forEach((r, i) =>
+    lines.push(`| ${i + 1} | ${r.id} | ${r.phase} | ${cell(r.session)} | ${SETTLED.has(r.phase) ? r.phase : '—'} | ${cell(r.evidence)} |`),
+  )
+  const need = []
+  for (const r of rows) {
+    if (r.phase === 'waiting') need.push(`- ${r.id} — waiting${r.approvable ? ', plan approvable' : ''}: ${r.evidence ? flat(r.evidence) : 'no turn recorded'}`)
+    else if (r.phase === 'failed' || r.phase === 'held') need.push(`- ${r.id} — ${r.phase}: ${flat(r.evidence)}`)
+    else if (r.phase === 'pr-open') need.push(`- ${r.id} — merge ${flat(r.evidence)}`)
+    else if (r.denied) need.push(`- ${r.id} — ${r.phase}: ${flat(r.denied)}`)
+    if (r.phase !== 'landed') for (const x of r.relocked) need.push(`- ${r.id} — relocked: ${flat(x)}`)
+  }
+  lines.push('', '## Needs the human', ...(need.length ? need : ['- none']))
+  return lines.join('\n') + '\n'
+}
+
+function writeBoard(rows) {
+  fs.mkdirSync(BATCH, { recursive: true })
+  const text = board(rows)
+  put(BOARD, text)
+  return text
+}
+
+// Not in writeBoard(): background `run`s call that concurrently, and roadmap.md has no lock.
+function report(rows) {
+  const text = writeBoard(rows)
+  const acts = actions(rows)
+  const done = markDone(rows)
+  process.stdout.write(text + (acts.length ? '\n' + acts.join('\n') + '\n' : '') + done.map((l) => l + '\n').join(''))
+}
+
+// Sets `Done <date>` on each recorded version whose ids have all landed or were closed at init; a version already done,
+// gone from the roadmap, or in a roadmap that fails its check is left as it is.
+function markDone(rows) {
+  const names = (readOr(VERSIONS) || '').split('\n').map((s) => s.trim()).filter((s) => ID.test(s))
+  if (!names.length || fs.lstatSync(ROADMAP, { throwIfNoEntry: false })?.isFile() !== true) return []
+  let text = readOr(ROADMAP)
+  const p = text === null ? null : roadmap.parse(text, roadmap.ticketTest(TENX_DIR))
+  if (!p || p.faults.length) return []
+  const landed = new Set([...rows.filter((r) => r.phase === 'landed').map((r) => r.id), ...(readOr(CLOSED) || '').split('\n').map((s) => s.trim())])
+  const date = today()
+  const out = []
+  for (const v of names) {
+    const row = p.rows.find((r) => r.version === v)
+    if (!row || roadmap.isDone(row.state) || !row.ids.length || !row.ids.every((id) => landed.has(id))) continue
+    text = roadmap.setState(text, v, `Done ${date}`)
+    out.push(`roadmap: ${v} Done ${date}`)
+  }
+  if (out.length) put(ROADMAP, text)
+  return out
+}
+
+// ---------------------------------------------------------------- commands
+
+function status() {
+  report(deriveAll(readIds()))
+}
+
+function ticketRows(id) {
+  const ids = readIds()
+  if (!ids.includes(id)) die(`${id} is not in this batch (${rel(TICKETS)})`)
+  const rows = deriveAll(ids)
+  return { ids, rows, i: ids.indexOf(id) }
+}
+
+async function run(argv) {
+  if (argv.length !== 2 || !KINDS.includes(argv[1])) die(USAGE)
+  const [id, kind] = argv
+  const { ids, rows, i } = ticketRows(id)
+  const r = rows[i]
+  if (r.phase === 'dropped') die(`${kind} ${id} refused: ${id} is dropped`)
+  let prompt, flag, session, sessionKind
+  const replyFile = path.join(bdir(id), 'reply.md')
+  if (kind === 'reply') {
+    if (!r.last) die(`reply ${id} refused: ${id} has no session to reply to`)
+    if (Object.values(RUNNING).includes(r.phase)) die(`reply ${id} refused: ${id} is ${r.phase}; its run must end first`)
+    // The round this ticket's question came from: plan-session runs that started before its latest run ended. Replies of
+    // one round run together; `status` holds the next round until they have all ended.
+    const ended = Number(r.last.end) || Infinity
+    const planning = rows.filter((e) => e.phase === 'planning' && Number(e.last.start) < ended).map((e) => e.id)
+    if (r.last.session_kind === 'plan' && planning.length)
+      die(`reply ${id} refused: a planning round is answered once every planning run of it has ended (${planning.join(', ')} still planning)`)
+    if (fs.lstatSync(replyFile, { throwIfNoEntry: false })?.isFile() !== true) die(`reply ${id} refused: no reply at ${rel(replyFile)}`)
+    prompt = fs.readFileSync(replyFile, 'utf8')
+    if (!prompt.trim()) die(`reply ${id} refused: ${rel(replyFile)} is empty`)
+    // A worker would take it as a typed command, with that skill's grants.
+    if (prompt.trimStart().startsWith('/')) die(`reply ${id} refused: ${rel(replyFile)} starts with '/'`)
+    if (!UUID.test(r.last.session)) die(`reply ${id} refused: its latest session '${flat(r.last.session)}' is not a session id`)
+    ;[flag, session, sessionKind] = ['--resume', r.last.session, r.last.session_kind]
+  } else {
+    if (!actions(rows).includes(`${kind} ${id}`)) die(refusal(rows, i, kind))
+    prompt = kind === 'close' ? `/10x:close ${id}` : `/10x:work ${id}`
+    ;[flag, session, sessionKind] = ['--session-id', randomUUID(), kind]
+  }
+
+  const prev = runs(id)
+  const n = prev.length + 1
+  const nn = pad(n)
+  fs.mkdirSync(bdir(id), { recursive: true })
+  const log = path.join(bdir(id), `${nn}-${kind}.jsonl`)
+  const turn = path.join(bdir(id), 'turn.md')
+  put(turn, '')
+  const out = fs.openSync(log, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW)
+  const bin = process.env.TENX_BATCH_CLAUDE || 'claude'
+  // A plan session writes only under .10x/<id>/, so nothing a ticket says is edited and run before its plan is approved;
+  // implement and close run in acceptEdits. The prompt goes after `--`, so a reply starting with `-` is never an option.
+  const own = `.10x/${id}/**`
+  const perm = sessionKind === 'plan' ? ['--permission-mode', 'default', '--allowedTools', `Write(${own})`, `Edit(${own})`] : ['--permission-mode', 'acceptEdits']
+  const child = spawn(bin, ['-p', '--output-format', 'stream-json', '--verbose', ...perm, flag, session, '--', prompt], {
+    cwd: ROOT,
+    stdio: ['ignore', out, 'inherit'],
+    // `claude -p` stops background tasks 10 minutes after the last turn unless this is 0, which would kill
+    // /10x:work's delegated engineer agents; a value the user set is kept.
+    env: { ...process.env, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS ?? '0' },
+  })
+  fs.closeSync(out)
+  const exited = new Promise((res) => {
+    child.on('error', (e) => {
+      process.stderr.write(`10x-batch: cannot start ${bin}: ${e.message}\n`)
+      res(null)
+    })
+    child.on('exit', (code, sig) => res(code ?? 128 + (os.constants.signals[sig] || 0)))
+  })
+  const row = { n: String(n), kind, session, session_kind: sessionKind, start: String(Date.now()), end: '', exit: '', pid: child.pid ? String(child.pid) : '' }
+  writeRuns(id, [...prev, row])
+  // The board shows the running worker and its session for as long as it runs.
+  writeBoard(deriveAll(ids))
+  if (kind === 'reply' && child.pid) fs.renameSync(replyFile, path.join(bdir(id), `${nn}-reply.md`))
+  for (const s of ['SIGTERM', 'SIGINT'])
+    process.on(s, () => {
+      try {
+        child.kill(s)
+      } catch {}
+    })
+
+  const code = await exited
+  const { texts, denials } = readLog(log)
+  put(turn, texts.length ? texts.join('\n\n') + '\n' : '')
+  put(path.join(bdir(id), `${nn}-denials.tsv`), denials.map((d) => d + '\n').join(''))
+  const now = runs(id).map((x) => (x.n === row.n ? { ...x, end: String(Date.now()), exit: String(code ?? 127) } : x))
+  writeRuns(id, now)
+  // Where it landed, read now: the base moves on as later tickets land.
+  if (kind === 'close' && code === 0 && !fs.existsSync(path.join(WT_DIR, id))) put(path.join(bdir(id), `${nn}-landed`), landedOn() + '\n')
+  const after = deriveAll(ids)
+  writeBoard(after)
+  if (code === null) process.exit(2)
+  process.stdout.write(`phase: ${after[i].phase}\nboard: ${BOARD}\n`)
+  process.exit(0)
+}
+
+// Every top-level assistant text block of a stream-json log, in order, and its permission denials.
+function readLog(file) {
+  const texts = []
+  const denied = new Map()
+  for (const l of (readOr(file) || '').split('\n')) {
+    if (!l.trim()) continue
+    let ev
+    try {
+      ev = JSON.parse(l)
+    } catch {
+      continue
+    }
+    if (ev.type === 'assistant' && ev.parent_tool_use_id == null && Array.isArray(ev.message?.content)) {
+      for (const c of ev.message.content) if (c.type === 'text' && typeof c.text === 'string' && c.text.trim()) texts.push(c.text.trim())
+    } else if (ev.type === 'result') {
+      for (const d of ev.permission_denials || []) denied.set(d.tool_use_id, d)
+    }
+  }
+  const denials = [...denied.values()].map((d) => {
+    const tool = flat(d.tool_name || 'unknown')
+    return `${tool}\t${flat((d.tool_input && d.tool_input.command) || tool)}`
+  })
+  return { texts, denials }
+}
+
+function drop(argv) {
+  if (argv.length !== 1) die(USAGE)
+  const [id] = argv
+  const { ids } = ticketRows(id)
+  fs.mkdirSync(bdir(id), { recursive: true })
+  put(path.join(bdir(id), 'dropped'), `${new Date().toISOString()}\n`)
+  const last = runs(id).at(-1)
+  if (last && isOpen(last) && ours(last)) {
+    try {
+      process.kill(Number(last.pid), 'SIGTERM')
+    } catch {}
+  }
+  writeBoard(deriveAll(ids))
+  process.stdout.write(`dropped: ${id}\nboard: ${BOARD}\n`)
+}
+
+function approve(argv) {
+  if (argv.length !== 1) die(USAGE)
+  const [id] = argv
+  const { rows, i } = ticketRows(id)
+  const r = rows[i]
+  if (r.phase !== 'waiting' || !r.approvable) die(`approve ${id} refused: ${id} is ${r.phase}${r.phase === 'waiting' ? ' and its plan.md is not a draft that passes 10x-plan-check' : ''}`)
+  fs.mkdirSync(path.dirname(approval(id)), { recursive: true })
+  const hash = planHash(fs.readFileSync(path.join(tdir(id), 'plan.md'), 'utf8'))
+  put(approval(id), hash + '\n')
+  put(path.join(bdir(id), 'reply.md'), APPROVE_REPLY)
+  process.stdout.write(`approved: ${id}\nplan: ${rel(path.join(tdir(id), 'plan.md'))} sha256 ${hash.slice(0, 12)}\nreply: ${rel(path.join(bdir(id), 'reply.md'))}\n`)
+}
+
+const [cmd, ...args] = process.argv.slice(2)
+if (cmd === 'init') init(args)
+else if (cmd === 'run') run(args)
+else if (cmd === 'status' && !args.length) status()
+else if (cmd === 'drop') drop(args)
+else if (cmd === 'approve') approve(args)
+else die(USAGE)

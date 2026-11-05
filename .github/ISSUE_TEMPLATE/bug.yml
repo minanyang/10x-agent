@@ -1,0 +1,44 @@
+name: Bug report
+description: Something does not work as documented
+labels:
+  - bug
+body:
+  - type: textarea
+    id: what-happens
+    attributes:
+      label: What happens
+      description: The observed problem, in one or two sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `…`
+        2. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Plugin version or commit sha.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: One checkable line per criterion, numbered AC1, AC2, …
+      placeholder: |
+        - [ ] AC1 — …
+        - [ ] AC2 — …
+    validations:
+      required: true

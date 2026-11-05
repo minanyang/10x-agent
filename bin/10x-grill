@@ -1,0 +1,17 @@
+#!/bin/bash
+# Print the shared grill (references/grill.md) that /10x:open and /10x:work follow before a draft or a plan.
+#
+#   10x-grill
+#
+# A skill may not Read a file outside the workspace without a prompt, and the plugin root is outside it: an
+# allowed-tools Read rule takes only an absolute path, which differs per install. A granted script can print it.
+# Exit 0 with the grill on stdout, 2 on any argument or when the file is missing.
+
+set -euo pipefail
+# shellcheck source=../scripts/lib.sh
+source "$(dirname "$(readlink -f "$0")")/../scripts/lib.sh"
+
+[ $# -eq 0 ] || die "usage: 10x-grill"
+grill="$(dirname "$(readlink -f "$0")")/../references/grill.md"
+[ -f "$grill" ] || die "$grill is missing"
+cat "$grill"

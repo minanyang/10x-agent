@@ -1,0 +1,133 @@
+#!/usr/bin/env node
+// Reads, checks and writes the main checkout's .10x/roadmap.md, so /10x:roadmap never edits it by hand. The
+// format is scripts/roadmap.js's.
+//
+//   10x-roadmap show [<version>]
+//   10x-roadmap check
+//   10x-roadmap apply
+//   10x-roadmap link <version> <item n> <id>
+//
+// `show` prints, for each version (or only <version>), `<version> — <state>` and `  <n>. <item>` per item (`\|` as
+// `|`), then, without <version>, `next: <version|none>`: the first row whose state is not `Done <YYYY-MM-DD>`. With no
+// roadmap.md it prints `no roadmap: .10x/roadmap.md` and exits 0. It never writes.
+// `check` validates .10x/roadmap.draft.md: on a missing header or separator row, a missing, repeated or misplaced
+// section, an empty, invalid, all-digits or duplicate Version, an empty Why this order, an empty item, or a
+// `## Decided against` entry with no reason, it prints `<file>:<line>: <why>` for each fault and exits 1. Else it
+// prints `not kept: <line>` for each table row and section entry of roadmap.md that the draft does not keep
+// byte-identical (a row anywhere in the table, an entry in its own section), then `new id: <version> <id>` for each
+// ticket id in a draft row that roadmap.md's row of that version does not have, so an id the user never saw is shown before `apply`.
+// `apply` runs `check`; on a fault it writes nothing. Else it renames the draft to roadmap.md and prints
+// `roadmap: <abs path>` and the `not kept:` and `new id:` lines, computed against roadmap.md as it was.
+// `link` appends `` `<id>` `` to item <n> of <version>, through a temp file and a rename; it refuses an item that has
+// an id, an id that is neither `gh-<n>` nor one with .10x/<id>/ticket.md, and a symlinked roadmap.md.
+//
+// Refusals — an unknown version, a roadmap.md that fails check's rules, a missing draft — print
+// `10x-roadmap: <why>` and exit 2.
+
+const { execFileSync } = require('node:child_process')
+const fs = require('node:fs')
+const path = require('node:path')
+const rm = require(path.join(__dirname, '..', 'scripts', 'roadmap.js'))
+
+const USAGE = 'usage: 10x-roadmap show [<version>] | check | apply | link <version> <item n> <id>'
+
+const die = (msg) => {
+  process.stderr.write(`10x-roadmap: ${msg}\n`)
+  process.exit(2)
+}
+
+let common
+try {
+  common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+} catch {
+  die('not in a git repository')
+}
+const ROOT = path.dirname(common)
+const TENX_DIR = path.join(ROOT, '.10x')
+const FILE = path.join(TENX_DIR, 'roadmap.md')
+const DRAFT = path.join(TENX_DIR, 'roadmap.draft.md')
+const rel = (p) => path.relative(ROOT, p)
+const lstat = (p) => fs.lstatSync(p, { throwIfNoEntry: false })
+const isTicket = rm.ticketTest(TENX_DIR)
+if (lstat(TENX_DIR)?.isSymbolicLink()) die(`${rel(TENX_DIR)} is a symlink`)
+
+const flat = (s) => String(s).replace(/[\r\n]+/g, ' ')
+const shown = (s) => flat(s).replace(/\\\|/g, '|')
+
+// roadmap.md parsed, or null when it does not exist; exit 2 when it fails check's rules.
+function current() {
+  const st = lstat(FILE)
+  if (!st) return null
+  if (!st.isFile()) die(`${rel(FILE)} is not a regular file`)
+  const p = rm.parse(fs.readFileSync(FILE, 'utf8'), isTicket)
+  if (p.faults.length) {
+    for (const f of p.faults) process.stderr.write(`10x-roadmap: ${rel(FILE)}:${f.line}: ${f.why}\n`)
+    process.exit(2)
+  }
+  return p
+}
+
+function show(argv) {
+  if (argv.length > 1) die(USAGE)
+  const p = current()
+  if (!p) return void process.stdout.write(`no roadmap: ${rel(FILE)}\n`)
+  const rows = argv.length ? p.rows.filter((r) => r.version === argv[0]) : p.rows
+  if (argv.length && !rows.length) die(`no version ${argv[0]} in ${rel(FILE)}`)
+  const out = []
+  for (const r of rows) {
+    out.push(`${r.version} — ${shown(r.state)}`)
+    for (const it of r.items) out.push(`  ${it.n}. ${shown(it.text)}`)
+  }
+  if (!argv.length) out.push(`next: ${p.rows.find((r) => !rm.isDone(r.state))?.version ?? 'none'}`)
+  process.stdout.write(out.join('\n') + '\n')
+}
+
+// The draft's text and the `not kept:` lines against roadmap.md; exit 1 naming each fault.
+function check() {
+  const st = lstat(DRAFT)
+  if (!st) die(`no draft: ${rel(DRAFT)}`)
+  if (!st.isFile()) die(`${rel(DRAFT)} is not a regular file`)
+  const text = fs.readFileSync(DRAFT, 'utf8')
+  const p = rm.parse(text, isTicket)
+  if (p.faults.length) {
+    process.stdout.write(p.faults.map((f) => `${rel(DRAFT)}:${f.line}: ${f.why}\n`).join(''))
+    process.exit(1)
+  }
+  const st2 = lstat(FILE)
+  if (st2 && !st2.isFile()) die(`${rel(FILE)} is not a regular file`)
+  const old = st2 ? fs.readFileSync(FILE, 'utf8') : ''
+  const had = new Set(rm.parse(old, isTicket).rows.flatMap((r) => r.ids.map((id) => `${r.version} ${id}`)))
+  const added = p.rows.flatMap((r) => r.ids.map((id) => `${r.version} ${id}`).filter((k) => !had.has(k)).map((k) => `new id: ${k}`))
+  return [...(st2 ? rm.notKept(old, text).map((l) => `not kept: ${flat(l.text)}`) : []), ...added]
+}
+
+function apply() {
+  const lines = check()
+  fs.renameSync(DRAFT, FILE)
+  process.stdout.write([`roadmap: ${FILE}`, ...lines].join('\n') + '\n')
+}
+
+function link(argv) {
+  if (argv.length !== 3 || !/^[1-9][0-9]*$/.test(argv[1])) die(USAGE)
+  const [version, n, id] = [argv[0], Number(argv[1]), argv[2]]
+  if (!isTicket(id)) die(`${flat(id)} is neither gh-<n> nor an id with ${rel(TENX_DIR)}/<id>/ticket.md`)
+  if (lstat(FILE)?.isSymbolicLink()) die(`${rel(FILE)} is a symlink`)
+  const p = current()
+  if (!p) die(`no roadmap: ${rel(FILE)}`)
+  const row = p.rows.find((r) => r.version === version)
+  if (!row) die(`no version ${flat(version)} in ${rel(FILE)}`)
+  const it = row.items[n - 1]
+  if (!it) die(`version ${version} has no item ${n}`)
+  if (it.id) die(`item ${n} of ${version} already has ${it.id}`)
+  const tmp = `${FILE}.${process.pid}.tmp`
+  fs.writeFileSync(tmp, rm.link(p.lines.join('\n'), version, n, id), { flag: 'wx' })
+  fs.renameSync(tmp, FILE)
+  process.stdout.write(`linked: ${version} ${n}. ${shown(it.text)} \`${id}\`\n`)
+}
+
+const [cmd, ...args] = process.argv.slice(2)
+if (cmd === 'show') show(args)
+else if (cmd === 'check' && !args.length) process.stdout.write(check().map((l) => l + '\n').join(''))
+else if (cmd === 'apply' && !args.length) apply()
+else if (cmd === 'link') link(args)
+else die(USAGE)

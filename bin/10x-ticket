@@ -1,0 +1,142 @@
+#!/usr/bin/env node
+// Print a ticket as Markdown, for /10x:work to turn into a plan, or write it to --out <path>; or list the
+// issue types of origin's repo, one per line, for /10x:open to classify a draft with.
+//
+//   10x-ticket github <number | issue URL> [--out <path>]     uses `gh` (run `gh auth login` once)
+//   10x-ticket issue-types                                     nothing for a repo without them (user repos)
+//
+// The issue is read from origin's repo only (a URL must name it), so the ticket, its branch, its PR and
+// any comment posted to it all concern the same repo.
+//
+// --out must name this issue's .10x/gh-<number>/ticket.md in the main checkout, so a permission rule for
+// `10x-ticket *` cannot be stretched into a write anywhere else.
+
+const { execFileSync } = require('node:child_process')
+const { lstatSync, realpathSync, renameSync, writeFileSync } = require('node:fs')
+const { basename, dirname, join, resolve } = require('node:path')
+
+const args = process.argv.slice(2)
+const [source, ref] = args
+const die = (msg, code = 2) => {
+  process.stderr.write(`10x-ticket: ${msg}\n`)
+  process.exit(code)
+}
+const usage = 'usage: 10x-ticket github <number|url> [--out <path>]\n       10x-ticket issue-types'
+if (source === 'issue-types') {
+  if (args.length !== 1) die(usage)
+  issueTypes()
+  process.exit(0)
+}
+const ok = args.length === 2 || (args.length === 4 && args[2] === '--out' && args[3])
+if (!source || !ref || !ok) die(usage)
+const outPath = args[3]
+
+if (source !== 'github') die(`unknown source '${source}' (github, issue-types)`)
+const ticket = github(ref)
+if (!outPath) process.stdout.write(ticket.text)
+else {
+  // A fresh file renamed into place: an existing symlink or hard link at the target is replaced, never written through.
+  const tmp = `${ticket.target}.${process.pid}.tmp`
+  try {
+    writeFileSync(tmp, ticket.text, { flag: 'wx' })
+    renameSync(tmp, ticket.target)
+  } catch (e) {
+    die(`cannot write ${outPath}: ${e.message}`)
+  }
+}
+
+// The resolved ticket.md for --out, or die before anything is fetched: its directory must be the main checkout's
+// .10x/gh-<number>/, with no symlink at .10x or gh-<number>.
+function outTarget(number) {
+  let common
+  try {
+    common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    die('not in a git repository')
+  }
+  const dir = join(dirname(common), '.10x', `gh-${number}`)
+  for (const p of [dirname(dir), dir]) {
+    let st
+    try {
+      st = lstatSync(p)
+    } catch {
+      die(`${p} does not exist: run \`10x-worktree init gh-${number}\` first`)
+    }
+    if (!st.isDirectory()) die(`${p} is a symlink or not a directory`)
+  }
+  let parent
+  try {
+    parent = realpathSync(dirname(resolve(outPath)))
+  } catch {
+    parent = ''
+  }
+  if (parent !== realpathSync(dir) || basename(outPath) !== 'ticket.md') die(`--out must be ${join(dir, 'ticket.md')}, got '${outPath}'`)
+  return join(parent, 'ticket.md')
+}
+
+// OWNER/REPO of origin, which must be on github.com (the same host and path rules as 10x-land).
+function originRepo(form) {
+  let url
+  try {
+    url = execFileSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    die('no origin remote')
+  }
+  url = url.replace(/\/$/, '').replace(/\.git$/, '')
+  let host = '', path
+  const scheme = /^[^:/]+:\/\/([^/]*)\/(.*)$/.exec(url)
+  const scp = /^(?:[^/:]+@)?([^/:]+):(.+)$/.exec(url)
+  if (scheme) [host, path] = [scheme[1].replace(/^.*@/, '').replace(/:.*$/, ''), scheme[2]]
+  else if (scp) [host, path] = [scp[1], scp[2]]
+  if (host !== 'github.com') die(`${form} needs a github.com origin, got '${url}'`)
+  const repo = path.split('/').slice(-2).join('/')
+  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) die('cannot derive OWNER/REPO from origin')
+  return repo
+}
+
+function github(ref) {
+  const repo = originRepo('github')
+  const url = /^https:\/\/github\.com\/([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)\/issues\/([1-9][0-9]*)\/?$/.exec(ref)
+  if (url && url[1].toLowerCase() !== repo.toLowerCase())
+    die(`issue ${ref} is not in origin's repo ${repo}; describe the task in words instead`)
+  const number = url ? url[2] : /^[1-9][0-9]*$/.test(ref) ? ref : die(`'${ref}' is neither an issue number nor an issue URL of ${repo}`)
+  const target = outPath ? outTarget(number) : null
+  const raw = gh(['issue', 'view', number, '--repo', `github.com/${repo}`, '--json', 'number,title,body,url,state,labels,issueType,comments'])
+  const i = JSON.parse(raw)
+  const out = [`# ${i.title}`, '', `- source: GitHub issue #${i.number} (${i.state.toLowerCase()})`, `- url: ${i.url}`]
+  if (i.issueType) out.push(`- type: ${i.issueType.name}`)
+  if (i.labels.length) out.push(`- labels: ${i.labels.map((l) => l.name).join(', ')}`)
+  out.push('', i.body.trim() || '(no description)')
+  if (i.comments.length) {
+    out.push('', '## Comments')
+    for (const c of i.comments) out.push('', `**${c.author.login}** (${c.createdAt.slice(0, 10)}):`, '', c.body.trim())
+  }
+  return { text: out.join('\n') + '\n', target }
+}
+
+// The issue types of origin's repo, one name per line; issueTypes is null on a user's repo.
+function issueTypes() {
+  const [owner, name] = originRepo('issue-types').split('/')
+  const query = 'query($o:String!,$r:String!){repository(owner:$o,name:$r){issueTypes(first:25){nodes{name}}}}'
+  const raw = gh(['api', '--hostname', 'github.com', 'graphql', '-f', `query=${query}`, '-f', `o=${owner}`, '-f', `r=${name}`])
+  let repo
+  try {
+    repo = JSON.parse(raw).data.repository
+  } catch {
+    die(`gh answered with something other than a GraphQL result: ${raw.trim().slice(0, 200)}`)
+  }
+  if (!repo) die(`gh found no repository ${owner}/${name}`)
+  for (const n of repo.issueTypes?.nodes || []) process.stdout.write(`${n.name}\n`)
+}
+
+// gh's stdout, or die naming why gh failed.
+function gh(argv) {
+  try {
+    return execFileSync('gh', argv, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (e) {
+    const err = String(e.stderr || e.message).trim()
+    if (e.code === 'ENOENT') die('`gh` is not installed: https://cli.github.com')
+    if (/auth|login/i.test(err)) die('`gh` is not logged in: run `gh auth login`')
+    die(err)
+  }
+}

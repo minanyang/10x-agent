@@ -1,0 +1,226 @@
+#!/bin/bash
+# One git worktree per ticket.
+#
+#   10x-worktree init [<id>]
+#   10x-worktree add  <id> [--type feat] [--slug short-name] [--no-setup]
+#   10x-worktree list
+#   10x-worktree path <id>
+#   10x-worktree rm   <id>
+#   10x-worktree sync-base
+#   10x-worktree memory <id>
+#
+# `init` first prints where tickets live, `tickets: <github|files>` (config `tickets`, else github for a github.com
+# origin and files otherwise; exit 2 on any other value, before anything is created). It then keeps .10x/ and the
+# worktree directory out of git (.git/info/exclude) and prints for an id `ticket dir: <.10x/<id>/, created>` and `base: <branch> (<ref>)` — run it before writing
+# anything under .10x/. Without an id it creates .10x/drafts/, where /10x:open writes issue drafts,
+# and prints what /10x:open drafts from: `drafts: <absolute path>`, one `form: <file> name: … labels: …
+# title: … required: … fields: …` line per issue form (or `forms: none`), one `template: <file>` line per .md
+# template and `banned: <json array>` (scripts/issue-form.js).
+# `add` cuts <type>/<id>[-<slug>] from the up-to-date base branch (config `base`, else
+# develop if origin has it, else origin's default branch), at <worktreeDir>/<id>, then runs
+# the config's `setup` command inside it (default: install dependencies when a lockfile is
+# present). Re-running `add` for an existing ticket reports the worktree and leaves it alone. Either way it
+# prints `ticket dir:` and `base:` as `init` does, before its `created:` or `exists:` line.
+# `rm` removes the worktree and deletes its branch only if the branch is merged
+# (`git branch -d`); an unmerged branch is kept and reported.
+# `sync-base` fetches the base and fast-forwards it in the main checkout when the main checkout
+# is on the base and git allows the fast-forward (uncommitted changes to files the incoming
+# commits do not touch are carried over); otherwise it leaves it and says why.
+# `memory` commits agent memory (.claude/agent-memory/) on the ticket branch: new or changed files
+# in the main checkout, where agents write it, are moved into the worktree (a new file is removed
+# from the main checkout, a tracked one restored there), then those and the worktree's own memory
+# changes go in one commit, nothing else. A path changed differently in both places, a main
+# checkout copy edited from another version than the branch's, or a symlink on a path being
+# moved, stops it before anything moves. Prints each committed path.
+
+set -euo pipefail
+# shellcheck source=../scripts/lib.sh
+source "$(dirname "$(readlink -f "$0")")/../scripts/lib.sh"
+
+# Has <branch> landed on the base even though git does not call it merged? True when it is an
+# ancestor of the base (a rebase dropped its already-applied commits), or when every file it
+# touched is identical on the base (a squash merge). In local mode the base is the local base once a
+# squash put it ahead of origin (see base_ref).
+landed() {
+  local base files
+  if git -C "$ROOT" remote get-url origin >/dev/null 2>&1; then
+    git -C "$ROOT" fetch --quiet origin "$(base_branch)" || return 1
+  fi
+  base="$(base_ref)"
+  git -C "$ROOT" merge-base --is-ancestor "$1" "$base" && return 0
+  files="$(git -C "$ROOT" diff --name-only "$base...$1")"
+  [ -n "$files" ] || return 1
+  printf '%s\n' "$files" | tr '\n' '\0' | xargs -0 git -C "$ROOT" diff --quiet "$1" "$base" --
+}
+
+cmd="${1:-}"; shift || true
+
+case "$cmd" in
+  init)
+    if [ -n "${1:-}" ]; then
+      check_id "$1"; tickets_line; ensure_excluded; mkdir -p "$(task_dir "$1")"; ticket_lines "$1"
+    else
+      tickets_line; ensure_excluded
+      mkdir -p "$ROOT/.10x/drafts"
+      here="$(dirname "$(readlink -f "$0")")"
+      node "$here/../scripts/issue-form.js" "$ROOT" "$here/../references/banned-phrases.txt"
+    fi
+    ;;
+
+  add)
+    id="${1:-}"; [ -n "$id" ] || die "usage: 10x-worktree add <id> [--type feat] [--slug name] [--no-setup]"
+    shift; check_id "$id"
+    type=feat; slug=""; setup=1
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --type) type="$2"; shift 2 ;;
+        --slug) slug="$2"; shift 2 ;;
+        --no-setup) setup=0; shift ;;
+        *) die "unknown option $1" ;;
+      esac
+    done
+    [[ "$type" =~ ^[a-z]+$ ]] || die "--type must match ^[a-z]+$"
+    [ -z "$slug" ] || [[ "$slug" =~ ^[A-Za-z0-9._-]+$ ]] || die "--slug must match ^[A-Za-z0-9._-]+$"
+    path="$(worktree_dir)/$id"
+    if [ -e "$path/.git" ]; then
+      ticket_lines "$id"
+      say "exists: $path on $(git -C "$path" rev-parse --abbrev-ref HEAD)"
+      exit 0
+    fi
+    [ "$slug" = "$id" ] && slug=""
+    slug="${slug#"$id"-}"
+    branch="$type/$id${slug:+-$slug}"
+    ensure_excluded
+    mkdir -p "$(task_dir "$id")"
+    if git -C "$ROOT" remote get-url origin >/dev/null 2>&1; then
+      git -C "$ROOT" fetch --quiet origin "$(base_branch)" || die "could not fetch origin/$(base_branch)"
+    fi
+    ! base_diverged || die "$(base_branch) and origin/$(base_branch) have diverged — reconcile the local base first"
+    start="$(base_ref)"
+    ticket_lines "$id"
+    if git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch"; then
+      git -C "$ROOT" worktree add --quiet "$path" "$branch"
+    else
+      # --no-track: starting from origin/<base> would otherwise make the base the branch's upstream,
+      # so a bare pull/push would hit the base and `branch -d` would judge "merged" against it.
+      git -C "$ROOT" worktree add --quiet --no-track -b "$branch" "$path" "$start"
+    fi
+    say "created: $path on $branch from $start ($(git -C "$path" rev-parse --short HEAD))"
+    if [ "$setup" = 1 ]; then
+      setup_cmd="$(cfg setup)"
+      if [ -z "$setup_cmd" ] && [ -f "$path/package.json" ]; then
+        pm="$(package_manager "$path")"
+        case "$pm" in
+          pnpm) setup_cmd="pnpm install --frozen-lockfile" ;;
+          yarn) setup_cmd="yarn install --frozen-lockfile" ;;
+          bun) setup_cmd="bun install --frozen-lockfile" ;;
+          npm) [ -f "$path/package-lock.json" ] && setup_cmd="npm ci" ;;
+        esac
+      fi
+      if [ -n "$setup_cmd" ]; then
+        log="$(task_dir "$id")/setup.log"
+        say "setup: $setup_cmd"
+        (cd "$path" && bash -c "$setup_cmd") >"$log" 2>&1 || { tail -20 "$log" >&2; die "setup failed — full log: $log"; }
+      fi
+    fi
+    ;;
+
+  list)
+    dir="$(worktree_dir)"
+    found=0
+    for p in "$dir"/*/; do
+      [ -e "$p/.git" ] || continue
+      found=1
+      p="${p%/}"
+      printf '%-24s %-40s %s uncommitted\n' "$(basename "$p")" "$(git -C "$p" rev-parse --abbrev-ref HEAD)" "$(git -C "$p" status --porcelain | wc -l | tr -d ' ')"
+    done
+    [ "$found" = 1 ] || say "no ticket worktrees under $dir"
+    ;;
+
+  path)
+    id="${1:-}"; [ -n "$id" ] || die "usage: 10x-worktree path <id>"
+    check_id "$id"; wt_path "$id"
+    ;;
+
+  rm)
+    id="${1:-}"; [ -n "$id" ] || die "usage: 10x-worktree rm <id>"
+    check_id "$id"
+    [ $# -eq 1 ] || die "usage: 10x-worktree rm <id>"
+    path="$(wt_path "$id")"
+    branch="$(git -C "$path" rev-parse --abbrev-ref HEAD)"
+    git -C "$ROOT" worktree remove "$path" || die "worktree has uncommitted changes; commit or discard them yourself"
+    say "removed: $path"
+    if git -C "$ROOT" branch -d "$branch" >/dev/null 2>&1; then
+      say "deleted branch $branch (merged)"
+    elif landed "$branch"; then
+      git -C "$ROOT" branch -D "$branch" >/dev/null
+      say "deleted branch $branch (its changes are on $(base_ref))"
+    else
+      say "kept branch $branch (not merged into HEAD of the main checkout or $(base_ref))"
+      exit 0
+    fi
+    # A PR merged without "delete branch" leaves the pushed branch behind.
+    if git -C "$ROOT" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+      git -C "$ROOT" push --quiet origin --delete "$branch" && say "deleted origin/$branch"
+    fi
+    ;;
+
+  sync-base)
+    b="$(base_branch)"
+    git -C "$ROOT" fetch --quiet origin "$b" || die "cannot fetch $b from origin"
+    if git -C "$ROOT" merge-base --is-ancestor "origin/$b" "$b"; then say "$b is up to date"; exit 0; fi
+    behind="$b is behind origin/$b, not updated"
+    head="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)"
+    if [ "$head" != "$b" ]; then
+      say "$behind: the main checkout is on $head"
+    elif ! git -C "$ROOT" merge-base --is-ancestor "$b" "origin/$b"; then
+      say "$behind: $b has commits origin/$b does not"
+    elif out="$(git -C "$ROOT" merge --ff-only --quiet "origin/$b" 2>&1)"; then
+      say "fast-forwarded $b to $(git -C "$ROOT" rev-parse --short HEAD)"
+    else
+      say "$behind: git merge --ff-only refused"; say "$out"
+    fi
+    ;;
+
+  memory)
+    id="${1:-}"; [ -n "$id" ] || die "usage: 10x-worktree memory <id>"
+    check_id "$id"
+    [ $# -eq 1 ] || die "usage: 10x-worktree memory <id>"
+    path="$(wt_path "$id")"
+    mem=.claude/agent-memory
+    moves=()
+    while IFS= read -r -d '' line; do
+      st="${line:0:2}"; f="${line:3}"
+      [ "$st" = "??" ] || [[ "$st" == *[MA]* ]] || continue
+      # A symlink would be copied as its target's content, or written through outside the worktree.
+      { [ -f "$ROOT/$f" ] && [ ! -L "$ROOT/$f" ]; } || die "$f in the main checkout is not a regular file; nothing moved"
+      d="$f"
+      while [ "$d" != . ]; do
+        [ ! -L "$path/$d" ] || die "$d in the worktree is a symlink; nothing moved"
+        d="$(dirname "$d")"
+      done
+      if [ -e "$path/$f" ] && ! cmp -s "$ROOT/$f" "$path/$f"; then
+        [ -z "$(git -C "$path" status --porcelain -- "$f")" ] ||
+          die "$f is changed differently in the main checkout and the worktree; nothing moved — reconcile it yourself"
+        # The main checkout may be behind the branch: its copy was edited from an older version.
+        [ "$(git -C "$ROOT" rev-parse -q --verify "HEAD:$f")" = "$(git -C "$path" rev-parse -q --verify "HEAD:$f")" ] ||
+          die "$f in the main checkout starts from another version than the branch's; nothing moved — reconcile it yourself"
+      fi
+      moves+=("$st" "$f")
+    done < <(git -C "$ROOT" status --porcelain -z --untracked-files=all -- "$mem")
+    for ((i = 0; i < ${#moves[@]}; i += 2)); do
+      st="${moves[i]}"; f="${moves[i+1]}"
+      mkdir -p "$(dirname "$path/$f")"
+      cp "$ROOT/$f" "$path/$f"
+      [ "$st" = "??" ] || git -C "$ROOT" restore --staged -- "$f"
+      if git -C "$ROOT" cat-file -e "HEAD:$f" 2>/dev/null; then git -C "$ROOT" restore --worktree -- "$f"; else rm "$ROOT/$f"; fi
+    done
+    git -C "$path" add -- "$mem" 2>/dev/null || true
+    if git -C "$path" diff --cached --quiet -- "$mem"; then say "no agent memory to commit"; exit 0; fi
+    git -C "$path" commit --quiet -m "chore(memory): commit agent memory written during $id" -- "$mem"
+    say "committed agent memory on $(git -C "$path" rev-parse --abbrev-ref HEAD) ($(git -C "$path" rev-parse --short HEAD)):"
+    git -C "$path" -c core.quotePath=false diff-tree --no-commit-id --name-only -r HEAD | sed 's/^/  /'
+    ;;
+
+  *) die "usage: 10x-worktree init|add|list|path|rm|sync-base|memory ..." ;;
+esac

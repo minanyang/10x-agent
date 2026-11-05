@@ -1,0 +1,90 @@
+#!/bin/bash
+# Run every gate of a ticket's worktree once, and tie the result to a commit.
+#
+#   10x-verify <id>
+#
+# Gates: `gates` (shell commands, run in order) from the worktree's .claude/10x.json, else
+# the main checkout's; a gate list that differs from the base's is reported. Else from package.json —
+# `verify` if defined, otherwise whichever of lint, typecheck, test exist. A model does not
+# need to wait on a test runner; this script does, and leaves one table to read.
+#
+# HEAD and the number of uncommitted paths (agent memory not counted) are recorded before and
+# after. If either moved during the run, the result describes no single tree and the run fails.
+#
+# When the worktree is 10x itself (.claude-plugin/plugin.json names 10x), the files under
+# bin/ and scripts/ that differ from the copy running this script are listed: the loop runs the
+# installed scripts, never the ticket's, and this says when the two are not the same.
+#
+# Output: a table on stdout and in .10x/<id>/verify/summary.txt, full logs beside it.
+# Exit 0 only when every gate passed on a tree that stood still; 1 otherwise; 2 on misuse.
+
+set -uo pipefail
+# shellcheck source=../scripts/lib.sh
+source "$(dirname "$(readlink -f "$0")")/../scripts/lib.sh"
+
+id="${1:-}"; [ -n "$id" ] || die "usage: 10x-verify <id>"
+check_id "$id"
+path="$(wt_path "$id")"
+out="$(task_dir "$id")/verify"
+mkdir -p "$out"
+take_lock "$id"
+trap release_lock EXIT
+
+summary="$out/summary.txt"
+: >"$summary"
+
+# Gates come from the ticket's own branch, so a gate it adds verifies it; a change against
+# the base's list is reported, so a gate it drops is not dropped silently.
+gates_file="$path/.claude/10x.json"
+[ -f "$gates_file" ] || gates_file="$CONFIG"
+base_cfg="$out/base-10x.json"
+# At the merge-base, not the base's tip: a gate the base gained since the cut is not the ticket's change.
+fork="$(git -C "$path" merge-base "$(base_ref)" HEAD 2>/dev/null)"
+{ [ -n "$fork" ] && git -C "$path" show "$fork:.claude/10x.json" >"$base_cfg" 2>/dev/null; } || : >"$base_cfg"
+changes="$(gate_changes "$base_cfg" "$path/.claude/10x.json")"
+rm -f "$base_cfg"
+[ -z "$changes" ] || printf 'gates differ from %s:\n%s\n' "$(base_ref)" "$changes" | tee -a "$summary"
+
+# On 10x itself the ticket's scripts are judged by the running copy; name every file where the two differ.
+if [ "$(cfg_in "$path/.claude-plugin/plugin.json" name 2>/dev/null)" = 10x ]; then
+  plugin="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+  drift="$({ (cd "$plugin" && find bin scripts -type f 2>/dev/null); (cd "$path" && find bin scripts -type f 2>/dev/null); } |
+    LC_ALL=C sort -u | while IFS= read -r f; do cmp -s "$plugin/$f" "$path/$f" || printf '  %s\n' "$f"; done)"
+  [ -z "$drift" ] || printf 'scripts differ from the running copy (%s):\n%s\n' "$plugin" "$drift" | tee -a "$summary"
+fi
+
+names=(); cmds=()
+while IFS= read -r c; do [ -n "$c" ] && names+=("$c") && cmds+=("$c"); done < <(cfg_in "$gates_file" gates)
+if [ ${#cmds[@]} -eq 0 ] && [ -f "$path/package.json" ]; then
+  pm="$(package_manager "$path")"
+  if has_script "$path" verify; then gs=(verify); else gs=(); for g in lint typecheck test; do has_script "$path" "$g" && gs+=("$g"); done; fi
+  for g in "${gs[@]}"; do names+=("$g"); cmds+=("$pm run $g"); done
+fi
+[ ${#cmds[@]} -gt 0 ] || die "no gates: set \"gates\" in .claude/10x.json, or add verify / lint / typecheck / test scripts to package.json"
+
+state() { printf '%s %s' "$(git -C "$path" rev-parse --short HEAD)" "$(tree_status "$path" | wc -l | tr -d ' ')"; }
+
+failed=0
+printf '%-28s %-6s %6s  %s\n' gate result secs log | tee -a "$summary"
+before="$(state)"
+for i in "${!cmds[@]}"; do
+  log="$out/gate-$((i + 1)).log"
+  t0=$(date +%s)
+  (cd "$path" && bash -c "${cmds[$i]}") >"$log" 2>&1
+  code=$?
+  secs=$(( $(date +%s) - t0 ))
+  if [ $code -eq 0 ]; then res=pass; else res=FAIL; failed=1; fi
+  printf '%-28s %-6s %6s  %s\n' "${names[$i]:0:28}" "$res" "$secs" "$log" | tee -a "$summary"
+  if [ $code -ne 0 ]; then
+    { echo "  ── last 25 lines"; tail -25 "$log" | sed 's/^/  │ /'; } | tee -a "$summary"
+  fi
+done
+after="$(state)"
+
+if [ "$before" != "$after" ]; then
+  say "MOVED during the run ($before → $after): these results describe no single tree" | tee -a "$summary"
+  failed=1
+else
+  say "tree: HEAD ${after% *}, ${after#* } uncommitted path(s)" | tee -a "$summary"
+fi
+exit $failed

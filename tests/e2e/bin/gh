@@ -1,0 +1,198 @@
+#!/usr/bin/env node
+// A fake `gh` for the e2e runner. Reads $E2E_GH_DIR: canned.json (what the scenario's GitHub answers), state.json
+// (issues, comments and PRs the run created) and calls.log (argv of every call, one JSON array per line).
+// $E2E_ORIGIN is the bare repo behind github.com's origin; `pr merge` squash-merges into it.
+// $E2E_GH_QUIET=1 skips the call log (the harness's own calls).
+//
+// canned.json: { authExit, issues[], labels[], graphql, rollups[][], onFirstRollup: { pushFile } }
+
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const { spawnSync } = require('node:child_process')
+
+const dir = process.env.E2E_GH_DIR
+const origin = process.env.E2E_ORIGIN
+if (!dir) {
+  console.error('fake gh: E2E_GH_DIR is not set')
+  process.exit(1)
+}
+const argv = process.argv.slice(2)
+if (!process.env.E2E_GH_QUIET) fs.appendFileSync(path.join(dir, 'calls.log'), JSON.stringify(argv) + '\n')
+
+const readJson = (f, dflt) => (fs.existsSync(path.join(dir, f)) ? JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) : dflt)
+const canned = readJson('canned.json', {})
+const state = readJson('state.json', { issues: [], comments: [], prs: [], rollupCalls: 0 })
+const save = () => fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify(state, null, 2))
+const fail = (msg, code = 1) => {
+  console.error(msg)
+  process.exit(code)
+}
+
+const flag = (name) => {
+  const i = argv.indexOf(name)
+  return i >= 0 ? argv[i + 1] : undefined
+}
+const flags = (name) => argv.flatMap((a, i) => (a === name ? [argv[i + 1]] : []))
+// The subcommand words, with gh's global --hostname <host> (10x-ticket issue-types sends it) left out.
+const cmd = argv[1] === '--hostname' ? [argv[0], ...argv.slice(3)] : argv
+// Positionals: what is left once flags and their values are gone.
+const valued = new Set(['--repo', '--json', '--jq', '--state', '--search', '--limit', '--title', '--body-file', '--label', '--type', '--base', '--head', '--match-head-commit', '-f', '-F', '-R', '-q'])
+const positional = []
+for (let i = 2; i < cmd.length; i++) {
+  if (valued.has(cmd[i])) i++
+  else if (!cmd[i].startsWith('-')) positional.push(cmd[i])
+}
+
+const git = (args, opts = {}) => {
+  const r = spawnSync('git', args, {
+    encoding: 'utf8',
+    env: { ...process.env, GIT_AUTHOR_NAME: 'fake gh', GIT_AUTHOR_EMAIL: 'gh@example.com', GIT_COMMITTER_NAME: 'fake gh', GIT_COMMITTER_EMAIL: 'gh@example.com' },
+    ...opts,
+  })
+  if (r.status !== 0) fail(`fake gh: git ${args.join(' ')} failed: ${r.stderr}`)
+  return r.stdout.trim()
+}
+const originHead = (branch) => {
+  const r = spawnSync('git', ['--git-dir', origin, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { encoding: 'utf8' })
+  return r.status === 0 ? r.stdout.trim() : ''
+}
+
+// --json <fields> picks fields; --jq <expr> runs the real jq over that; plain JSON otherwise.
+const emit = (obj) => {
+  const fields = flag('--json')
+  const out = fields ? Object.fromEntries(fields.split(',').map((f) => [f, obj[f] === undefined ? null : obj[f]])) : obj
+  const jq = flag('--jq') || flag('-q')
+  if (jq) {
+    const r = spawnSync('jq', ['-r', jq], { input: JSON.stringify(out), encoding: 'utf8' })
+    process.stdout.write(r.stdout)
+    if (r.status !== 0) fail(r.stderr)
+  } else console.log(JSON.stringify(out))
+}
+
+const repoUrl = (kind, n) => `https://github.com/test/fixture/${kind}/${n}`
+const allIssues = () => [...(canned.issues || []), ...state.issues]
+const issueRecord = (i) => ({
+  number: i.number,
+  title: i.title,
+  body: i.body || '',
+  url: i.url || repoUrl('issues', i.number),
+  state: i.state || 'OPEN',
+  labels: (i.labels || []).map((l) => (typeof l === 'string' ? { name: l } : l)),
+  issueType: i.issueType || null,
+  comments: i.comments || [],
+  createdAt: i.createdAt || '2026-10-01T00:00:00Z',
+})
+const prFor = (branch) => [...state.prs].reverse().find((p) => p.headRefName === branch)
+
+// Pushes one commit that touches only <file> to origin's <base>: another change landing while the ticket is in flight.
+const pushBaseCommit = (base, file) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-gh-'))
+  git(['clone', '--quiet', '--branch', base, origin, tmp])
+  fs.appendFileSync(path.join(tmp, file), 'Another change landed on the base.\n')
+  git(['-C', tmp, 'add', file])
+  git(['-C', tmp, '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', `docs: touch ${file}`])
+  git(['-C', tmp, 'push', '--quiet', 'origin', base])
+  fs.rmSync(tmp, { recursive: true, force: true })
+}
+
+const [a, b] = cmd
+const key = `${a} ${b}`
+
+if (key === 'auth status') {
+  const code = canned.authExit || 0
+  if (code) fail('You are not logged into any GitHub hosts. To log in, run: gh auth login', code)
+  console.log('github.com\n  Logged in to github.com account test (fake)')
+} else if (key === 'issue list') {
+  const rows = allIssues().filter((i) => (i.state || 'OPEN') === 'OPEN').map(issueRecord)
+  if (flag('--json')) {
+    const fields = flag('--json').split(',')
+    const objs = rows.map((r) => Object.fromEntries(fields.map((f) => [f, r[f] === undefined ? null : r[f]])))
+    const jq = flag('--jq') || flag('-q')
+    if (jq) process.stdout.write(spawnSync('jq', ['-r', jq], { input: JSON.stringify(objs), encoding: 'utf8' }).stdout)
+    else console.log(JSON.stringify(objs))
+  } else for (const r of rows) console.log([r.number, 'OPEN', r.title, r.labels.map((l) => l.name).join(', '), r.createdAt].join('\t'))
+} else if (key === 'issue view') {
+  const i = allIssues().find((x) => String(x.number) === positional[0])
+  if (!i) fail(`GraphQL: Could not resolve to an Issue with the number of ${positional[0]}.`)
+  emit(issueRecord(i))
+} else if (key === 'label list') {
+  const labels = canned.labels || []
+  const jq = flag('--jq') || flag('-q')
+  if (flag('--json')) {
+    const fields = flag('--json').split(',')
+    const objs = labels.map((l) => Object.fromEntries(fields.map((f) => [f, l[f] === undefined ? null : l[f]])))
+    if (jq) process.stdout.write(spawnSync('jq', ['-r', jq], { input: JSON.stringify(objs), encoding: 'utf8' }).stdout)
+    else console.log(JSON.stringify(objs))
+  } else for (const l of labels) console.log(`${l.name}\t${l.description || ''}`)
+} else if (key === 'api graphql') {
+  console.log(JSON.stringify(canned.graphql || { data: { repository: { issueTypes: null } } }))
+} else if (key === 'issue create') {
+  const number = 100 + state.issues.length
+  state.issues.push({
+    number,
+    title: flag('--title'),
+    body: fs.readFileSync(flag('--body-file'), 'utf8'),
+    labels: flags('--label'),
+    issueType: flag('--type') ? { name: flag('--type') } : null,
+    state: 'OPEN',
+  })
+  save()
+  console.log(repoUrl('issues', number))
+} else if (key === 'issue comment') {
+  state.comments.push({ number: Number(positional[0]), body: fs.readFileSync(flag('--body-file'), 'utf8') })
+  save()
+  console.log(`${repoUrl('issues', positional[0])}#issuecomment-${state.comments.length}`)
+} else if (key === 'pr view') {
+  const pr = prFor(positional[0])
+  if (!pr) fail(`no pull requests found for branch "${positional[0]}"`)
+  const want = (flag('--json') || '').split(',')
+  const view = { ...pr, isCrossRepository: false, headRefOid: originHead(pr.headRefName) }
+  if (want.includes('statusCheckRollup')) {
+    const seq = canned.rollups || [[]]
+    if (state.rollupCalls === 0 && canned.onFirstRollup) pushBaseCommit(pr.baseRefName, canned.onFirstRollup.pushFile)
+    view.statusCheckRollup = seq[Math.min(state.rollupCalls, seq.length - 1)]
+    state.rollupCalls++
+    save()
+  }
+  emit(view)
+} else if (key === 'pr list') {
+  // The open PRs /10x:work's overlap check reads; the fake's PRs carry no files.
+  const fields = (flag('--json') || 'number,title,headRefName').split(',')
+  const rows = state.prs.filter((p) => p.state === 'OPEN')
+    .map((p) => Object.fromEntries(fields.map((f) => [f, f === 'files' ? [] : p[f] === undefined ? null : p[f]])))
+  console.log(JSON.stringify(rows))
+} else if (key === 'pr create') {
+  const number = state.prs.length + 1
+  state.prs.push({
+    number,
+    headRefName: flag('--head'),
+    baseRefName: flag('--base'),
+    title: flag('--title'),
+    body: fs.readFileSync(flag('--body-file'), 'utf8'),
+    state: 'OPEN',
+    url: repoUrl('pull', number),
+  })
+  save()
+  console.log(repoUrl('pull', number))
+} else if (key === 'pr edit') {
+  const pr = prFor(positional[0])
+  if (!pr) fail(`no pull requests found for branch "${positional[0]}"`)
+  pr.body = fs.readFileSync(flag('--body-file'), 'utf8')
+  save()
+  console.log(pr.url)
+} else if (key === 'pr merge') {
+  const pr = prFor(positional[0])
+  if (!pr || pr.state !== 'OPEN') fail(`no open pull request for branch "${positional[0]}"`)
+  const head = originHead(pr.headRefName)
+  const pin = flag('--match-head-commit')
+  if (pin && pin !== head) fail(`Pull request head commit does not match ${pin}`)
+  // The head a merge would take, kept so a scenario can compare it with the pin the caller passed.
+  pr.headAtMerge = head
+  const tree = git(['--git-dir', origin, 'merge-tree', '--write-tree', `refs/heads/${pr.baseRefName}`, `refs/heads/${pr.headRefName}`]).split('\n')[0]
+  const commit = git(['--git-dir', origin, 'commit-tree', tree, '-p', `refs/heads/${pr.baseRefName}`, '-m', `${pr.title} (#${pr.number})`])
+  git(['--git-dir', origin, 'update-ref', `refs/heads/${pr.baseRefName}`, commit])
+  pr.state = 'MERGED'
+  save()
+  console.log(`Squashed and merged pull request #${pr.number}`)
+} else fail('fake gh: unsupported', 1)

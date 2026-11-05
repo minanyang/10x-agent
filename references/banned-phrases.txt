@@ -1,0 +1,8 @@
+# Phrases that leave a criterion uncheckable. One per line, matched case-insensitively
+# on word boundaries outside code. Lines starting with # are comments.
+TBD
+handle edge cases
+as needed
+appropriate
+etc.
+and so on

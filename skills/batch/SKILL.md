@@ -1,0 +1,70 @@
+---
+name: batch
+description: Conduct a backlog from one terminal — each ticket runs /10x:work then /10x:close in its own background worker, and the user answers grills and approves plans in batched rounds. Use when the user runs /10x:batch <tickets>.
+disable-model-invocation: true
+allowed-tools:
+  - Bash(10x-batch init *)
+  - Bash(10x-batch run *)
+  - Bash(10x-batch status)
+  - Bash(10x-batch drop *)
+---
+
+# Conduct a batch of tickets
+
+`/10x:batch <tickets>` works through many tickets from this terminal. You relay: `10x-batch` schedules, records and lands the tickets, each in its own background `claude -p` worker, and you carry the workers' turns to the user and the user's answers back.
+
+Run one command per Bash call — no `&&`, `;` or `|` — so each call matches this skill's `allowed-tools` on its own.
+
+## Step 0 — Start or resume
+
+With arguments (`gh-<n>`, `<n>`, `#<n>`, an issue URL, existing ticket ids, `--search "<query>"`), run:
+
+```bash
+10x-batch init <args>
+```
+
+With none, run `10x-batch status`. An exit 2 from either is a stop: quote its `10x-batch:` line and ask the user how to go on.
+
+## Step 1 — Act on `status`
+
+```bash
+10x-batch status
+```
+
+`status` prints the board, then the actions allowed now, one per line: `plan <id>`, `implement <id>`, `close <id>`, `answer <id>` (` approvable` appended when `approve` is allowed), and `done`.
+
+Start every `plan`, `implement` and `close` action as `10x-batch run <id> <kind>` with `run_in_background` and `timeout: 7200000`, all the actions of one `status` in one message, then end your turn. When a run wakes you, run `10x-batch status` again.
+
+A refused `10x-batch run` (a permission or the schedule) is reported to the user as it was printed. Never work around it, and never retry it differently.
+
+## Step 2 — Rounds of answers
+
+When `status` lists `answer` lines, Read each such ticket's `.10x/_batch/<id>/turn.md` and show them all, grouped by ticket, in one message. For an `approvable` one, also Read `.10x/<id>/plan.md` and show it verbatim after its turn, under its path, and tell the user they can open that file themselves before approving: the user approves the plan, not the worker's account of it. Give the choices per ticket: answers to its questions, or, for an `approvable` one, `approve`, `revise <notes>` and `drop`. Wait for the reply; it may cover several tickets.
+
+Write each ticket's reply to `.10x/_batch/<id>/reply.md`, then start `10x-batch run <id> reply` in the background (same flags as Step 1):
+
+- answers: the user's words for that ticket, verbatim.
+- `approve`: run `10x-land comment <id>` first when `.10x/<id>/comment.md` exists (left to the user's permissions), then `10x-batch approve <id>`, which records the approval and writes the reply itself. It is not in this skill's `allowed-tools` on purpose: each approve asks the user's permission, naming the ticket, so text a worker wrote can never approve a plan. Only the user's `approve` for that ticket starts it.
+- `revise <notes>`: write "Revise the plan: <notes>". Show its next turn on its own, not in a round.
+- `drop`: run `10x-batch drop <id>`.
+
+## Step 3 — Done
+
+On `done`, end with the board.
+
+## Replies
+
+- Lead with the result. No first sentence that announces what comes next, and no closing recap or offer.
+- Between routine tool calls, at most one line per phase change — a phase is one of this skill's numbered steps.
+- Say each fact once: what the reply has already shown is not summarised again.
+
+Some things are exempt from these rules and are written in full: a security warning; a question to the user; a worker's turn shown to the user; and anything persisted, such as `reply.md`.
+
+The final reply is the board.
+
+## Never
+
+- Never run `/10x:work` or `/10x:close` yourself, and never edit anything but `.10x/_batch/<id>/reply.md`.
+- Never run `10x-batch approve` for a ticket the user did not approve in their own words.
+- Never use `CronCreate`, `ScheduleWakeup` or `/loop`; background runs wake you.
+- Never reply that something is unverified, unchecked or not yet confirmed: check it first. Only when a check is impossible, say so, naming what was tried and why it cannot be checked.
