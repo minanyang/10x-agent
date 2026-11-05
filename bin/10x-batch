@@ -352,20 +352,31 @@ function owner(n) {
 }
 
 // True when a comment on issue <n> is by someone other than the issue's author, or when that cannot be told: ticket.md
-// carries every comment, so auto mode leaves such a plan for the human to approve.
+// carries every comment, so auto mode leaves such a plan for the human to approve. Both the issue as it is now and the
+// ticket.md the worker read are checked, so a comment deleted after `init` still counts.
 function strangerComments(n) {
   const o = originRepo()
   if (o.why) return true
   const v = ghRun(['issue', 'view', n, '--repo', `github.com/${o.repo}`, '--json', 'author,comments'])
   if (v.why) return true
+  let who, logins
   try {
     const { author, comments } = JSON.parse(v.out)
-    const who = author?.login
+    who = author?.login
     if (typeof who !== 'string' || !who || !Array.isArray(comments)) return true
-    return comments.some((c) => typeof c?.author?.login !== 'string' || c.author.login.toLowerCase() !== who.toLowerCase())
+    logins = comments.map((c) => c?.author?.login)
   } catch {
     return true
   }
+  const text = readOr(path.join(tdir(`gh-${n}`), 'ticket.md'))
+  if (text === null) return true
+  const at = text.split('\n').indexOf('## Comments')
+  if (at !== -1) {
+    const read = text.split('\n').slice(at + 1).map((l) => /^\*\*(.+)\*\* \([0-9]{4}-[0-9]{2}-[0-9]{2}\):$/.exec(l)).filter(Boolean)
+    if (!read.length) return true
+    logins.push(...read.map((m) => m[1]))
+  }
+  return logins.some((l) => typeof l !== 'string' || l.toLowerCase() !== who.toLowerCase())
 }
 
 function search(q) {
