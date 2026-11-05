@@ -5,6 +5,9 @@
 //   10x-security add    <id> <file>
 //   10x-security set    <id> <fingerprint> <status> [reason]
 //   10x-security remove <id> <fingerprint>
+//   10x-security prepare
+//   10x-security import run-<n>
+//   10x-security ticket <fingerprint> <slug>
 //
 // `add` reads <file>, a regular, non-symlinked, singly linked file inside .10x/<id>/ holding a JSON array of records
 // (`[]` does nothing). Each record has exactly verdict (confirmed or needs_validation), rule (kebab-case), title, path
@@ -16,19 +19,47 @@
 // <id> to its `seen in` unless it is already its `found in` or there, changes nothing else, and prints `seen: <fp>`.
 // `set` writes status (fix-now, later, accepted or rejected; the last two need a reason) and reason (empty without
 // one), and nothing else. `remove` deletes the entry. Both refuse an unknown fingerprint and an entry whose
-// `found in` and `seen in` do not include <id>.
+// `found in` and `seen in` do not include <id>. Their <id> may also be an audit run id, audit/run-<n>; `add`'s may not.
+//
+// `prepare` looks for security-audit/SKILL.md in the main checkout's .claude/skills/, then in ~/.claude/skills/
+// (symlinks followed). Without it, it prints the two `npx skills add` commands and exits 1 before writing anything.
+// Otherwise it takes N as one more than the highest directory .10x/audit/run-<n> (1 when none), exits 1 when
+// `git check-ignore` does not report .10x/audit/run-N/ as ignored, creates it, and prints `skill: <abs SKILL.md>`,
+// `run: <abs run dir>` and one `prior: <abs run dir>` per earlier run, in run order.
+//
+// `import` reads .10x/audit/run-<n>/findings.json, rules.json (a security-audit fingerprint to a kebab-case rule) and
+// run-metadata.json, and checks every record before taking the lock; any fault refuses the whole run, naming the
+// record only as `findings[<i>]`. `rejected` records are skipped. For the others the sink is the last `sink` trace
+// entry (or the only entry), whose file and line must exist in the main checkout; the fingerprint is the one `add`
+// computes from the rule, the sink's path and that line. A record matches the entry with its `audit fingerprint`, else
+// the one with its fingerprint (filling an empty `audit fingerprint`): audit/run-<n> joins `seen in` as with `add`,
+// verdict, severity, location and trace are the record's, and `seen: <fp> <status>` is printed. An unmatched record
+// is added as `add` does, found in audit/run-<n>, and prints `added: <fp>`. With `scope_paths` exactly ["."], every
+// other entry gets audit/run-<n> in `not seen in` and prints `not seen: <fp>`. Last comes `run_status: <value>`
+// (`missing` without one).
+//
+// `ticket` refuses the slugs `10x-land ticket` refuses and `audit`, then an unknown fingerprint and an existing
+// .10x/<slug>/; it adds <slug> to the entry's `seen in`, writes .10x/<slug>/ticket.md naming the entry only by its
+// fingerprint, and prints `ticket: <abs path>`. It reads no `tickets` mode and runs no gh.
 //
 // Writes go through a temp file and a rename under the lock directory .10x/security.lock (retried every 0.2 s for up
 // to 10 s). A security.md that does not parse prints `10x-security: <file>:<line>: <why>` per fault; a symlinked .10x/
-// or security.md is refused. Every refusal prints `10x-security: <why>` and exits 2.
+// or security.md is refused. Every refusal prints `10x-security: <why>` and exits 2; `prepare`'s missing skill and
+// un-ignored run directory exit 1.
 
 const { execFileSync } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
 const sec = require(path.join(__dirname, '..', 'scripts', 'security.js'))
 
-const USAGE = 'usage: 10x-security add <id> <file> | set <id> <fingerprint> <status> [reason] | remove <id> <fingerprint>'
+const USAGE =
+  'usage: 10x-security add <id> <file> | set <id> <fingerprint> <status> [reason] | remove <id> <fingerprint> | prepare | import run-<n> | ticket <fingerprint> <slug>'
 const SETTABLE = ['fix-now', 'later', 'accepted', 'rejected']
+const RUN = /^run-[1-9][0-9]*$/
+const AUDIT_VERDICTS = ['confirmed', 'needs_validation', 'rejected']
+// security-audit's fingerprint pattern (report-schema.json).
+const AUDIT_FP = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/
+const INSTALL = 'npx skills add https://github.com/cloudflare/security-audit-skill --skill security-audit'
 
 class Refusal extends Error {}
 const refuse = (...lines) => {
@@ -36,6 +67,7 @@ const refuse = (...lines) => {
 }
 const shown = (s) => String(s).replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/[\x00-\x1f\x7f-\x9f]/g, '?')
 const lstat = (p) => fs.lstatSync(p, { throwIfNoEntry: false })
+const isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 
 let COMMON, ROOT, TENX
@@ -53,11 +85,18 @@ function main(argv) {
   if (cmd === 'add' && args.length === 2) return add(...args)
   if (cmd === 'set' && (args.length === 3 || args.length === 4)) return set(...args)
   if (cmd === 'remove' && args.length === 2) return remove(...args)
+  if (cmd === 'prepare' && args.length === 0) return prepare()
+  if (cmd === 'import' && args.length === 1) return importRun(...args)
+  if (cmd === 'ticket' && args.length === 2) return ticket(...args)
   refuse(USAGE)
 }
 
 function checkId(id) {
   if (!sec.ID.test(id)) refuse(`invalid ticket id '${shown(id)}' (letters, digits, . _ -)`)
+}
+
+function checkSource(id) {
+  if (!sec.ID.test(id) && !sec.AUDIT.test(id)) refuse(`invalid id '${shown(id)}' (a ticket id of letters, digits, . _ -, or audit/run-<n>)`)
 }
 
 // The parsed security.md; a fault or a symlink is a refusal.
@@ -89,9 +128,9 @@ function ensureExcluded() {
   if (missing.length) fs.appendFileSync(exclude, (text && !text.endsWith('\n') ? '\n' : '') + missing.map((e) => e + '\n').join(''))
 }
 
-// Runs <change> on the current entries under the lock; writes the result when it differs. <change> returns the
-// entries to write and may refuse, leaving the file as it was.
-function update(change) {
+// Runs <change> on the current entries under the lock; writes the result when it differs, then runs <after>, still
+// under the lock. <change> returns the entries to write and may refuse, leaving the file as it was.
+function update(change, after) {
   ensureExcluded()
   const lock = path.join(TENX, 'security.lock')
   const until = Date.now() + 10000
@@ -116,15 +155,17 @@ function update(change) {
     const s = current()
     const before = fs.existsSync(s.file) ? fs.readFileSync(s.file, 'utf8') : null
     const text = sec.serialise(change(s.entries))
-    if (text === before) return
-    const tmp = path.join(TENX, `.security.md.${process.pid}.tmp`)
-    try {
-      fs.writeFileSync(tmp, text, { flag: 'wx' })
-      fs.renameSync(tmp, s.file)
-    } catch (e) {
-      fs.rmSync(tmp, { force: true })
-      refuse(`cannot write ${s.file}: ${e.message}`)
+    if (text !== before) {
+      const tmp = path.join(TENX, `.security.md.${process.pid}.tmp`)
+      try {
+        fs.writeFileSync(tmp, text, { flag: 'wx' })
+        fs.renameSync(tmp, s.file)
+      } catch (e) {
+        fs.rmSync(tmp, { force: true })
+        refuse(`cannot write ${s.file}: ${e.message}`)
+      }
     }
+    if (after) after()
   } finally {
     fs.rmSync(lock, { recursive: true, force: true })
   }
@@ -201,7 +242,7 @@ function entryOf(entries, id, fp) {
 }
 
 function set(id, fp, status, reason = '') {
-  checkId(id)
+  checkSource(id)
   if (!SETTABLE.includes(status)) refuse(`unknown status '${shown(status)}' (want ${SETTABLE.join(', ')})`)
   if ((status === 'accepted' || status === 'rejected') && reason.trim() === '') refuse(`${status} needs a reason`)
   if (sec.CONTROL.test(reason)) refuse('the reason holds a control character')
@@ -214,11 +255,239 @@ function set(id, fp, status, reason = '') {
 }
 
 function remove(id, fp) {
-  checkId(id)
+  checkSource(id)
   update((entries) => {
     const e = entryOf(entries, id, fp)
     return entries.filter((x) => x !== e)
   })
+}
+
+function prepare() {
+  const home = process.env.HOME
+  const skill = [ROOT, home]
+    .filter((d) => d && path.isAbsolute(d))
+    .map((d) => path.join(d, '.claude', 'skills', 'security-audit', 'SKILL.md'))
+    .find((f) => {
+      try {
+        return fs.statSync(f).isFile()
+      } catch {
+        return false
+      }
+    })
+  if (!skill) {
+    process.stderr.write('10x-security: the security-audit skill is not installed; install it with one of:\n')
+    process.stdout.write(`${INSTALL}\n${INSTALL} --global\n`)
+    process.exit(1)
+  }
+  ensureExcluded()
+  const audit = path.join(TENX, 'audit')
+  const st = lstat(audit)
+  if (st && (st.isSymbolicLink() || !st.isDirectory())) refuse(`${audit} is a symlink or not a directory`)
+  const runs = st
+    ? fs
+        .readdirSync(audit, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && RUN.test(d.name))
+        .map((d) => Number(d.name.slice(4)))
+        .sort((a, b) => a - b)
+    : []
+  const n = runs.length ? runs[runs.length - 1] + 1 : 1
+  const rel = `.10x/audit/run-${n}`
+  try {
+    execFileSync('git', ['-C', ROOT, 'check-ignore', '-q', `${rel}/`], { stdio: 'ignore' })
+  } catch (e) {
+    if (e.status !== 1) refuse(`git check-ignore failed on ${rel}`)
+    process.stderr.write(`10x-security: ${rel} is not ignored by git; the audit may write only to an ignored directory\n`)
+    process.exit(1)
+  }
+  const run = path.join(audit, `run-${n}`)
+  try {
+    fs.mkdirSync(audit, { recursive: true })
+    fs.mkdirSync(run)
+  } catch (e) {
+    refuse(`cannot create ${run}: ${e.message}`)
+  }
+  const prior = runs.map((k) => `prior: ${path.join(audit, `run-${k}`)}`)
+  process.stdout.write([`skill: ${skill}`, `run: ${run}`, ...prior].join('\n') + '\n')
+}
+
+// <name> in <dir> parsed: a regular, non-symlinked JSON file, or a refusal naming it and never quoting its text.
+function runFile(dir, name) {
+  const st = lstat(path.join(dir, name))
+  if (!st || st.isSymbolicLink() || !st.isFile()) refuse(`${name} is missing, a symlink or not a regular file`)
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'))
+  } catch {
+    refuse(`${name} is not JSON`)
+  }
+}
+
+// Line <line> of <file> in the main checkout, or undefined after <bad>.
+function sinkLine(file, line, bad) {
+  const f = path.join(ROOT, file)
+  const st = lstat(f)
+  if (!st || st.isSymbolicLink() || !st.isFile()) return void bad('file is missing, a symlink or not a regular file')
+  if (!fs.realpathSync(f).startsWith(fs.realpathSync(ROOT) + path.sep)) return void bad('file resolves outside the main checkout')
+  const lines = fs.readFileSync(f, 'utf8').split('\n')
+  if (lines[lines.length - 1] === '') lines.pop()
+  if (line > lines.length) return void bad('line does not exist')
+  if (sec.SNIPPET_CONTROL.test(lines[line - 1])) return void bad('line holds a control character')
+  return lines[line - 1]
+}
+
+// findings[<i>] as the values import writes, or null for a rejected record or after pushing its faults.
+function auditRecord(r, i, rules, faults) {
+  if (!isObject(r)) {
+    faults.push(`findings[${i}]: not an object`)
+    return null
+  }
+  const before = faults.length
+  const bad = (field, why) => faults.push(`findings[${i}]: ${field} ${why}`)
+  if (!AUDIT_VERDICTS.includes(r.verdict)) bad('verdict', `must be ${AUDIT_VERDICTS.join(', ')}`)
+  if (typeof r.fingerprint !== 'string' || !AUDIT_FP.test(r.fingerprint)) bad('fingerprint', `must match ${AUDIT_FP.source}`)
+  if (typeof r.title !== 'string' || r.title.trim() === '') bad('title', 'must be a non-empty string')
+  else if (sec.CONTROL.test(r.title)) bad('title', 'holds a control character')
+  if (r.verdict === 'rejected') return null
+  if (r.verdict === 'confirmed' && !(isObject(r.severity) && sec.SEVERITIES.includes(r.severity.overall_severity)))
+    bad('severity.overall_severity', `must be one of ${sec.SEVERITIES.join(', ')}`)
+  const rule = typeof r.fingerprint === 'string' && Object.hasOwn(rules, r.fingerprint) ? rules[r.fingerprint] : undefined
+  if (rule === undefined) bad('rule', 'missing from rules.json')
+  else if (!sec.RULE.test(rule)) bad('rule', 'in rules.json must be kebab-case')
+  const trace = r.trace
+  if (!Array.isArray(trace) || !trace.length) {
+    bad('trace', 'must be a non-empty array')
+    return null
+  }
+  trace.forEach((t, k) => {
+    if (!isObject(t)) return void bad(`trace[${k}]`, 'is not an object')
+    if (typeof t.kind !== 'string' || t.kind === '') bad(`trace[${k}].kind`, 'must be a non-empty string')
+    else if (/[\x00-\x1f\x7f-\x9f]/.test(t.kind)) bad(`trace[${k}].kind`, 'holds a control character')
+    const why = sec.badPath(t.file)
+    if (why) bad(`trace[${k}].file`, why)
+    if (!(Number.isInteger(t.line) && t.line >= 1)) bad(`trace[${k}].line`, 'must be an integer of at least 1')
+  })
+  if (faults.length > before) return null
+  const sinks = trace.filter((t) => t.kind === 'sink')
+  const sink = sinks.length ? sinks[sinks.length - 1] : trace.length === 1 ? trace[0] : null
+  if (!sink) {
+    bad('trace', 'has more than one entry and no sink')
+    return null
+  }
+  const snippet = sinkLine(sink.file, sink.line, (why) => bad('sink', why))
+  if (faults.length > before) return null
+  return {
+    fp: sec.fingerprint(rule, sink.file, snippet),
+    auditFp: r.fingerprint,
+    title: r.title,
+    verdict: r.verdict,
+    severity: r.verdict === 'confirmed' ? r.severity.overall_severity : '',
+    rule,
+    location: `${sink.file}:${sink.line}`,
+    trace: trace.map((t) => `${t.kind} ${t.file}:${t.line}`).join('\n'),
+  }
+}
+
+function importRun(name) {
+  if (!RUN.test(name)) refuse(`invalid run '${shown(name)}' (want run-<n>)`)
+  const id = `audit/${name}`
+  const audit = path.join(TENX, 'audit')
+  const dir = path.join(audit, name)
+  for (const d of [audit, dir]) {
+    const st = lstat(d)
+    if (!st || st.isSymbolicLink() || !st.isDirectory()) refuse(`${d} is missing, a symlink or not a directory`)
+  }
+  const findings = runFile(dir, 'findings.json')
+  if (!Array.isArray(findings)) refuse('findings.json must hold a JSON array')
+  const meta = runFile(dir, 'run-metadata.json')
+  if (!isObject(meta)) refuse('run-metadata.json must hold a JSON object')
+  const rules = runFile(dir, 'rules.json')
+  if (!isObject(rules)) refuse('rules.json must hold a JSON object')
+  const faults = Object.values(rules).flatMap((v, k) => (typeof v === 'string' ? [] : [`rules.json: key ${k} must map to a string`]))
+  const records = findings.map((r, i) => auditRecord(r, i, rules, faults)).filter(Boolean)
+  if (faults.length) refuse(...faults)
+  const whole = Array.isArray(meta.scope_paths) && meta.scope_paths.length === 1 && meta.scope_paths[0] === '.'
+  const out = []
+  update((entries) => {
+    const touched = new Set()
+    for (const r of records) {
+      const known = entries.find((e) => e.values['audit fingerprint'] === r.auditFp) ?? entries.find((e) => e.fp === r.fp)
+      if (known) {
+        const v = known.values
+        if (v['audit fingerprint'] === '') v['audit fingerprint'] = r.auditFp
+        const seen = sec.list(v['seen in'])
+        if (v['found in'] !== id && !seen.includes(id)) v['seen in'] = [...seen, id].join(', ')
+        Object.assign(v, { verdict: r.verdict, severity: r.severity, location: r.location, trace: r.trace })
+        touched.add(known)
+        out.push(`seen: ${known.fp} ${v.status}`)
+        continue
+      }
+      const values = {
+        title: r.title,
+        verdict: r.verdict,
+        severity: r.severity,
+        rule: r.rule,
+        location: r.location,
+        trace: r.trace,
+        status: 'new',
+        reason: '',
+        'found in': id,
+        'seen in': '',
+        'audit fingerprint': r.auditFp,
+        'not seen in': '',
+      }
+      const e = { fp: r.fp, values }
+      entries.push(e)
+      touched.add(e)
+      out.push(`added: ${r.fp}`)
+    }
+    for (const e of whole ? entries : []) {
+      if (touched.has(e)) continue
+      const missed = sec.list(e.values['not seen in'])
+      if (!missed.includes(id)) e.values['not seen in'] = [...missed, id].join(', ')
+      out.push(`not seen: ${e.fp}`)
+    }
+    return entries
+  })
+  out.push(`run_status: ${typeof meta.run_status === 'string' ? shown(meta.run_status) : 'missing'}`)
+  process.stdout.write(out.join('\n') + '\n')
+}
+
+function ticket(fp, slug) {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(slug)) refuse(`invalid draft slug '${shown(slug)}' (lowercase letters, digits, -)`)
+  if (/^gh-[0-9]+$/.test(slug)) refuse(`slug '${slug}' is the id of a GitHub issue ticket; pick another`)
+  if (slug === 'drafts') refuse("slug 'drafts' is reserved for .10x/drafts/")
+  if (slug === 'audit') refuse("slug 'audit' is reserved for .10x/audit/")
+  const dir = path.join(TENX, slug)
+  const file = path.join(dir, 'ticket.md')
+  let found
+  update(
+    (entries) => {
+      const e = entries.find((x) => x.fp === fp)
+      if (!e) refuse(`no security entry ${shown(fp)}`)
+      if (lstat(dir)) refuse(`${dir} already exists`)
+      found = e.values['found in']
+      const seen = sec.list(e.values['seen in'])
+      if (found !== slug && !seen.includes(slug)) e.values['seen in'] = [...seen, slug].join(', ')
+      return entries
+    },
+    () => {
+      try {
+        fs.mkdirSync(dir)
+      } catch (e) {
+        refuse(`cannot create ${dir}: ${e.message}`)
+      }
+      const text =
+        `# Fix security entry ${fp.slice(7, 15)}\n\n## Context\nSecurity entry \`${fp}\` in \`.10x/security.md\` (title, location and trace are there). ` +
+        `Found in \`${found}\`.\n\n## Acceptance criteria\n- [ ] AC1 — Security entry \`${fp}\` is fixed, and removed from \`security.md\` once a full review ` +
+        'round has no finding against it.\n'
+      try {
+        fs.writeFileSync(file, text, { flag: 'wx' })
+      } catch (e) {
+        fs.rmSync(dir, { recursive: true, force: true })
+        refuse(`cannot write ${file}: ${e.message}`)
+      }
+    },
+  )
+  process.stdout.write(`ticket: ${file}\n`)
 }
 
 try {

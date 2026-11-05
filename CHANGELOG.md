@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `/10x:audit` runs Cloudflare's installed `security-audit` skill on a scope you choose (a diff, paths or the whole repo) and merges its findings into `.10x/security.md`, matching earlier entries so a re-run never triages the same issue twice. It then asks about each new or deferred entry and opens a local ticket for each `fix-now`, which `/10x:work` fixes and clears from the log. `10x-security` gains `prepare`, `import` and `ticket`; `set` and `remove` accept audit run ids, and `10x-land ticket` reserves the slug `audit`.
 - `10x:security-reviewer` judges by Cloudflare's security-audit-skill criteria (boundary and result, five severity anchors, `confirmed` / `needs_validation` / `rejected`) and blocks a ticket only on confirmed findings its diff introduces or makes reachable. Everything else goes to `.10x/security.md`, never committed, through the new `10x-security` script, and `/10x:work` asks what to do with each new entry before its report.
 - `10x-land pr`, `comment` and `squash` refuse text that names a recorded security entry; `security.blockClose` in `.claude/10x.json` makes `/10x:close` refuse a ticket with an open confirmed entry at or above a severity.
 

@@ -1410,6 +1410,11 @@ expect "ticket exits 2 on the drafts slug" 2 10x-land ticket drafts
 grep -qF "slug 'drafts' is reserved" "$tmp/out" && [ -f "$dr/drafts.md" ] && [ "$reserved" = ok ] &&
   ok "ticket refuses a gh-<n> or drafts slug" || { bad "ticket refuses a gh-<n> or drafts slug"; cat "$tmp/out"; }
 rm "$dr/gh-7.md" "$dr/drafts.md"
+printf '# T\n\n## Acceptance criteria\n- [ ] AC1 — ok\n' >"$dr/audit.md"
+expect "ticket exits 2 on the audit slug" 2 10x-land ticket audit
+grep -qF "slug 'audit' is reserved for .10x/audit/" "$tmp/out" && [ -f "$dr/audit.md" ] && [ ! -e "$tmp/land/.10x/audit/ticket.md" ] &&
+  ok "ticket refuses the audit slug" || { bad "ticket refuses the audit slug"; cat "$tmp/out"; }
+rm -rf "$tmp/land/.10x/audit"; rm "$dr/audit.md"
 rm -r .claude
 printf '# T\n\n## Acceptance criteria\n- [ ] AC1 — ok\n' >"$dr/ongh.md"
 expect "ticket exits 2 in github mode" 2 10x-land ticket ongh

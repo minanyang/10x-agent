@@ -35,7 +35,7 @@ line() {
   node -e '
     const fs = require("fs")
     const [file, id, kind, text] = process.argv.slice(1)
-    const typed = /^\s*\/10x:(open|work|close|batch|roadmap)(?=\s|$)\s*([\s\S]*)$/.exec(text)
+    const typed = /^\s*\/10x:(open|work|close|batch|roadmap|audit)(?=\s|$)\s*([\s\S]*)$/.exec(text)
     let l
     const expanded = typed
       ? `<command-message>10x:${typed[1]}</command-message>\n<command-name>/10x:${typed[1]}</command-name>\n<command-args>${typed[2]}</command-args>`
@@ -224,6 +224,31 @@ check "$T: not another skill's grant" nothing "$(bash_ s41 "10x-land merge gh-5"
 prompt s42 "/10x:roadmap gh-5" >/dev/null
 check "$T: a lone word typed with it binds nothing" allow "$(bash_ s42 "10x-land ticket other-slug")"
 check "$T: nor a pending entry's first slug" allow "$(bash_ s42 "10x-land ticket third-slug")"
+
+T="audit: prepare and import are granted for the session, ticket and set still ask"
+check "$T: nothing before" nothing "$(bash_ s43 "10x-security prepare")"
+prompt s43 "/10x:audit" >/dev/null
+check "$T: prepare" allow "$(bash_ s43 "10x-security prepare")" "granted by /10x:audit"
+check "$T: import" allow "$(bash_ s43 "10x-security import run-3")" "granted by /10x:audit"
+check "$T: import of another run" allow "$(bash_ s43 "10x-security import run-4")" "granted by /10x:audit"
+check "$T: not another skill's grant" nothing "$(bash_ s43 "10x-land merge gh-5")"
+prompt s44 "/10x:audit now" >/dev/null
+check "$T: a word typed with it binds no ticket" allow "$(bash_ s44 "10x-security import run-3")" "granted by /10x:audit"
+# A copy of audit's SKILL.md given a broad 10x-security grant: the refusals below are the hook's ALWAYS_ASK and not a missing
+# grant, whatever audit's own allowed-tools say.
+[ ! -f "$plugin/skills/audit/SKILL.md" ] ||
+  node -e '
+    const fs = require("fs"), f = process.argv[1]
+    fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace("allowed-tools:\n", "allowed-tools:\n  - Bash(10x-security *)\n"))
+  ' "$plugin/skills/audit/SKILL.md"
+prompt s45 "/10x:audit" >/dev/null
+check "$T: with a broad grant, prepare is allowed" allow "$(bash_ s45 "10x-security prepare")" "granted by /10x:audit"
+# The word after the subcommand is a valid id here, so only ALWAYS_ASK (not the id check) can refuse these.
+check "$T: ticket asks" nothing "$(bash_ s45 "10x-security ticket abc security-0a1b2c3d")"
+check "$T: ticket asks with two spaces" nothing "$(bash_ s45 "10x-security  ticket abc security-0a1b2c3d")"
+check "$T: set asks" nothing "$(bash_ s45 "10x-security set abc sha256:0 later")"
+check "$T: remove asks" nothing "$(bash_ s45 "10x-security remove abc sha256:0")"
+[ ! -f "$ROOT/skills/audit/SKILL.md" ] || cp "$ROOT/skills/audit/SKILL.md" "$plugin/skills/audit/SKILL.md"
 
 T="does not allow a skill named by a scheduled prompt"
 scheduled s20 "/10x:close gh-5"

@@ -123,12 +123,12 @@ arr "$(r1)" | put T1 out.json
 arr "$(jrec confirmed "$RULE" "$P1" 40 "$JSNIP")" | put T2 out.json
 begin "add leaves audit fingerprint and not seen in byte-identical"
 need "T1 adds" exits 0 add T1 "$root/.10x/T1/out.json"
-sed -e 's/^- audit fingerprint:$/- audit fingerprint: audit-7f3a/' -e 's/^- not seen in:$/- not seen in: T8, T9/' "$S" >"$tmp/edited.md"
+sed -e 's/^- audit fingerprint:$/- audit fingerprint: audit-7f3a/' -e 's|^- not seen in:$|- not seen in: audit/run-8, audit/run-9|' "$S" >"$tmp/edited.md"
 cp "$tmp/edited.md" "$S"
 cp "$S" "$tmp/before.md"
 need "T2 sees it" exits 0 add T2 "$root/.10x/T2/out.json"
 need "audit fingerprint kept" field_is "$FP1" "audit fingerprint" audit-7f3a
-need "not seen in kept" field_is "$FP1" "not seen in" "T8, T9"
+need "not seen in kept" field_is "$FP1" "not seen in" "audit/run-8, audit/run-9"
 need "only the seen in line changed" test "$(diff "$tmp/before.md" "$S" | grep '^[<>]')" = "$(printf '%s\n%s' '< - seen in:' '> - seen in: T2')"
 end
 
@@ -273,7 +273,7 @@ reset
 arr "$(r1)" "$(r2)" | put T1 out.json
 begin "set changes only status and reason"
 need "T1 adds" exits 0 add T1 "$root/.10x/T1/out.json"
-sed -e 's/^- audit fingerprint:$/- audit fingerprint: audit-7f3a/' -e 's/^- not seen in:$/- not seen in: T8, T9/' "$S" >"$tmp/edited.md"
+sed -e 's/^- audit fingerprint:$/- audit fingerprint: audit-7f3a/' -e 's|^- not seen in:$|- not seen in: audit/run-8, audit/run-9|' "$S" >"$tmp/edited.md"
 cp "$tmp/edited.md" "$S"
 cp "$S" "$tmp/before.md"
 need "set exit 0" exits 0 set T1 "$FP1" accepted "not reachable"
@@ -300,7 +300,295 @@ need "another ticket is refused" exits 2 remove T9 "$FP2"
 need "the second is still there" test "$(entries)" = 1
 end
 
+# ---------------------------------------------------------------- audit: fixtures
+
+# The sink files are committed, so only .10x/ is ever untracked.
+mkdir -p src
+printf '#!/bin/sh\n    eval "$cmd"\necho done\n' >src/a.sh
+printf 'cat "$p"\n' >src/b.sh
+printf 'rm -rf "$d"\n' >src/c.sh
+git add -A && git commit -qm "audit fixtures"
+
+# HOME with the security-audit skill installed (as a symlink, the way the Skills CLI may install it) and one without.
+home="$tmp/home"
+mkdir -p "$tmp/skillsrc/security-audit" "$home/.claude/skills" "$tmp/nohome"
+echo '# security-audit' >"$tmp/skillsrc/security-audit/SKILL.md"
+ln -s "$tmp/skillsrc/security-audit" "$home/.claude/skills/security-audit"
+
+# frec <audit fp> <verdict> <title> <sink file> <sink line> [<severity>] — one findings.json record: an entrypoint at src/b.sh:1, then the sink.
+frec() {
+  local sev=''
+  [ "$2" = confirmed ] && sev=",\"severity\":{\"overall_severity\":\"${6:-high}\"}"
+  printf '{"verdict":"%s","fingerprint":"%s","title":"%s","trace":[{"kind":"entrypoint","file":"src/b.sh","line":1},{"kind":"sink","file":"%s","line":%s}]%s}' \
+    "$2" "$1" "$3" "$4" "$5" "$sev"
+}
+# frej <audit fp> <title> — a rejected record.
+frej() { printf '{"verdict":"rejected","fingerprint":"%s","title":"%s"}' "$1" "$2"; }
+# run_ <n> <findings.json> <rules.json> <run-metadata.json> — .10x/audit/run-<n>/.
+run_() {
+  local d="$root/.10x/audit/run-$1"
+  mkdir -p "$d" && printf '%s\n' "$2" >"$d/findings.json" && printf '%s\n' "$3" >"$d/rules.json" && printf '%s\n' "$4" >"$d/run-metadata.json"
+}
+RULES='{"cf:alpha":"command-injection","cf:beta":"path-traversal"}'
+META_SRC='{"run_id":"run-1","scope_paths":["src"],"run_status":"complete"}'
+META_ALL='{"run_id":"run-1","scope_paths":["."],"run_status":"complete"}'
+FPA="$(exp_fp command-injection src/a.sh 'eval "$cmd"')"
+FPB="$(exp_fp path-traversal src/b.sh 'cat "$p"')"
+FPC="$(exp_fp command-injection src/c.sh 'rm -rf "$d"')"
+ALPHA() { frec cf:alpha confirmed 'Eval of cmd' src/a.sh 2; }
+BETA() { frec cf:beta needs_validation 'Read of p' src/b.sh 1; }
+# snap — every path under .10x/ with its checksum, and the exclude file.
+snap() { { find .10x | sort; find .10x .git/info/exclude -type f -exec cksum {} + | sort; } 2>&1; }
+
+# ---------------------------------------------------------------- audit: prepare
+
+reset
+arr "$(r1)" | put T1 out.json
+begin "prepare without the skill prints both install commands and writes nothing"
+need "T1 adds" exits 0 add T1 "$root/.10x/T1/out.json"
+: >.git/info/exclude
+snap >"$tmp/snap.before"
+HOME="$tmp/nohome" need "exit 1" exits 1 prepare
+need "says the skill is not installed" has "10x-security: the security-audit skill is not installed; install it with one of:"
+need "the project install command" line "npx skills add https://github.com/cloudflare/security-audit-skill --skill security-audit"
+need "the global install command" line "npx skills add https://github.com/cloudflare/security-audit-skill --skill security-audit --global"
+snap >"$tmp/snap.after"
+need ".10x/ and the exclude file are unchanged" cmp -s "$tmp/snap.before" "$tmp/snap.after"
+need "no .10x/audit" test ! -e .10x/audit
+end
+
+reset
+mkdir -p .10x/audit/run-1 .10x/audit/run-3 .10x/audit/run-x
+begin "prepare creates the run after the highest existing one"
+HOME="$home" need "exit 0" exits 0 prepare
+need "the skill line names the installed SKILL.md" grep -qE '^skill: /.*/security-audit/SKILL\.md$' "$tmp/out"
+need "run: is run-4, then the earlier runs in order" test "$(grep -v '^skill: ' "$tmp/out")" = "$(printf 'run: %s\nprior: %s\nprior: %s' \
+  "$root/.10x/audit/run-4" "$root/.10x/audit/run-1" "$root/.10x/audit/run-3")"
+need "run-4 exists" test -d .10x/audit/run-4
+need "git ignores it" git check-ignore -q .10x/audit/run-4/
+HOME="$home" need "a second prepare takes run-5" exits 0 prepare
+need "run-5" line "run: $root/.10x/audit/run-5"
+end
+
+reset
+printf '!/.10x/\n' >.gitignore
+begin "prepare refuses a run directory git does not ignore"
+HOME="$home" need "exit 1" exits 1 prepare
+need "says it is not ignored" has "10x-security: .10x/audit/run-1 is not ignored by git; the audit may write only to an ignored directory"
+need "run-1 is not created" test ! -e .10x/audit/run-1
+need ".10x/audit is not created" test ! -e .10x/audit
+rm -f .gitignore
+end
+
+# ---------------------------------------------------------------- audit: import
+
+reset; : >.git/info/exclude
+run_ 1 "$(arr "$(ALPHA)" "$(BETA)" "$(frej cf:gamma 'Not real')")" "$RULES" "$META_SRC"
+begin "import fingerprints confirmed and needs_validation records from the sink line"
+need "exit 0" exits 0 import run-1
+need "an added line per non-rejected record, then run_status" out_is "$(printf 'added: %s\nadded: %s\nrun_status: complete' "$FPA" "$FPB")"
+need "two entries; the rejected record is skipped" test "$(entries)" = 2
+need "fingerprint of the indented sink line equals the independent value" field_is "$FPA" rule command-injection
+need "audit fingerprint" field_is "$FPA" "audit fingerprint" cf:alpha
+need "verdict" field_is "$FPA" verdict confirmed
+need "severity from overall_severity" field_is "$FPA" severity high
+need "location is the sink's" field_is "$FPA" location src/a.sh:2
+need "title" field_is "$FPA" title "Eval of cmd"
+need "status" field_is "$FPA" status new
+need "found in the run" field_is "$FPA" "found in" audit/run-1
+need "trace is one line per entry, escaped" field_is "$FPA" trace 'entrypoint src/b.sh:1\nsink src/a.sh:2'
+need "needs_validation: audit fingerprint" field_is "$FPB" "audit fingerprint" cf:beta
+need "needs_validation: verdict" field_is "$FPB" verdict needs_validation
+need "needs_validation: no severity" field_is "$FPB" severity ""
+need "the rejected record is not in security.md" not grep -qF cf:gamma "$S"
+end
+
+reset; : >.git/info/exclude
+arr "$(jrec confirmed command-injection src/c.sh 1 'rm -rf \"$d\"')" | put T1 out.json
+run_ 1 "$(arr "$(ALPHA)" "$(BETA)")" "$RULES" "$META_SRC"
+run_ 2 "$(arr "$(frec cf:alpha confirmed 'Renamed eval' src/b.sh 1 medium)" "$(frec cf:beta2 needs_validation 'Another read' src/b.sh 1)" \
+  "$(frec cf:gamma2 confirmed 'Rm' src/c.sh 1)")" \
+  '{"cf:alpha":"command-injection","cf:beta2":"path-traversal","cf:gamma2":"command-injection"}' '{"run_id":"run-2","scope_paths":["src"]}'
+begin "import matches by audit fingerprint, then by 10x fingerprint"
+need "T1 adds the entry import will match by 10x fingerprint" exits 0 add T1 "$root/.10x/T1/out.json"
+need "run-1" exits 0 import run-1
+need "accepted with a reason" exits 0 set audit/run-1 "$FPA" accepted "not reachable"
+need "run-2" exits 0 import run-2
+need "three seen lines (status kept), then run_status missing" out_is "$(printf 'seen: %s accepted\nseen: %s new\nseen: %s new\nrun_status: missing' "$FPA" "$FPB" "$FPC")"
+need "no new entry" test "$(entries)" = 3
+need "audit match: seen in the second run" field_is "$FPA" "seen in" audit/run-2
+need "audit match: found in stays" field_is "$FPA" "found in" audit/run-1
+need "audit match: status kept" field_is "$FPA" status accepted
+need "audit match: reason kept" field_is "$FPA" reason "not reachable"
+need "audit match: title kept" field_is "$FPA" title "Eval of cmd"
+need "audit match: severity from the record" field_is "$FPA" severity medium
+need "audit match: location from the record" field_is "$FPA" location src/b.sh:1
+need "audit match: trace from the record" field_is "$FPA" trace 'entrypoint src/b.sh:1\nsink src/b.sh:1'
+need "audit match: audit fingerprint kept" field_is "$FPA" "audit fingerprint" cf:alpha
+need "10x match: seen in the second run" field_is "$FPB" "seen in" audit/run-2
+need "10x match: a non-empty audit fingerprint is kept" field_is "$FPB" "audit fingerprint" cf:beta
+need "10x match on an entry with no audit fingerprint: it is filled" field_is "$FPC" "audit fingerprint" cf:gamma2
+need "10x match: seen in the second run" field_is "$FPC" "seen in" audit/run-2
+need "10x match: found in stays the ticket" field_is "$FPC" "found in" T1
+end
+
+reset; : >.git/info/exclude
+run_ 1 "$(arr "$(ALPHA)" "$(BETA)")" "$RULES" "$META_SRC"
+begin "import of the same run twice is byte-identical"
+need "first import" exits 0 import run-1
+cp "$S" "$tmp/before.md"
+need "second import" exits 0 import run-1
+need "seen lines" out_is "$(printf 'seen: %s new\nseen: %s new\nrun_status: complete' "$FPA" "$FPB")"
+need "security.md is byte-identical" cmp -s "$S" "$tmp/before.md"
+end
+
+reset; : >.git/info/exclude
+arr "$(jrec confirmed command-injection src/c.sh 1 'rm -rf \"$d\"')" | put T1 out.json
+begin "import refuses a run with a record that has no rule"
+need "T1 adds" exits 0 add T1 "$root/.10x/T1/out.json"
+cp "$S" "$tmp/before.md"
+run_ 1 "$(arr "$(ALPHA)" "$(frec cf:nope confirmed 'Secret-title-nope' src/b.sh 1)")" "$RULES" "$META_SRC"
+need "exit 2" exits 2 import run-1
+need "names the record" has "findings[1]"
+need "does not quote the title" not has "Secret-title-nope"
+need "does not quote the Cloudflare fingerprint" not has "cf:nope"
+need "security.md is unchanged, the good record is not written either" cmp -s "$S" "$tmp/before.md"
+end
+
+reset; : >.git/info/exclude
+arr "$(jrec confirmed command-injection src/c.sh 1 'rm -rf \"$d\"')" | put T1 out.json
+begin "import refuses a run whose sink line does not exist"
+need "T1 adds" exits 0 add T1 "$root/.10x/T1/out.json"
+cp "$S" "$tmp/before.md"
+run_ 1 "$(arr "$(frec cf:alpha confirmed 'Secret-title-a' src/a.sh 4)")" "$RULES" "$META_SRC"
+need "line 4 of a 3-line file: exit 2" exits 2 import run-1
+need "names the record" has "findings[0]"
+need "does not quote the title" not has "Secret-title-a"
+run_ 2 "$(arr "$(ALPHA)" "$(frec cf:beta confirmed 'Secret-title-b' src/nope.sh 1)")" "$RULES" "$META_SRC"
+need "a missing sink file: exit 2" exits 2 import run-2
+need "names the record" has "findings[1]"
+need "does not quote the title" not has "Secret-title-b"
+need "security.md is unchanged" cmp -s "$S" "$tmp/before.md"
+end
+
+reset; : >.git/info/exclude
+arr "$(jrec confirmed command-injection src/c.sh 1 'rm -rf \"$d\"')" | put T1 out.json
+begin "import marks unmatched entries not seen only for a whole-repo scope"
+need "T1 adds" exits 0 add T1 "$root/.10x/T1/out.json"
+need "later" exits 0 set T1 "$FPC" later
+run_ 1 "$(arr "$(ALPHA)")" "$RULES" "$META_ALL"
+need "whole-repo import" exits 0 import run-1
+need "added, then not seen, then run_status" out_is "$(printf 'added: %s\nnot seen: %s\nrun_status: complete' "$FPA" "$FPC")"
+need "unmatched entry: not seen in the run" field_is "$FPC" "not seen in" audit/run-1
+need "unmatched entry: status kept" field_is "$FPC" status later
+need "the added entry is not marked" field_is "$FPA" "not seen in" ""
+run_ 2 "$(arr "$(ALPHA)")" "$RULES" "$META_ALL"
+need "second whole-repo import" exits 0 import run-2
+need "earlier run ids stay" field_is "$FPC" "not seen in" "audit/run-1, audit/run-2"
+need "a matched entry is not marked" field_is "$FPA" "not seen in" ""
+cp "$S" "$tmp/before.md"
+need "the same run again" exits 0 import run-2
+need "the same run again changes nothing" cmp -s "$S" "$tmp/before.md"
+run_ 3 "$(arr "$(ALPHA)")" "$RULES" '{"scope_paths":["src"],"run_status":"complete"}'
+need "a path-scope import" exits 0 import run-3
+need "a path scope marks nothing" field_is "$FPC" "not seen in" "audit/run-1, audit/run-2"
+run_ 4 "$(arr "$(ALPHA)")" "$RULES" '{"scope_paths":["a..b"],"run_status":"complete"}'
+need "a diff-scope import" exits 0 import run-4
+need "a diff scope marks nothing" field_is "$FPC" "not seen in" "audit/run-1, audit/run-2"
+end
+
+# ---------------------------------------------------------------- audit: set, ticket
+
+reset; : >.git/info/exclude
+run_ 1 "$(arr "$(ALPHA)")" "$RULES" "$META_SRC"
+begin "set accepts an audit run id and still needs a reason for accepted or rejected"
+need "import" exits 0 import run-1
+cp "$S" "$tmp/before.md"
+need "accepted without a reason: exit 2" exits 2 set audit/run-1 "$FPA" accepted
+need "rejected without a reason: exit 2" exits 2 set audit/run-1 "$FPA" rejected
+need "nothing written" cmp -s "$S" "$tmp/before.md"
+need "accepted with a reason" exits 0 set audit/run-1 "$FPA" accepted "not reachable"
+need "status" field_is "$FPA" status accepted
+need "reason" field_is "$FPA" reason "not reachable"
+need "a run that neither found nor saw it: exit 2" exits 2 set audit/run-2 "$FPA" later
+need "audit/run-0 is not a run id: exit 2" exits 2 set audit/run-0 "$FPA" later
+need "later" exits 0 set audit/run-1 "$FPA" later
+need "status later" field_is "$FPA" status later
+need "remove accepts it too" exits 0 remove audit/run-1 "$FPA"
+need "the entry is gone" test "$(entries)" = 0
+end
+
+# fake gh on PATH: logs every call and fails.
+mkdir -p "$tmp/fakebin"
+printf '#!/bin/sh\necho "$*" >>"%s"\nexit 1\n' "$tmp/gh.log" >"$tmp/fakebin/gh"
+chmod +x "$tmp/fakebin/gh"
+H8="${FPA#sha256:}"; H8="${H8:0:8}"
+
+reset; : >.git/info/exclude
+run_ 1 "$(arr "$(ALPHA)")" "$RULES" "$META_SRC"
+begin "ticket writes a local ticket in both tickets modes and calls no gh"
+need "import" exits 0 import run-1
+: >"$tmp/gh.log"
+mkdir -p .claude
+printf '{"tickets":"github"}\n' >.claude/10x.json
+PATH="$tmp/fakebin:$PATH" need "github mode: exit 0" exits 0 ticket "$FPA" "security-$H8"
+need "github mode: prints the path" line "ticket: $root/.10x/security-$H8/ticket.md"
+need "github mode: ticket.md written" test -s ".10x/security-$H8/ticket.md"
+need "github mode: the slug is in seen in" field_is "$FPA" "seen in" "security-$H8"
+printf '{"tickets":"files"}\n' >.claude/10x.json
+PATH="$tmp/fakebin:$PATH" need "files mode: exit 0" exits 0 ticket "$FPA" security-00000000
+need "files mode: prints the path" line "ticket: $root/.10x/security-00000000/ticket.md"
+need "files mode: ticket.md written" test -s .10x/security-00000000/ticket.md
+need "files mode: the slug is added to seen in" field_is "$FPA" "seen in" "security-$H8, security-00000000"
+need "gh was never called" test ! -s "$tmp/gh.log"
+rm -rf .claude
+end
+
+reset; : >.git/info/exclude
+run_ 1 "$(arr "$(ALPHA)")" "$RULES" "$META_SRC"
+begin "ticket names the entry only by its fingerprint"
+need "import" exits 0 import run-1
+need "ticket" exits 0 ticket "$FPA" "security-$H8"
+printf '# Fix security entry %s\n\n## Context\nSecurity entry `%s` in `.10x/security.md` (title, location and trace are there). Found in `audit/run-1`.\n\n## Acceptance criteria\n- [ ] AC1 — Security entry `%s` is fixed, and removed from `security.md` once a full review round has no finding against it.\n' \
+  "$H8" "$FPA" "$FPA" >"$tmp/ticket.want"
+need "ticket.md is the documented text" test "$(cat ".10x/security-$H8/ticket.md")" = "$(cat "$tmp/ticket.want")"
+need "no title" not grep -qF "Eval of cmd" ".10x/security-$H8/ticket.md"
+need "no location" not grep -qF "src/a.sh" ".10x/security-$H8/ticket.md"
+need "no trace" not grep -qF "entrypoint" ".10x/security-$H8/ticket.md"
+end
+
+reset; : >.git/info/exclude
+run_ 1 "$(arr "$(ALPHA)")" "$RULES" "$META_SRC"
+begin "ticket refuses an existing ticket dir and the slugs drafts and audit"
+need "import" exits 0 import run-1
+mkdir .10x/taken
+cp "$S" "$tmp/before.md"
+need "an existing .10x/<slug>/: exit 2" exits 2 ticket "$FPA" taken
+need "it holds no ticket.md" test ! -e .10x/taken/ticket.md
+need "drafts: exit 2" exits 2 ticket "$FPA" drafts
+need "drafts: the reserved wording" has "slug 'drafts' is reserved for .10x/drafts/"
+need "audit: exit 2" exits 2 ticket "$FPA" audit
+need "audit: the reserved wording" has "slug 'audit' is reserved for .10x/audit/"
+need "audit: no ticket.md in .10x/audit" test ! -e .10x/audit/ticket.md
+need "gh-7: exit 2" exits 2 ticket "$FPA" gh-7
+need "an invalid slug: exit 2" exits 2 ticket "$FPA" Bad_Slug
+need "an unknown fingerprint: exit 2" exits 2 ticket "sha256:$(printf '0%.0s' {1..64})" some-slug
+need "it created no dir" test ! -e .10x/some-slug
+need "security.md is unchanged by every refusal" cmp -s "$S" "$tmp/before.md"
+end
+
 # ---------------------------------------------------------------- git status
+
+rm -rf .10x; : >.git/info/exclude
+begin "prepare and import leave git status clean"
+need "before: clean" test -z "$(git status --porcelain)"
+HOME="$home" need "prepare" exits 0 prepare
+need "prepare made run-1" line "run: $root/.10x/audit/run-1"
+need "git status is empty after prepare" test -z "$(git status --porcelain)"
+run_ 1 "$(arr "$(ALPHA)" "$(BETA)")" "$RULES" "$META_SRC"
+need "import" exits 0 import run-1
+need "git status is empty after import" test -z "$(git status --porcelain)"
+end
 
 reset; : >.git/info/exclude
 arr "$(r1)" | put T1 out.json

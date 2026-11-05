@@ -28,6 +28,7 @@ const userOwn = {
   open: ["10x-land issue "],
   batch: ["10x-land comment ", "10x-batch approve "],
   roadmap: ["10x-land issue "],
+  audit: ["10x-security set ", "10x-security ticket "],
 }
 const ownedBy = (skill, line) => userOwn[skill].some((p) => line === p.trimEnd() || line.startsWith(p))
 // Exact prose commands Claude Code runs without a grant (checked with `claude -p` in default mode). Granting
@@ -41,6 +42,7 @@ const notRun = {
   open: ["gh auth login"],
   batch: [],
   roadmap: ["gh auth login"],
+  audit: [],
 }
 const forbidden = ["git push", "git rebase", "git merge", "git log", "gh pr merge", "glab mr merge", "gh api",
   "gh issue create", "gh pr create", "gh pr edit", "glab mr create", "glab mr update"]
@@ -52,6 +54,7 @@ const publicWrites = ["10x-land issue", "10x-land comment", "10x-batch approve"]
 const norm = (s) => s.replace(/<[^>]*>/g, "X")
 
 for (const skill of Object.keys(userOwn)) {
+  if (!fs.existsSync(`${dir}/${skill}/SKILL.md`)) { bad(`${skill}: skills/${skill}/SKILL.md is missing`); continue }
   const text = fs.readFileSync(`${dir}/${skill}/SKILL.md`, "utf8")
   const fm = /^---\n([\s\S]*?)\n---/.exec(text)[1]
   const m = /^allowed-tools:\n((?:  - .*\n?)+)/m.exec(fm + "\n")
@@ -179,7 +182,7 @@ for (const skill of ["open", "work", "roadmap"]) {
 
 const rule = "Never reply that something is unverified, unchecked or not yet confirmed: check it first. " +
   "Only when a check is impossible, say so, naming what was tried and why it cannot be checked."
-for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/SKILL.md", "skills/batch/SKILL.md", "skills/roadmap/SKILL.md", "skills/code-review/SKILL.md",
+for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/SKILL.md", "skills/batch/SKILL.md", "skills/roadmap/SKILL.md", "skills/audit/SKILL.md", "skills/code-review/SKILL.md",
   "skills/code-review-branch/SKILL.md", "agents/code-reviewer.md", "agents/security-reviewer.md"]) {
   const file = `${dir}/../${f}`
   fs.existsSync(file) && fs.readFileSync(file, "utf8").includes(rule)
@@ -385,8 +388,88 @@ for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/S
     : bad("work: hands Out of diff to 10x-security and asks about new entries in Step 8")
 }
 
-for (const skill of ["open", "work", "close", "batch", "roadmap"])
-  /^## Replies$/m.test(fs.readFileSync(`${dir}/${skill}/SKILL.md`, "utf8"))
+// gh-2 — /10x:audit: the skill file is read once; a missing file fails each case and does not stop the run.
+{
+  const file = `${dir}/audit/SKILL.md`
+  const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : ""
+  const flat = text.replace(/\s+/g, " ")
+  const front = (/^---\n([\s\S]*?)\n---/.exec(text) || ["", ""])[1].split("\n")
+  const missing = (pairs) => pairs.filter(([c]) => !c).map(([, w]) => w)
+  const verdict = (name, miss) => !text ? bad(`${name} (skills/audit/SKILL.md is missing)`)
+    : miss.length ? bad(`${name} (missing: ${miss.join("; ")})`) : ok(name)
+
+  // AC2 — one asking round, and a bad answer is asked again.
+  verdict("audit: asks scope, profile and agent limit in one round and re-asks a bad ref or path", missing([
+    [flat.includes("scope") && flat.includes("profile") && flat.includes("agent limit"), "scope, profile and agent limit"],
+    [["`quick`", "`standard`", "`deep`"].every((p) => flat.includes(p)), "the three profiles quick, standard, deep"],
+    [flat.includes("in one round"), "'in one round'"],
+    [flat.includes("`git rev-parse --verify <ref>`"), "'git rev-parse --verify <ref>' for a ref"],
+    [flat.includes("`test -e <path>`"), "'test -e <path>' for a path"],
+    [/asking again|ask(s)? again|re-ask/.test(flat), "asking again on a failed check"],
+    [flat.includes("`<ref>..<ref>`"), "a diff scope written <ref>..<ref>"],
+    [flat.indexOf("in one round") !== -1 && flat.indexOf("in one round") < flat.indexOf("Skill tool"), "the round before the Skill tool call"],
+  ]))
+
+  // AC4 — prepare first, then the installed skill in this session, never a subagent.
+  const firstBlock = (/```bash\n([\s\S]*?)```/.exec(text) || ["", ""])[1].split("\n").map((l) => l.trim()).filter(Boolean)
+  verdict("audit: invokes security-audit in the main session with scope, profile, budget, output dir and prior runs", missing([
+    [front.includes("disable-model-invocation: true"), "disable-model-invocation: true"],
+    [["  - Bash(10x-security prepare)", "  - Bash(10x-security import *)", "  - Bash(git rev-parse --verify *)", "  - Bash(test -e *)"].every((g) => front.includes(g)),
+      "the four granted commands"],
+    [!front.some((l) => /10x-security (set|ticket)/.test(l)) && !front.includes("  - Bash(10x-security *)"), "no grant for set or ticket"],
+    [firstBlock[0] === "10x-security prepare", "10x-security prepare as the first command"],
+    [flat.includes("`security-audit` skill") && flat.includes("with the Skill tool") && /never a subagent/.test(flat), "the Skill tool, never a subagent"],
+    [/(this|the main) session/.test(flat), "this session"],
+    [flat.includes("`run:`") && flat.includes("`prior:`"), "the run: and prior: lines of prepare"],
+    [/budget/.test(flat) && /output directory/.test(flat), "budget and the output directory"],
+    [flat.includes('`scope_paths: ["."]`'), 'a whole-repo scope recorded as `scope_paths: ["."]`'],
+    [flat.includes("`rules.json`") && flat.includes("10x-security import run-<n>"), "rules.json written, then 10x-security import run-<n>"],
+    [flat.indexOf("Skill tool") !== -1 && flat.indexOf("Skill tool") < flat.indexOf("10x-security import run-<n>"), "the skill runs before import"],
+  ]))
+
+  // AC9 — each new or later entry, one at a time, in import's order.
+  verdict("audit: asks each new or later entry of the run one at a time", missing([
+    [flat.includes("one at a time"), "'one at a time'"],
+    [flat.includes("`added`") && flat.includes("`seen`"), "the added and seen lines of import"],
+    [flat.includes("`new` or `later`"), "'`new` or `later`'"],
+    [flat.includes("import's output order"), "import's output order"],
+    [["`fix-now`", "`later`", "`accepted`", "`rejected`"].every((s) => flat.includes(s)), "the four statuses"],
+    [flat.includes("10x-security set audit/run-<n> <fp> <status> [reason]"), "10x-security set audit/run-<n> <fp> <status> [reason]"],
+    [flat.includes("10x-security ticket <fp> security-<8 hex>"), "10x-security ticket <fp> security-<8 hex>"],
+    [flat.indexOf("10x-security set") !== -1 && flat.indexOf("10x-security set") < flat.indexOf("10x-security ticket"), "set before ticket"],
+    [/severity/.test(flat) && /fingerprint/.test(flat) && /title/.test(flat) && /location/.test(flat), "fingerprint, severity, title and location shown"],
+  ]))
+
+  // AC12 — what the final reply names.
+  verdict("audit: the final reply names the run, run_status, counts and fix-now tickets", missing([
+    [/^## Replies$/m.test(text) && /final reply/i.test(flat), "a ## Replies section and a final reply"],
+    [flat.includes("`run_status`"), "run_status"],
+    [/new/.test(flat) && /matched/.test(flat) && /not[- ]seen/.test(flat), "the new, matched and not-seen counts"],
+    [/count per status|per status/.test(flat), "the count per status"],
+    [flat.includes("`/10x:work <slug>`"), "one /10x:work <slug> per fix-now ticket"],
+    [/run path|path of the run|`run:`/.test(flat), "the run path"],
+  ]))
+}
+
+// gh-2 AC15 — work keeps the ticket.md `10x-security ticket` wrote for a security-<8 hex> ticket, posts nothing for it,
+// branches it by its id, and removes the entry after a clean full round.
+{
+  const work = fs.readFileSync(`${dir}/work/SKILL.md`, "utf8")
+  const flat = (s) => s.replace(/\s+/g, " ")
+  const step = (n) => flat((new RegExp(`^## Step ${n}\\b[\\s\\S]*?(?=^## Step )`, "m").exec(work) || [""])[0])
+  const miss = [
+    [step(1).includes("a ticket whose id is not `gh-<n>` and whose `ticket.md` already exists"), "Step 1: keeps an existing ticket.md of any non-gh ticket"],
+    [step(1).includes("**Words**, or any ticket that is not a GitHub issue"), "Step 1: nothing is posted for a non-issue ticket"],
+    [step(2).includes("`security-<8 hex>`") && step(2).includes("the id itself") && step(2).includes("`<type>/security-<8 hex>`"), "Step 2: --slug is the id itself"],
+    [step("7b").includes("`security-<8 hex>` ticket") && step("7b").includes("`10x:security-reviewer`") &&
+      step("7b").includes("`10x-security remove <id> <fp>`"), "Step 7b: a security-<8 hex> ticket's full round removes the entry"],
+  ].filter(([c]) => !c).map(([, w]) => w)
+  miss.length ? bad(`work: a security ticket keeps its ticket.md, posts nothing, is branched by its id and removes its entry after a clean full round (missing: ${miss.join("; ")})`)
+    : ok("work: a security ticket keeps its ticket.md, posts nothing, is branched by its id and removes its entry after a clean full round")
+}
+
+for (const skill of ["open", "work", "close", "batch", "roadmap", "audit"])
+  fs.existsSync(`${dir}/${skill}/SKILL.md`) && /^## Replies$/m.test(fs.readFileSync(`${dir}/${skill}/SKILL.md`, "utf8"))
     ? ok(`${skill}: has a ## Replies section`) : bad(`${skill}: lacks a ## Replies section`)
 process.exit(fail)
 JS
