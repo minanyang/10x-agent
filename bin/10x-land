@@ -74,7 +74,7 @@
 # `ticket` (refused unless tickets is files) writes .10x/drafts/<slug>.md verbatim to .10x/<slug>/ticket.md
 # and deletes the draft, with no gh call and no origin. The draft is a title and a body: a Labels:, Type: or Form:
 # header line is refused, and the body gets `issue`'s checks for the `## Acceptance criteria` layout. It refuses an
-# existing .10x/<slug>/ and the slugs gh-<n> and drafts, and prints `ticket: <abs path>`.
+# existing .10x/<slug>/ and the slugs gh-<n>, drafts and audit, and prints `ticket: <abs path>`.
 # `comment` (github.com only) posts .10x/<id>/comment.md as a comment on issue <n> of id gh-<n>, in origin's
 # repo, only when the url in .10x/<id>/ticket.md's header is that issue's, then renames it to comment.posted.md;
 # it needs no worktree, since /10x:work posts it while planning.
@@ -92,6 +92,7 @@ if [ "$cmd" = issue ] || [ "$cmd" = ticket ]; then
   if [ "$cmd" = ticket ]; then
     [[ ! "$id" =~ ^gh-[0-9]+$ ]] || die "slug '$id' is the id of a GitHub issue ticket; pick another"
     [ "$id" != drafts ] || die "slug 'drafts' is reserved for .10x/drafts/"
+    [ "$id" != audit ] || die "slug 'audit' is reserved for .10x/audit/"
   fi
 elif [ "$cmd" = comment ]; then
   [[ "$id" =~ ^gh-([1-9][0-9]*)$ ]] || die "comment needs a GitHub issue ticket id gh-<n>, got '$id'"

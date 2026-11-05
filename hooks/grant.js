@@ -3,8 +3,8 @@
 // session in which the user typed it. Claude Code applies a skill's `allowed-tools` only to the turn
 // the skill was invoked in, not to a background wake-up, a later approval turn or a `--resume` turn.
 //
-// UserPromptSubmit: a prompt that starts with `/10x:open`, `/10x:work`, `/10x:close`, `/10x:batch` or
-// `/10x:roadmap` records that skill's `Bash(...)` grants, as its SKILL.md lists them now (but TYPED_ONLY), as pending, in
+// UserPromptSubmit: a prompt that starts with `/10x:open`, `/10x:work`, `/10x:close`, `/10x:batch`,
+// `/10x:roadmap` or `/10x:audit` records that skill's `Bash(...)` grants, as its SKILL.md lists them now (but TYPED_ONLY), as pending, in
 //   ${CLAUDE_PLUGIN_DATA}/sessions/<session_id>.json
 //   { "skills": { "<skill>": { "confirmed": { "prompt_id", "grants", "id"? }, "pending": { "prompt_id", "grants", "id"? } } } }
 // outside the working directory, so the agent cannot write itself a record without being asked.
@@ -14,24 +14,26 @@
 // PreToolUse: allows a single command (no shell metacharacters) matching a confirmed grant, or a
 // pending one that the transcript confirms, outside a subagent. A 10x script run on a ticket is
 // allowed only for the entry's ticket id: the one typed with the skill, or for a task in words the
-// first one the hook allows; an UNBOUND skill's entry, which creates a ticket per roadmap item, binds
-// none. Anything else, and any error of its own, prints nothing: Claude Code decides as usual.
+// first one the hook allows; an UNBOUND skill's entry (/10x:roadmap creates a ticket per roadmap item,
+// /10x:audit works on audit runs) binds none. Anything else, and any error of its own, prints nothing: Claude Code decides as usual.
 
 const fs = require('node:fs')
 const path = require('node:path')
 
 const SID = /^[A-Za-z0-9-]+$/
-const TYPED = /^\s*\/10x:(open|work|close|batch|roadmap)(?=\s|$)/
-// Skills whose entry is not bound to one ticket id: /10x:roadmap runs `10x-land ticket <slug>` once per item.
-const UNBOUND = new Set(['roadmap'])
+const TYPED = /^\s*\/10x:(open|work|close|batch|roadmap|audit)(?=\s|$)/
+// Skills whose entry is not bound to one ticket id: /10x:roadmap runs `10x-land ticket <slug>` once per item, and
+// /10x:audit runs `10x-security import run-<n>` on a new run each time.
+const UNBOUND = new Set(['roadmap', 'audit'])
 const META = /[;&|<>$`\n\r]/
 // Grants used only in the turn the skill was typed, where its allowed-tools apply anyway: kept out of the record so a
 // later turn cannot start a new batch the user never named.
 const TYPED_ONLY = new Set(['10x-batch init *'])
 // Commands that always ask, whatever a session's record holds — one saved by an older SKILL.md included: the public
-// writes, a batch's plan approval, starting a batch, and settling or removing a security entry (a session can put its
-// own ticket into any entry's `seen in` with `10x-security add`, so the ticket binding alone does not protect them).
-const ALWAYS_ASK = /^(10x-land (issue|comment)|10x-batch (approve|init)|10x-security (set|remove))(\s|$)/
+// writes, a batch's plan approval, starting a batch, and settling, removing or opening a ticket for a security entry
+// (a session can put its own ticket into any entry's `seen in` with `10x-security add`, so the ticket binding alone
+// does not protect them).
+const ALWAYS_ASK = /^(10x-land (issue|comment)|10x-batch (approve|init)|10x-security (set|remove|ticket))(\s|$)/
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 // The word that carries the ticket id: `10x-land <sub> <id>`, `10x-verify <id>`, ….
 const ID_WORD = {

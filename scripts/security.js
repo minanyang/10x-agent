@@ -17,6 +17,8 @@
 //   - audit fingerprint:
 //   - not seen in:
 //
+// An <id> is a ticket id or an audit run id, audit/run-<n>; `10x-security import` writes audit run ids to `not seen in`.
+//
 // One blank line between sections, one newline at the end. An empty field is `- <field>:`. Every value is one line:
 // `\` is stored as `\\`, newline as `\n`, carriage return as `\r`, tab as `\t`. Parse and serialise are exact inverses,
 // so rewriting one entry leaves every other byte as it was. Fault messages never quote a value: a refusal must not
@@ -34,6 +36,8 @@ const VERDICTS = ['confirmed', 'needs_validation']
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'informational']
 const STATUSES = ['new', 'fix-now', 'later', 'accepted', 'rejected']
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+// An audit run id; a ticket id never holds `/`, so the two never collide.
+const AUDIT = /^audit\/run-[1-9][0-9]*$/
 const RULE = /^[a-z0-9]+(-[a-z0-9]+)*$/
 const FP = /^sha256:[0-9a-f]{64}$/
 // Control characters a stored value may not hold (newline, carriage return and tab are escaped instead).
@@ -56,6 +60,16 @@ function unescape(s) {
 }
 
 const list = (s) => (s === '' ? [] : s.split(', '))
+const source = (id) => ID.test(id) || AUDIT.test(id)
+
+// The fault of a record's relative path, or '' when it is valid.
+function badPath(p) {
+  if (typeof p !== 'string' || p === '') return 'must be a non-empty string'
+  if (/[\x00-\x1f\x7f-\x9f]/.test(p)) return 'holds a control character'
+  if (p.startsWith('/') || p.startsWith('./') || p.includes('\\') || p.includes('//') || p.split('/').includes('..'))
+    return 'must be relative, with no leading / or ./, no \\, no // and no .. segment'
+  return ''
+}
 
 function fingerprint(rule, file, snippet) {
   const norm = snippet.replace(/[ \t\r\n\f\v]+/g, ' ').replace(/^ | $/g, '')
@@ -108,8 +122,9 @@ function parse(text) {
       if (f === 'severity' && values.verdict === 'needs_validation' && v !== '') bad('must be empty for needs_validation')
       if (f === 'rule' && !RULE.test(v)) bad('must be kebab-case')
       if (f === 'status' && !STATUSES.includes(v)) bad(`must be one of ${STATUSES.join(', ')}`)
-      if (f === 'found in' && !ID.test(v)) bad('must be a ticket id')
-      if (f === 'seen in' && !list(v).every((id) => ID.test(id))) bad('must be ticket ids separated by ", "')
+      if (f === 'found in' && !source(v)) bad('must be a ticket id or audit/run-<n>')
+      if (f === 'seen in' && !list(v).every(source)) bad('must be ticket ids or audit/run-<n> separated by ", "')
+      if (f === 'not seen in' && !list(v).every((id) => AUDIT.test(id))) bad('must be audit/run-<n> ids separated by ", "')
       i++
     }
     entries.push({ fp, line: head, values })
@@ -137,11 +152,8 @@ function validate(records) {
     else if (has('severity') && !SEVERITIES.includes(r.severity)) bad('severity', `must be one of ${SEVERITIES.join(', ')}`)
     if (has('rule') && !(typeof r.rule === 'string' && RULE.test(r.rule))) bad('rule', 'must match ^[a-z0-9]+(-[a-z0-9]+)*$')
     if (has('path')) {
-      const p = r.path
-      if (typeof p !== 'string' || p === '') bad('path', 'must be a non-empty string')
-      else if (/[\x00-\x1f\x7f-\x9f]/.test(p)) bad('path', 'holds a control character')
-      else if (p.startsWith('/') || p.startsWith('./') || p.includes('\\') || p.includes('//') || p.split('/').includes('..'))
-        bad('path', 'must be relative, with no leading / or ./, no \\, no // and no .. segment')
+      const why = badPath(r.path)
+      if (why) bad('path', why)
     }
     if (has('line') && !(Number.isInteger(r.line) && r.line >= 1)) bad('line', 'must be an integer of at least 1')
     for (const k of ['title', 'snippet', 'trace']) {
@@ -213,4 +225,4 @@ function open(entries, id, level) {
     .map((e) => e.fp)
 }
 
-module.exports = { HEADER, FILE, FIELDS, SEVERITIES, STATUSES, ID, CONTROL, escape, unescape, list, fingerprint, parse, serialise, validate, load, loadOrExit, disclosed, open }
+module.exports = { HEADER, FILE, FIELDS, SEVERITIES, STATUSES, ID, AUDIT, RULE, CONTROL, SNIPPET_CONTROL, escape, unescape, list, badPath, fingerprint, parse, serialise, validate, load, loadOrExit, disclosed, open }

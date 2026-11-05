@@ -36,6 +36,7 @@ Left to itself, a coding agent:
 /10x:work <ticket>   →  plan  ─(you approve)→  worktree → tests → commit → red-proof --lock → implement → commit → red-proof → pre-review gates → verify + cold review → fix → review the fixes
 /10x:close <id>      →  rebase → verify → PR / merge → clean up
 /10x:roadmap [reqs]  →  order requirements into versions; /10x:batch <version> runs one
+/10x:audit           →  run the installed security-audit skill on a scope; merge its findings into .10x/security.md and settle each one
 /10x:batch <tickets> →  work and close many tickets from one terminal, each in a background worker
 ```
 
@@ -102,6 +103,7 @@ Invoke as `10x:<name>` (the Agent tool needs the prefix).
 | `/10x:open` | Draft a ticket — a GitHub issue, or with `tickets: files` a file under `.10x/` — and create it on approval |
 | `/10x:work` | Plan a ticket, then build, verify and review it in a worktree |
 | `/10x:close` | Rebase, verify, land and clean up |
+| `/10x:audit` | Run the installed Cloudflare `security-audit` skill on a scope (a diff, paths or the whole repo) and merge its findings into `.10x/security.md`, so a re-run never triages the same issue twice; then settle each new or deferred entry with you and open a local ticket for each `fix-now` |
 | `/10x:roadmap` | Order requirements into versions in `.10x/roadmap.md`, each with the reason for its place, once you approve; turn a version into one ticket per item, which `/10x:batch <version>` works and marks `Done` |
 | `/10x:batch` | Work and close many tickets from one terminal, each in a background worker |
 | `/10x:commit` | Commit what this session changed — only those paths, in the repo's own message style. Commits straight away; stops to ask only on a likely secret, unclear scope or unrelated changes. Say "message only" for a draft |
