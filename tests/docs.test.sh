@@ -119,6 +119,24 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
+// gh-2 AC14 — /10x:audit in the README, and the three new 10x-security subcommands and rules.json in docs/scripts.md.
+{
+  const name = "README.md documents /10x:audit"
+  const lines = readme.split("\n"), fenced = unfenced(readme)
+  const missing = [
+    [lines.some((s, k) => fenced[k] === null && s.startsWith("/10x:audit ")), "a commands-fence line for /10x:audit"],
+    [fenced.some((s) => s !== null && s.startsWith("| `/10x:audit` |")), "a Skills table row for /10x:audit"],
+  ].filter(([c]) => !c).map(([, w]) => w)
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+{
+  const name = "docs/scripts.md documents 10x-security prepare, import, ticket and rules.json"
+  const scripts = read("docs/scripts.md")
+  const missing = ["10x-security prepare", "10x-security import", "10x-security ticket", "rules.json"]
+    .filter((w) => scripts === null || !scripts.includes(w)).map((w) => `docs/scripts.md: ${w}`)
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 // AC4 — heading parity and cross-links.
 {
   const name = "README.zh-TW.md has the same ## and ### headings, level by level, as README.md"
