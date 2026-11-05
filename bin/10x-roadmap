@@ -8,7 +8,9 @@
 //   10x-roadmap link <version> <item n> <id>
 //
 // `show` prints, for each version (or only <version>), `<version> — <state>` and `  <n>. <item>` per item (`\|` as
-// `|`), then, without <version>, `next: <version|none>`: the first row whose state is not `Done <YYYY-MM-DD>`. With no
+// `|`), then, without <version>, `next: <version|none>`: the first row whose state is not `Done <YYYY-MM-DD>`, and
+// the pre-release prompt: `audit: /10x:audit <tag>..HEAD` when the main checkout's HEAD is ahead of its latest tag,
+// `audit: no tag — a diff-scope audit needs a previous release` without a tag, nothing when HEAD is the tag. With no
 // roadmap.md it prints `no roadmap: .10x/roadmap.md` and exits 0. It never writes.
 // `check` validates .10x/roadmap.draft.md: on a missing header or separator row, a missing, repeated or misplaced
 // section, an empty, invalid, all-digits or duplicate Version, an empty Why this order, an empty item, or a
@@ -78,8 +80,29 @@ function show(argv) {
     out.push(`${r.version} — ${shown(r.state)}`)
     for (const it of r.items) out.push(`  ${it.n}. ${shown(it.text)}`)
   }
-  if (!argv.length) out.push(`next: ${p.rows.find((r) => !rm.isDone(r.state))?.version ?? 'none'}`)
+  if (!argv.length) {
+    out.push(`next: ${p.rows.find((r) => !rm.isDone(r.state))?.version ?? 'none'}`)
+    const audit = auditLine()
+    if (audit) out.push(audit)
+  }
   process.stdout.write(out.join('\n') + '\n')
+}
+
+// The `audit:` line, or '' when HEAD is the latest tag. A ref name cannot hold a newline or control character, so the
+// tag is printed as git gives it.
+function auditLine() {
+  const git = (...args) => execFileSync('git', ['-C', ROOT, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  let tag
+  try {
+    tag = git('describe', '--tags', '--abbrev=0')
+  } catch {
+    return 'audit: no tag — a diff-scope audit needs a previous release'
+  }
+  try {
+    return Number(git('rev-list', '--count', `refs/tags/${tag}..HEAD`)) > 0 ? `audit: /10x:audit ${tag}..HEAD` : ''
+  } catch {
+    return ''
+  }
 }
 
 // The draft's text and the `not kept:` lines against roadmap.md; exit 1 naming each fault.

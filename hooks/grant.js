@@ -14,7 +14,7 @@
 // PreToolUse: allows a single command (no shell metacharacters) matching a confirmed grant, or a
 // pending one that the transcript confirms, outside a subagent. A 10x script run on a ticket is
 // allowed only for the entry's ticket id: the one typed with the skill, or for a task in words the
-// first one the hook allows; an UNBOUND skill's entry (/10x:roadmap creates a ticket per roadmap item,
+// first one the hook allows (`10x-security list` and `route` take none); an UNBOUND skill's entry (/10x:roadmap creates a ticket per roadmap item,
 // /10x:audit works on audit runs) binds none. Anything else, and any error of its own, prints nothing: Claude Code decides as usual.
 
 const fs = require('node:fs')
@@ -30,10 +30,10 @@ const META = /[;&|<>$`\n\r]/
 // later turn cannot start a new batch the user never named.
 const TYPED_ONLY = new Set(['10x-batch init *'])
 // Commands that always ask, whatever a session's record holds — one saved by an older SKILL.md included: the public
-// writes, a batch's plan approval, starting a batch, and settling, removing or opening a ticket for a security entry
-// (a session can put its own ticket into any entry's `seen in` with `10x-security add`, so the ticket binding alone
-// does not protect them).
-const ALWAYS_ASK = /^(10x-land (issue|comment)|10x-batch (approve|init)|10x-security (set|remove|ticket))(\s|$)/
+// writes (a security advisory included), a batch's plan approval, starting a batch, and settling, removing or opening a
+// ticket for a security entry (a session can put its own ticket into any entry's `seen in` with `10x-security add`, so
+// the ticket binding alone does not protect them).
+const ALWAYS_ASK = /^(10x-land (issue|comment|advisory)|10x-batch (approve|init)|10x-security (set|remove|ticket))(\s|$)/
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 // The word that carries the ticket id: `10x-land <sub> <id>`, `10x-verify <id>`, ….
 const ID_WORD = {
@@ -111,6 +111,8 @@ function typedId(args) {
 // The ticket id a command runs on: undefined for a command that takes none, '' for an invalid one.
 function ticketOf(command) {
   const words = command.split(/\s+/)
+  // They read security.md and take a flag or a fingerprint, never a ticket id.
+  if (words[0] === '10x-security' && (words[1] === 'list' || words[1] === 'route')) return undefined
   const at = Object.hasOwn(ID_WORD, words[0]) ? ID_WORD[words[0]] : -1
   if (at < 0 || words[at] === undefined) return undefined
   return ID.test(words[at]) ? words[at] : ''

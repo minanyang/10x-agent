@@ -104,7 +104,7 @@ Invoke as `10x:<name>` (the Agent tool needs the prefix).
 | `/10x:work` | Plan a ticket, then build, verify and review it in a worktree |
 | `/10x:close` | Rebase, verify, land and clean up |
 | `/10x:audit` | Run the installed Cloudflare `security-audit` skill on a scope (a diff, paths or the whole repo) and merge its findings into `.10x/security.md`, so a re-run never triages the same issue twice; then settle each new or deferred entry with you and open a local ticket for each `fix-now` |
-| `/10x:roadmap` | Order requirements into versions in `.10x/roadmap.md`, each with the reason for its place, once you approve; turn a version into one ticket per item, which `/10x:batch <version>` works and marks `Done` |
+| `/10x:roadmap` | Order requirements into versions in `.10x/roadmap.md`, each with the reason for its place, once you approve; turn a version into one ticket per item, which `/10x:batch <version>` works and marks `Done`. Offers deferred `confirmed` entries of `.10x/security.md` as requirements; `10x-security route` picks how each security ticket is opened: a local ticket with `tickets: files`, an issue for a private repo or an unreleased or minor entry, and for a released `medium`-or-worse entry in a public repo a draft security advisory plus a local ticket, never a public issue. `show` ends by suggesting a pre-release `/10x:audit <tag>..HEAD` |
 | `/10x:batch` | Work and close many tickets from one terminal, each in a background worker |
 | `/10x:commit` | Commit what this session changed — only those paths, in the repo's own message style. Commits straight away; stops to ask only on a likely secret, unclear scope or unrelated changes. Say "message only" for a draft |
 | `/10x:code-review` | Review pending (uncommitted) changes |
@@ -126,7 +126,7 @@ Details: [docs/hooks.md](docs/hooks.md).
 ## Safety and permissions
 
 - **The guard is best-effort, not a sandbox.** It matches the command text, so a script, alias or `eval` gets past it.
-- **Public writes always ask.** Creating an issue and posting the planning comment are not in any skill's `allowed-tools`, so each asks for your permission even after you approved the draft. In auto mode the classifier decides.
+- **Public writes always ask.** Creating an issue or advisory and posting the planning comment are not in any skill's `allowed-tools`, so each asks even after you approved the draft. In auto mode the classifier decides.
 - **Writes take only the ticket id.** Pushing, opening and merging the PR go through `10x-land`, which builds each command from the ticket id, so no settings rule should allow `gh pr merge` or `git push`.
 - **Grants last for the session you typed the skill in.** [The grant hook](docs/hooks.md#grant) allows a single command matching the skill's grants, never in subagents, and runs 10x Agent's scripts only for the ticket you typed the skill for.
 - **Some scripts run project code.** `10x-verify`, `10x-red-proof`, `10x-test` and `10x-worktree add` run the project's gates, setup and tests, so granting them equals letting the agent write files in the repo.

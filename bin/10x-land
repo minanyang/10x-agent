@@ -12,6 +12,7 @@
 #   10x-land pr     <id>
 #   10x-land issue  <slug>
 #   10x-land ticket <slug>
+#   10x-land advisory <slug>
 #   10x-land comment <id>
 #
 # `check` first prints the configured close mode, `mode: <close>` (exit 2 on a value other than pr, pr-merge or local,
@@ -71,10 +72,21 @@
 # there needs `AC<n>` + a dash or colon, one per line, and no phrase of references/banned-phrases.txt may appear
 # outside code. Any refusal exits 2 before `gh issue create`. Once `gh issue create` succeeds the draft is deleted;
 # when it fails, the draft stays and the script exits with gh's code.
+# A draft may also carry a `Security: <fingerprint>` header line (sha256: and 64 lowercase hex digits), naming the
+# .10x/security.md entry it fixes; it is a header, never part of an issue body. `issue` runs `10x-security route` on it
+# and refuses, before any gh write or label call, an entry that routes to advisory, and a title or body (after the
+# header) that names any entry, printing `10x: draft <slug> contains security entry <fp>`.
 # `ticket` (refused unless tickets is files) writes .10x/drafts/<slug>.md verbatim to .10x/<slug>/ticket.md
-# and deletes the draft, with no gh call and no origin. The draft is a title and a body: a Labels:, Type: or Form:
-# header line is refused, and the body gets `issue`'s checks for the `## Acceptance criteria` layout. It refuses an
-# existing .10x/<slug>/ and the slugs gh-<n>, drafts and audit, and prints `ticket: <abs path>`.
+# and deletes the draft, with no gh call and no origin. The draft is a title, an optional Security: line and a body: a
+# Labels:, Type: or Form: header line is refused, and the body gets `issue`'s checks for the `## Acceptance criteria`
+# layout. It refuses an existing .10x/<slug>/ and the slugs gh-<n>, drafts and audit, and prints `ticket: <abs path>`.
+# `advisory` takes the same slugs and drafts as `ticket`, but needs the Security: line and an entry that
+# `10x-security route` routes to advisory (so never with tickets: files), and refuses a body naming the entry's
+# location. It opens a draft GitHub security advisory in origin's repo (gh api, host pinned to github.com) from the
+# title, the body and the entry's severity, for the versions up to the latest tag; then writes the draft to
+# .10x/<slug>/ticket.md with `Advisory: <ghsa id> <url>` after its Security: line, deletes the draft and prints
+# `advisory: <url>` and `ticket: <abs path>`. When gh api fails it prints gh's error, still writes the ticket (without
+# the Advisory: line), deletes the draft, prints `ticket: <abs path>` and exits 0. It never writes security.md.
 # `comment` (github.com only) posts .10x/<id>/comment.md as a comment on issue <n> of id gh-<n>, in origin's
 # repo, only when the url in .10x/<id>/ticket.md's header is that issue's, then renames it to comment.posted.md;
 # it needs no worktree, since /10x:work posts it while planning.
@@ -83,13 +95,14 @@ set -euo pipefail
 # shellcheck source=../scripts/lib.sh
 source "$(dirname "$(readlink -f "$0")")/../scripts/lib.sh"
 SECURITY_JS="$(dirname "$(readlink -f "$0")")/../scripts/security.js"
+BIN_DIR="$(dirname "$(readlink -f "$0")")"
 
-usage="usage: 10x-land check|rebase|push|merge|wait|squash|pr|comment <id> | issue|ticket <slug>"
+usage="usage: 10x-land check|rebase|push|merge|wait|squash|pr|comment <id> | issue|ticket|advisory <slug>"
 cmd="${1:-}"; id="${2:-}"
 [ $# -eq 2 ] || die "$usage"
-if [ "$cmd" = issue ] || [ "$cmd" = ticket ]; then
+if [ "$cmd" = issue ] || [ "$cmd" = ticket ] || [ "$cmd" = advisory ]; then
   [[ "$id" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "invalid draft slug '$id' (lowercase letters, digits, -)"
-  if [ "$cmd" = ticket ]; then
+  if [ "$cmd" != issue ]; then
     [[ ! "$id" =~ ^gh-[0-9]+$ ]] || die "slug '$id' is the id of a GitHub issue ticket; pick another"
     [ "$id" != drafts ] || die "slug 'drafts' is reserved for .10x/drafts/"
     [ "$id" != audit ] || die "slug 'audit' is reserved for .10x/audit/"
@@ -306,16 +319,18 @@ commit_sources() {
     sources+=("commit $(git -C "$ROOT" rev-parse --short=7 "$c")" "$msgs/$c")
   done <<<"$revs"
 }
-# parse_draft <draft> — sets title, labels, itype, form and body_from (the first body line) from a draft's header,
-# and labels_line, type_line, form_line: the line of each header line, 0 when absent.
+# parse_draft <draft> — sets title, labels, itype, form, security and body_from (the first body line) from a draft's
+# header, and labels_line, type_line, form_line, security_line: the line of each header line, 0 when absent.
 parse_draft() {
   { IFS= read -r first || true; } <"$1"
   [[ "$first" == "# "* ]] || die "$1: line 1 must be '# <title>'"
   title="${first#\# }"
   [ -n "${title//[[:space:]]/}" ] || die "$1: empty title"
-  labels=(); itype=""; form=""; labels_line=0; type_line=0; form_line=0; body_from=2
+  labels=(); itype=""; form=""; security=""; labels_line=0; type_line=0; form_line=0; security_line=0; body_from=2
   while IFS= read -r line; do
     case "$line" in
+      "Security:"*) security="${line#Security:}"; security="${security#"${security%%[![:space:]]*}"}"; security="${security%"${security##*[![:space:]]}"}"; security_line=$body_from
+                    [[ "$security" =~ ^sha256:[0-9a-f]{64}$ ]] || die "$1: line $body_from: invalid Security fingerprint" ;;
       "Labels:"*) IFS=',' read -ra parts <<<"${line#Labels:}"; labels_line=$body_from
                   for l in ${parts[@]+"${parts[@]}"}; do l="${l#"${l%%[![:space:]]*}"}"; l="${l%"${l##*[![:space:]]}"}"; [ -n "$l" ] && labels+=("$l"); done ;;
       "Form:"*)   form="${line#Form:}"; form="${form#"${form%%[![:space:]]*}"}"; form="${form%"${form##*[![:space:]]}"}"; form_line=$body_from ;;
@@ -324,6 +339,12 @@ parse_draft() {
     esac
     body_from=$((body_from + 1))
   done < <(tail -n +2 "$1")
+}
+# sec_route <fingerprint> — sets route_line to `10x-security route`'s line and route to its route (ticket, issue or
+# advisory); its refusal, on stderr as it printed it, exits 2. The script beside this one, never one from PATH.
+sec_route() {
+  route_line="$("$BIN_DIR/10x-security" route "$1")" || exit 2
+  route="${route_line#route: }"; route="${route%% *}"
 }
 # check_body <draft> <body_from> <formfile> — dies unless the body has the form's required sections (no <formfile>:
 # a `## Acceptance criteria` section), AC-numbered checkbox criteria one per line, and no banned phrase outside code.
@@ -616,6 +637,15 @@ case "$cmd" in
     need_file "$draft"
     repo="$(gh_repo)"
     parse_draft "$draft"
+    if [ -n "$security" ]; then
+      sec_route "$security"
+      [ "$route" != advisory ] || die "draft security entry $security routes to advisory: use 10x-land advisory $id"
+      # The title and the body only: the Security: line is a header and never published.
+      named="$(mktemp)"; trap 'rm -f "$named"' EXIT
+      { printf '%s\n' "$title"; tail -n +"$body_from" "$draft"; } >"$named"
+      disclosure_check "draft $id" "$named"
+      rm -f "$named"
+    fi
     [ -z "$itype" ] || [[ "$itype" =~ ^[A-Za-z0-9][A-Za-z0-9\ _-]*$ ]] || die "invalid issue type '$itype'"
     if [ ${#labels[@]} -gt 0 ]; then
       existing="$(gh label list --repo "$repo" --limit 1000 --json name --jq '.[].name')" || die "could not list labels"
@@ -660,6 +690,79 @@ case "$cmd" in
     td="$(task_dir "$id")"
     mkdir "$td" 2>/dev/null || die ".10x/$id/ already exists"
     cp "$draft" "$td/ticket.md" || { rm -f "$td/ticket.md"; rmdir "$td"; die "could not write $td/ticket.md; the draft is kept"; }
+    need_file "$draft"
+    rm -f "$draft"
+    say "ticket: $(shown "$td/ticket.md")"
+    ;;
+
+  advisory)
+    draft="$ROOT/.10x/drafts/$id.md"
+    need_file "$draft"
+    parse_draft "$draft"
+    [ -n "$security" ] || die "$draft: no 'Security: <fingerprint>' header line; an advisory is opened only for a security entry"
+    for n in "$labels_line" "$type_line" "$form_line"; do
+      [ "$n" -eq 0 ] || die "$draft: line $n: '$(shown "$(sed -n "${n}p" "$draft")")' is a GitHub issue header line; an advisory draft has only a title, a Security: line and a body"
+    done
+    td="$(task_dir "$id")"
+    [ ! -e "$td" ] && [ ! -L "$td" ] || die ".10x/$id/ already exists"
+    check_body "$draft" "$body_from" ""
+    sec_route "$security"
+    [ "$route" = advisory ] || die "security entry $security routes to $route, not advisory"
+    work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+    tail -n +"$body_from" "$draft" | sed '1{/^[[:space:]]*$/d;}' >"$work/body.md"
+    # The entry's severity; a body naming its location is refused without quoting it.
+    # shellcheck disable=SC2016
+    severity="$(node -e '
+      const fs = require("fs")
+      const [secJs, tenx, fp, body] = process.argv.slice(1)
+      const sec = require(secJs)
+      const e = sec.loadOrExit(tenx, "10x: ").entries.find((x) => x.fp === fp)
+      if (!e) { console.error(`10x: no security entry ${fp}`); process.exit(2) }
+      if (e.values.location !== "" && sec.locationIn(fs.readFileSync(body, "utf8"), e.values.location)) {
+        console.error(`10x: the draft names the location of security entry ${fp}`); process.exit(2)
+      }
+      process.stdout.write(e.values.severity)
+    ' "$SECURITY_JS" "$ROOT/.10x" "$security" "$work/body.md")" || exit 2
+    repo="$(gh_repo)"
+    # The released tag route named stands in when the latest tag is not reachable from HEAD.
+    latest="$(git -C "$ROOT" describe --tags --abbrev=0 2>/dev/null)" || latest="${route_line##*, released in }"
+    # shellcheck disable=SC2016
+    node -e '
+      const fs = require("fs")
+      const [title, body, severity, name, latest, out] = process.argv.slice(1)
+      fs.writeFileSync(out, JSON.stringify({
+        summary: title,
+        description: fs.readFileSync(body, "utf8"),
+        severity,
+        vulnerabilities: [{ package: { ecosystem: "other", name }, vulnerable_version_range: `<= ${latest}` }],
+      }))
+    ' "$title" "$work/body.md" "$severity" "${repo##*/}" "$latest" "$work/request.json"
+    rc=0
+    gh api --hostname github.com -X POST "repos/${repo#github.com/}/security-advisories" --input "$work/request.json" \
+      >"$work/response.json" 2>"$work/gh.err" || rc=$?
+    advisory=""
+    if [ "$rc" -eq 0 ]; then
+      # shellcheck disable=SC2016
+      advisory="$(node -e '
+        let r = {}
+        try { r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")) } catch {}
+        const ok = (v) => typeof v === "string" && /^[^\s\x00-\x1f\x7f-\x9f]+$/.test(v)
+        if (r && ok(r.ghsa_id) && ok(r.html_url)) process.stdout.write(r.ghsa_id + " " + r.html_url)
+      ' "$work/response.json")"
+    fi
+    if [ -n "$advisory" ]; then
+      say "advisory: ${advisory#* }"
+    else
+      if [ "$rc" -eq 0 ]; then say "10x: gh api gave no ghsa_id and html_url:" >&2; cat "$work/response.json" >&2
+      else say "10x: gh api failed (exit $rc):" >&2; cat "$work/gh.err" >&2; fi
+    fi
+    ensure_excluded
+    mkdir "$td" 2>/dev/null || die ".10x/$id/ already exists"
+    if [ -n "$advisory" ]; then
+      { head -n "$security_line" "$draft"; say "Advisory: $advisory"; tail -n +"$((security_line + 1))" "$draft"; } >"$td/ticket.md"
+    else
+      cp "$draft" "$td/ticket.md"
+    fi || { rm -f "$td/ticket.md"; rmdir "$td"; die "could not write $td/ticket.md; the draft is kept"; }
     need_file "$draft"
     rm -f "$draft"
     say "ticket: $(shown "$td/ticket.md")"
