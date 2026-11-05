@@ -11,6 +11,8 @@ allowed-tools:
   - Bash(10x-roadmap apply)
   - Bash(10x-roadmap link *)
   - Bash(10x-land ticket *)
+  - Bash(10x-security list --plannable)
+  - Bash(10x-security route *)
   - Bash(git remote get-url origin)
   - Bash(gh auth status)
   - Bash(gh label list *)
@@ -60,7 +62,7 @@ Run one command per Bash call — no `&&`, `;` or `|`. The arguments pick the pa
 10x-roadmap show
 ```
 
-Relay its output as printed — each version with its state and numbered items, then `next:` — and stop. A `no roadmap:` line is relayed with the next step, `/10x:roadmap <requirements>`. Write nothing.
+Relay its output as printed — each version with its state and numbered items, then `next:`, then the `audit:` line when there is one (the pre-release audit of what changed since the last tag, or that there is no tag yet) — and stop. A `no roadmap:` line is relayed with the next step, `/10x:roadmap <requirements>`. Write nothing.
 
 ## Requirements
 
@@ -73,6 +75,14 @@ Relay its output as printed — each version with its state and numbered items, 
 
 A non-zero exit from either stops the skill: relay its message. `init` keeps `.10x/` out of git before anything is written there. `show` prints the roadmap as it is now; when it prints `no roadmap:`, the draft starts from the layout above with no rows.
 
+Then list the security entries that can be planned:
+
+```bash
+10x-security list --plannable
+```
+
+Exit 2 stops the skill: relay its message. Each line is a confirmed `.10x/security.md` entry with status `later` that the roadmap does not name yet. Show them next to the user's requirements, each as `<fp> <severity> <title>`, and ask which to plan; a request such as "plan the security entries" is itself a requirement. No line means there is none: say nothing about it.
+
 Read just enough of the codebase to place each requirement: what already exists, what it would build on, what it would touch. A claim about the code carries its evidence (`path:line`, or the command run and its output); a claim with none is looked up before it is shown.
 
 Then grill: run `10x-grill`, which prints the plugin's shared `references/grill.md`, and follow it. The questions are product questions — what each requirement gives the user, which ones belong together, what must come first, what can wait or should not be done at all. The roadmap has no `## Assumptions` section: every assumption the grill leaves goes into the proposal message (Step 3), above the draft.
@@ -82,6 +92,7 @@ Then grill: run `10x-grill`, which prints the plugin's shared `references/grill.
 Write `.10x/roadmap.draft.md`. It starts as a byte-for-byte copy of `.10x/roadmap.md` (Read it whole), or of the layout above when there is none, and the new requirements are merged into it:
 
 - Each requirement goes into a version, or into `## Not yet assigned`, `## Later` or `## Decided against` (with its reason).
+- A picked security entry becomes the item `<title> (security <fingerprint>)`: its title, with `|` written `\|` and each `; ` written `, ` so it stays one item, then its full fingerprint. Never shorten or reword the ` (security sha256:<hex>)` ending: Tickets finds the entry by it.
 - A new version is a new row, placed by order: what it depends on first, then risk, then what can ship alone. Moving a row up or down keeps it.
 - Every existing row, state and section entry stays byte-for-byte. Change one only when the user's own words ask for it (move, drop, rename, re-scope) — never to tidy it, and never a `Done` row.
 
@@ -130,6 +141,14 @@ Stop, saying which and how to fix it, when `origin` is not on github.com, `gh` i
 
 Items that already end in an id are skipped. When none is left, say so and stop.
 
+A security item is one whose text, before any trailing id, ends with ` (security sha256:<64 hex>)`; its fingerprint is that `sha256:<hex>`. The text anywhere else does not count. For each security item, once:
+
+```bash
+10x-security route <fp>
+```
+
+It prints `route: <route> — <reason>`, the one rule for how this entry's ticket may be opened without disclosing it: `ticket` (a local ticket file, with `tickets: files`), `issue` (a GitHub issue: a private repo, or a public one where the entry is minor or not in any release yet) or `advisory` (a public repo with a released, `medium`-or-worse entry: a draft GitHub security advisory plus a local ticket, never a public issue). Never pick the route yourself. A non-zero exit is relayed and that item skipped.
+
 Read just enough of the codebase to make each item concrete, with evidence as in Requirements Step 1. Look for an existing ticket for each item first. With `tickets: github`:
 
 ```bash
@@ -153,7 +172,7 @@ A non-zero exit from `10x-ticket issue-types` stops the skill: relay its message
 
 ### Step 3 — Draft and stop
 
-One draft per item, at `<drafts>/<slug>.md`, `<drafts>` being `init`'s `drafts:` path. The slug comes from the item's text: lowercase letters, digits and `-`, starting with a letter or digit, never `gh-<n>` or `drafts`; with `tickets: files` it becomes the ticket id. Line 1 is `# <title>`; with `tickets: github`, optional `Labels: a, b`, `Type: <name>` and `Form: <file>` lines follow directly — a `tickets: files` draft has none; then a blank line and the body:
+One draft per item, at `<drafts>/<slug>.md`, `<drafts>` being `init`'s `drafts:` path. The slug comes from the item's text: lowercase letters, digits and `-`, starting with a letter or digit, never `gh-<n>` or `drafts`; with `tickets: files` it becomes the ticket id. Line 1 is `# <title>`; with `tickets: github`, optional `Labels: a, b`, `Type: <name>` and `Form: <file>` lines follow directly — a `tickets: files` draft has none but `Security:`; then a blank line and the body:
 
 ```markdown
 # <title>
@@ -179,7 +198,14 @@ Decisions the grill did not settle with the user, each with the answer taken. Om
 
 No `TBD`, `handle edge cases`, `as needed` or other phrase on `init`'s `banned:` line outside code: the create commands refuse them, as they refuse an unnumbered criterion.
 
-Show all the drafts together, each once: its item (`<n>. <item>`), one line `Kind: <kind> → <label, type or form file name>` (or `→ ticket file`), its path, then the file verbatim as rendered markdown. **Stop** until the user approves or edits them.
+A security item's draft differs, whatever its route:
+
+- The slug is `security-<8 hex>`, the first 8 hex digits of its fingerprint, so `/10x:work` treats its ticket as a security ticket. When `.10x/<slug>/` already exists, the entry already has a ticket: report it and link the item to that slug as in Step 4 instead of drafting.
+- Line 1 is `# Fix security entry <first 8 hex>`, and line 2 the header line `Security: <fp>`, the full fingerprint.
+- The body names neither the entry's title nor its `path:line` (read them from `.10x/security.md` to understand the fix, never to quote them). For the `advisory` and `ticket` routes, whose tickets stay local, the `## Context` paragraph reads "Security entry `<fp>` in `.10x/security.md`" plus the roadmap version. For the `issue` route it leaves the fingerprint out: "A security fix planned in roadmap version <v>; the entry is in `.10x/security.md`" — the issue is public, and `10x-land issue` refuses a title or body that names the entry.
+- An `advisory` draft has no `Labels:`, `Type:` or `Form:` line and the `## Acceptance criteria` layout; an `issue` draft takes them as any other.
+
+Show all the drafts together, each once: its item (`<n>. <item>`), one line `Kind: <kind> → <label, type or form file name>` (or `→ ticket file`; a security item's names its route: `→ advisory`, `→ issue` or `→ ticket file`), its path, then the file verbatim as rendered markdown. **Stop** until the user approves or edits them.
 
 ### Step 4 — Create and link
 
@@ -195,7 +221,13 @@ It prints `ticket: <path>`; the id is the slug. With `tickets: github`:
 10x-land issue <slug>
 ```
 
-It is not in this skill's `allowed-tools` on purpose: creating a public issue always asks for permission. It prints the issue URL from `gh`; the id is `gh-<n>`, `<n>` read from that URL. Either refuses a draft that fails its checks, naming the line — fix it and run it again. Then link the new ticket to its item, `<n>` being the item's number in `show`'s output:
+It is not in this skill's `allowed-tools` on purpose: creating a public issue always asks for permission. It prints the issue URL from `gh`; the id is `gh-<n>`, `<n>` read from that URL. A security item is created with the command its route names — `ticket` → `10x-land ticket <slug>`, `issue` → `10x-land issue <slug>`, and `advisory` →
+
+```bash
+10x-land advisory <slug>
+```
+
+which opens a draft GitHub security advisory in origin's repo and writes the local ticket `.10x/<slug>/ticket.md`. It is not in this skill's `allowed-tools` either, and the grant hook never allows it: it always asks. It prints `advisory: <url>` and `ticket: <path>`; the id is the slug. When GitHub refuses the advisory it prints the error and still writes the ticket: relay the error with the ticket. Each refuses a draft that fails its checks, naming the line — fix it and run it again; an entry whose route is not the one the command needs is refused too: run the route again and use the command it names. Then link the new ticket to its item, `<n>` being the item's number in `show`'s output:
 
 ```bash
 10x-roadmap link <version> <n> <id>
@@ -221,4 +253,5 @@ The final reply is the path's last step: `show`'s output, `apply`'s `roadmap:`, 
 - Never create an issue or a ticket file before the user has seen and approved its draft.
 - Never create labels, issue types, milestones or projects.
 - Never put secrets, tokens, internal URLs or customer data in an issue body — it may be public.
+- Never create a security item's ticket by any route but the one `10x-security route` printed for it, and never put its title, location or trace in a draft.
 - Never reply that something is unverified, unchecked or not yet confirmed: check it first. Only when a check is impossible, say so, naming what was tried and why it cannot be checked.

@@ -192,6 +192,7 @@ function loadOrExit(tenx, prefix) {
 
 const PATH_CHAR = /[A-Za-z0-9._/-]/
 
+// True when <text> holds the location <loc> verbatim, not inside a longer path and not followed by a digit.
 function locationIn(text, loc) {
   for (let k = text.indexOf(loc); k !== -1; k = text.indexOf(loc, k + 1)) {
     if ((k === 0 || !PATH_CHAR.test(text[k - 1])) && !/[0-9]/.test(text[k + loc.length] ?? '')) return true
@@ -225,4 +226,4 @@ function open(entries, id, level) {
     .map((e) => e.fp)
 }
 
-module.exports = { HEADER, FILE, FIELDS, SEVERITIES, STATUSES, ID, AUDIT, RULE, CONTROL, SNIPPET_CONTROL, escape, unescape, list, badPath, fingerprint, parse, serialise, validate, load, loadOrExit, disclosed, open }
+module.exports = { HEADER, FILE, FIELDS, SEVERITIES, STATUSES, ID, AUDIT, RULE, CONTROL, SNIPPET_CONTROL, escape, unescape, list, badPath, fingerprint, parse, serialise, validate, load, loadOrExit, locationIn, disclosed, open }

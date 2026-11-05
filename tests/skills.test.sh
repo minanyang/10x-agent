@@ -27,7 +27,7 @@ const userOwn = {
   work: ["git -C X add ", "git -C X commit ", "10x-land comment ", "10x-security set ", "10x-security remove "],
   open: ["10x-land issue "],
   batch: ["10x-land comment ", "10x-batch approve "],
-  roadmap: ["10x-land issue "],
+  roadmap: ["10x-land issue ", "10x-land advisory "],
   audit: ["10x-security set ", "10x-security ticket "],
 }
 const ownedBy = (skill, line) => userOwn[skill].some((p) => line === p.trimEnd() || line.startsWith(p))
@@ -49,7 +49,7 @@ const forbidden = ["git push", "git rebase", "git merge", "git log", "gh pr merg
 const bareGrants = ["10x-worktree *", "10x-land *", "git *"]
 // Commands that must always ask: the public writes, and a batch's plan approval, which text a worker wrote must
 // never be able to give.
-const publicWrites = ["10x-land issue", "10x-land comment", "10x-batch approve"]
+const publicWrites = ["10x-land issue", "10x-land comment", "10x-batch approve", "10x-land advisory"]
 
 const norm = (s) => s.replace(/<[^>]*>/g, "X")
 
@@ -466,6 +466,41 @@ for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/S
   ].filter(([c]) => !c).map(([, w]) => w)
   miss.length ? bad(`work: a security ticket keeps its ticket.md, posts nothing, is branched by its id and removes its entry after a clean full round (missing: ${miss.join("; ")})`)
     : ok("work: a security ticket keeps its ticket.md, posts nothing, is branched by its id and removes its entry after a clean full round")
+}
+
+// gh-3 — /10x:roadmap plans security entries: Requirements lists the plannable ones and writes a picked one as a security
+// item; Tickets asks 10x-security route for each such item and creates it with the command the route names. 10x-land
+// advisory is never granted to the skill.
+{
+  const text = fs.readFileSync(`${dir}/roadmap/SKILL.md`, "utf8")
+  const flat = (s) => s.replace(/\s+/g, " ")
+  const front = (/^---\n([\s\S]*?)\n---/.exec(text) || ["", ""])[1].split("\n")
+  // A step runs to the next `### Step`: Tickets Step 3 has `## ` headings of its own inside a fence.
+  const step = (s, n) => s.split(/^(?=### Step )/m).find((p) => p.startsWith(`### Step ${n}`)) || ""
+  const reqText = text.slice(text.search(/^## Requirements$/m), text.search(/^## Tickets$/m))
+  const ticketsText = text.slice(text.search(/^## Tickets$/m), text.search(/^## Replies$/m))
+  const missing = (pairs) => pairs.filter(([c]) => !c).map(([, w]) => w)
+  const verdict = (name, miss) => miss.length ? bad(`${name} (missing: ${miss.join("; ")})`) : ok(name)
+
+  verdict("roadmap: offers plannable security entries and writes them as security items", missing([
+    [front.includes("  - Bash(10x-security list --plannable)"), "the grant Bash(10x-security list --plannable)"],
+    [flat(step(reqText, 1)).includes("10x-security list --plannable"), "Requirements Step 1 runs 10x-security list --plannable"],
+    [/<fp> <severity> <title>|<fingerprint> <severity> <title>/.test(flat(step(reqText, 1))), "Step 1 shows each entry as fingerprint, severity and title"],
+    [flat(step(reqText, 2)).includes("`<title> (security <fingerprint>)`"), "Step 2 writes a picked entry as `<title> (security <fingerprint>)`"],
+    [flat(step(reqText, 2)).includes("`\\|`") && flat(step(reqText, 2)).includes("`; `"), "Step 2 escapes | and ; in the title"],
+  ]))
+
+  const tstep = (n) => flat(step(ticketsText, n))
+  verdict("roadmap: routes each security item and never grants 10x-land advisory", missing([
+    [front.includes("  - Bash(10x-security route *)"), "the grant Bash(10x-security route *)"],
+    [!front.some((l) => l.includes("10x-land advisory")) && !front.includes("  - Bash(10x-land *)"), "no grant covering 10x-land advisory"],
+    [tstep(1).includes("10x-security route <fp>") && tstep(1).includes("(security sha256:"), "Tickets Step 1 runs 10x-security route <fp> for an item with a fingerprint"],
+    [tstep(3).includes("`security-<8 hex>`"), "Step 3 gives a security item the slug `security-<8 hex>`"],
+    [tstep(3).includes("# Fix security entry <first 8 hex>") && tstep(3).includes("`Security: <fp>`"), "Step 3: the title and the `Security: <fp>` header line"],
+    [["→ advisory", "→ issue", "→ ticket file"].every((k) => tstep(3).includes(k)), "Step 3: a Kind line per route"],
+    [["advisory", "issue", "ticket"].every((c) => tstep(4).includes(`10x-land ${c} <slug>`)), "Step 4: the command each route creates with"],
+    [/allowed-tools/.test(tstep(4).slice(tstep(4).indexOf("10x-land advisory"))), "Step 4: 10x-land advisory is named as not granted"],
+  ]))
 }
 
 for (const skill of ["open", "work", "close", "batch", "roadmap", "audit"])

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Unit cases for bin/10x-security (add, set, remove) on a throwaway repository with an origin. The cases start with
 # nothing in .git/info/exclude beyond git's own comments: 10x-security must exclude .10x/ itself before it writes.
-# shellcheck disable=SC2015,SC2016,SC2329  # `cond && ok || bad` is safe: ok always returns 0; `$cmd` below is literal snippet text; helpers run through need
+# shellcheck disable=SC2015,SC2016,SC2154,SC2329  # `cond && ok || bad` is safe: ok always returns 0; `$cmd` below is literal snippet text; $FP_<name> is set by mkrec's printf -v; helpers run through need
 set -uo pipefail
 BIN="$(cd "$(dirname "$0")/.." && pwd)/bin"
 fail=0
@@ -575,6 +575,170 @@ need "an invalid slug: exit 2" exits 2 ticket "$FPA" Bad_Slug
 need "an unknown fingerprint: exit 2" exits 2 ticket "sha256:$(printf '0%.0s' {1..64})" some-slug
 need "it created no dir" test ! -e .10x/some-slug
 need "security.md is unchanged by every refusal" cmp -s "$S" "$tmp/before.md"
+end
+
+# ---------------------------------------------------------------- list --plannable
+
+# mkrec <name> <verdict> <severity> <path> <line> — adds one entry found in T1; its fingerprint lands in $FP_<name>.
+mkrec() {
+  local rec
+  rec="$(jrec "$2" "$RULE" "$4" "$5" "go_$1")"
+  [ -z "$3" ] || rec="$(printf '%s' "$rec" | sed "s/\"severity\":\"high\"/\"severity\":\"$3\"/")"
+  arr "$rec" | put T1 "$1.json"
+  sec add T1 "$root/.10x/T1/$1.json"
+  printf -v "FP_$1" '%s' "$(sed 's/^added: //' "$tmp/out")"
+}
+
+reset; : >.git/info/exclude
+mkrec la confirmed medium lib/la.sh 1
+mkrec lb confirmed high lib/lb.sh 1
+mkrec lnew confirmed high lib/lnew.sh 1
+mkrec lfix confirmed high lib/lfix.sh 1
+mkrec lacc confirmed high lib/lacc.sh 1
+mkrec lrej confirmed high lib/lrej.sh 1
+mkrec lnv needs_validation '' lib/lnv.sh 1
+mkrec lplan confirmed critical lib/lplan.sh 1
+begin "list --plannable prints confirmed later entries not yet in the roadmap"
+for n in la lb lnv lplan; do v="FP_$n"; sec set T1 "${!v}" later; done
+sec set T1 "$FP_lfix" fix-now
+sec set T1 "$FP_lacc" accepted "not reachable"
+sec set T1 "$FP_lrej" rejected "a false positive"
+printf '# Roadmap\n\n## Later\n- Fix lplan (security %s)\n' "$FP_lplan" >.10x/roadmap.md
+need "exit 0" exits 0 list --plannable
+need "only the confirmed later entries outside the roadmap, in file order" out_is "$(printf '%s medium later Finding in lib/la.sh\n%s high later Finding in lib/lb.sh' "$FP_la" "$FP_lb")"
+printf '# Roadmap\n\n## Later\n- Fix la (security %s)\n- Fix lb (security %s)\n- Fix lplan (security %s)\n' "$FP_la" "$FP_lb" "$FP_lplan" >.10x/roadmap.md
+need "every candidate planned: exit 0" exits 0 list --plannable
+need "prints nothing" out_is ""
+need "list without --plannable is a usage refusal" exits 2 list
+end
+
+# ---------------------------------------------------------------- route
+
+# A tagged history: lib/rel.sh and lib/mv.sh are in v1.0.0; lib/new.sh comes after it, and lib/mv.sh's first line moves to the end.
+mkdir -p lib
+printf 'one\ntwo\nthree\nfour\nfive\n' >lib/rel.sh
+printf '%s\n' 'the first line of the moved file with plenty of alphanumeric text' second third fourth fifth >lib/mv.sh
+git add -A && git commit -qm "release files" && git tag v1.0.0
+printf 'a\nb\nc\n' >lib/new.sh
+{ tail -n +2 lib/mv.sh; head -n 1 lib/mv.sh; } >lib/mv.tmp && mv lib/mv.tmp lib/mv.sh
+git add -A && git commit -qm "after the release"
+NEW7="$(git log -1 --format=%H -- lib/new.sh | cut -c1-7)"
+git remote set-url origin git@github.com:acme/sec.git
+
+# fake gh on PATH: `repo view` answers $STUB_VIS (gh fails when it is empty), every call is logged, anything else fails.
+mkdir -p "$tmp/visbin"
+printf '#!/bin/sh\necho "$*" >>"%s"\n[ "$1 $2" = "repo view" ] && [ -n "${STUB_VIS-}" ] && { echo "$STUB_VIS"; exit 0; }\nexit 1\n' "$tmp/vis.log" >"$tmp/visbin/gh"
+chmod +x "$tmp/visbin/gh"
+# route_as <visibility> <fingerprint> — route with the fake gh (an empty visibility makes gh fail); the exit code is route's.
+route_as() { STUB_VIS="$1" PATH="$tmp/visbin:$PATH" sec route "$2"; }
+# routes <visibility> <fingerprint> <line> — route exits 0 and prints exactly <line>.
+routes() { route_as "$1" "$2" && out_is "$3"; }
+# route_exits <want> <visibility> <fingerprint>
+route_exits() { local want=$1; shift; route_as "$@"; [ $? -eq "$want" ]; }
+
+reset; : >.git/info/exclude; : >"$tmp/vis.log"
+mkrec rh confirmed high lib/rel.sh 2
+mkrec rm confirmed medium lib/rel.sh 3
+mkrec rc confirmed critical lib/mv.sh 5
+mkrec rl confirmed low lib/gone.sh 1
+mkrec ri confirmed informational lib/gone.sh 1
+mkrec rn needs_validation '' lib/gone.sh 1
+mkrec ru confirmed high lib/new.sh 2
+mkrec rs confirmed high lib/rel.sh 99
+mkrec rf confirmed high lib/gone.sh 1
+
+begin "route: ticket with tickets files"
+mkdir -p .claude
+printf '{"tickets":"files"}\n' >.claude/10x.json
+need "files mode: exit 0 with the one line" routes PUBLIC "$FP_rh" "route: ticket — tickets: files"
+need "no gh call" test ! -s "$tmp/vis.log"
+printf '{"tickets":"github"}\n' >.claude/10x.json
+need "github mode reads the visibility" routes PRIVATE "$FP_rh" "route: issue — repo is PRIVATE"
+printf '{"tickets":null}\n' >.claude/10x.json
+need "a null value follows the github.com origin" routes PRIVATE "$FP_rh" "route: issue — repo is PRIVATE"
+rm -rf .claude
+end
+
+begin "route: issue for a private or internal repo"
+: >"$tmp/vis.log"
+need "PRIVATE" routes PRIVATE "$FP_rh" "route: issue — repo is PRIVATE"
+need "INTERNAL" routes INTERNAL "$FP_rh" "route: issue — repo is INTERNAL"
+need "even for an entry that would be an advisory in a public repo" routes PRIVATE "$FP_rc" "route: issue — repo is PRIVATE"
+need "gh was asked for the origin repo's visibility" grep -qxF "repo view github.com/acme/sec --json visibility --jq .visibility" "$tmp/vis.log"
+end
+
+begin "route: advisory for a released medium or worse entry in a public repo"
+need "high" routes PUBLIC "$FP_rh" "route: advisory — PUBLIC, confirmed high, released in v1.0.0"
+need "medium" routes PUBLIC "$FP_rm" "route: advisory — PUBLIC, confirmed medium, released in v1.0.0"
+need "a line moved after the release keeps its released commit" routes PUBLIC "$FP_rc" "route: advisory — PUBLIC, confirmed critical, released in v1.0.0"
+end
+
+begin "route: issue for a low, unreleased or untagged entry in a public repo"
+need "low, with no blame (its file is gone)" routes PUBLIC "$FP_rl" "route: issue — PUBLIC, low"
+need "informational" routes PUBLIC "$FP_ri" "route: issue — PUBLIC, informational"
+need "needs_validation" routes PUBLIC "$FP_rn" "route: issue — PUBLIC, needs_validation"
+need "unreleased: the blamed commit is in no tag" routes PUBLIC "$FP_ru" "route: issue — PUBLIC, unreleased ($NEW7 is in no tag)"
+git tag -d v1.0.0 >/dev/null
+need "no tag, with no blame (a stale line is not an error here)" routes PUBLIC "$FP_rs" "route: issue — PUBLIC, no tag"
+git tag v1.0.0 HEAD~1
+end
+
+begin "route refuses an unknown fingerprint and a location line gone at HEAD"
+ZERO="sha256:$(printf '0%.0s' {1..64})"
+need "an unknown fingerprint: exit 2" route_exits 2 PUBLIC "$ZERO"
+need "names it" has "no security entry $ZERO"
+need "a line past the end of the file: exit 2" route_exits 2 PUBLIC "$FP_rs"
+need "names the line and the file" has "location line 99 of lib/rel.sh no longer exists at HEAD"
+need "a missing file: exit 2" route_exits 2 PUBLIC "$FP_rf"
+need "names the line and the file" has "location line 1 of lib/gone.sh no longer exists at HEAD"
+need "an unreadable visibility: exit 2" route_exits 2 "" "$FP_rh"
+need "an unknown visibility: exit 2" route_exits 2 WEIRD "$FP_rh"
+mkdir -p .claude
+printf '{"tickets":"github"}\n' >.claude/10x.json
+git remote set-url origin https://gitlab.example.com/acme/sec.git
+need "an origin that is not github.com: exit 2" route_exits 2 PUBLIC "$FP_rh"
+need "says so" has "route needs a github.com origin"
+git remote remove origin
+need "no origin: exit 2" route_exits 2 PUBLIC "$FP_rh"
+need "says so" has "route needs origin to read the repo's visibility"
+git remote add origin git@github.com:acme/sec.git
+mkdir -p .claude
+printf '{"tickets":"gitlab"}\n' >.claude/10x.json
+need "an unknown tickets value: exit 2" route_exits 2 PUBLIC "$FP_rh"
+rm -rf .claude
+end
+
+begin "list and route leave security.md byte-identical"
+cp "$S" "$tmp/before.md"
+sec list --plannable
+for fp in "$FP_rh" "$FP_rm" "$FP_rc" "$FP_rl" "$FP_ru" "$FP_rs" "$ZERO"; do
+  route_as PUBLIC "$fp"; route_as PRIVATE "$fp"
+done
+need "security.md is unchanged" cmp -s "$S" "$tmp/before.md"
+end
+git remote set-url origin "$tmp/origin.git"
+
+reset; : >.git/info/exclude
+mkrec ta confirmed high lib/ta.sh 1
+mkrec tb confirmed high lib/tb.sh 1
+begin "set and remove accept a ticket whose header names the fingerprint"
+printf '# Fix security entry x\nSecurity: %s\n\n## Context\nx\n' "$FP_tb" | put TK2 ticket.md
+printf '# Fix security entry x\nSecurity: %s\n\n## Context\nx\n' "$FP_ta" | put TKREAL real.md
+mkdir -p .10x/TK3 && ln -s "$root/.10x/TKREAL/real.md" .10x/TK3/ticket.md
+printf '# Fix security entry x\nSecurity: %s\n\n## Context\nx\n' "$FP_ta" | put TK ticket.md
+cp "$S" "$tmp/before.md"
+need "a ticket naming another fingerprint: set refused" exits 2 set TK2 "$FP_ta" later
+need "a ticket naming another fingerprint: remove refused" exits 2 remove TK2 "$FP_ta"
+need "a symlinked ticket.md: set refused" exits 2 set TK3 "$FP_ta" later
+need "a symlinked ticket.md: remove refused" exits 2 remove TK3 "$FP_ta"
+need "an id with no ticket.md: refused" exits 2 set TK9 "$FP_ta" later
+need "nothing written by the refusals" cmp -s "$S" "$tmp/before.md"
+need "set through the ticket header" exits 0 set TK "$FP_ta" later
+need "status later" field_is "$FP_ta" status later
+need "found in is still T1" field_is "$FP_ta" "found in" T1
+need "seen in is untouched" field_is "$FP_ta" "seen in" ""
+need "remove through the ticket header" exits 0 remove TK "$FP_ta"
+need "one entry left" test "$(entries)" = 1
 end
 
 # ---------------------------------------------------------------- git status

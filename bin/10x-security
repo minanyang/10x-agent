@@ -8,6 +8,8 @@
 //   10x-security prepare
 //   10x-security import run-<n>
 //   10x-security ticket <fingerprint> <slug>
+//   10x-security list --plannable
+//   10x-security route <fingerprint>
 //
 // `add` reads <file>, a regular, non-symlinked, singly linked file inside .10x/<id>/ holding a JSON array of records
 // (`[]` does nothing). Each record has exactly verdict (confirmed or needs_validation), rule (kebab-case), title, path
@@ -19,7 +21,9 @@
 // <id> to its `seen in` unless it is already its `found in` or there, changes nothing else, and prints `seen: <fp>`.
 // `set` writes status (fix-now, later, accepted or rejected; the last two need a reason) and reason (empty without
 // one), and nothing else. `remove` deletes the entry. Both refuse an unknown fingerprint and an entry whose
-// `found in` and `seen in` do not include <id>. Their <id> may also be an audit run id, audit/run-<n>; `add`'s may not.
+// `found in` and `seen in` do not include <id>, unless .10x/<id>/ticket.md (a regular, non-symlinked file) has the
+// header line `Security: <fingerprint>` (line 2 onward, up to the first line not `<Word>: …`). Their <id> may also be
+// an audit run id, audit/run-<n>; `add`'s may not.
 //
 // `prepare` looks for security-audit/SKILL.md in the main checkout's .claude/skills/, then in ~/.claude/skills/
 // (symlinks followed). Without it, it prints the two `npx skills add` commands and exits 1 before writing anything.
@@ -42,6 +46,14 @@
 // .10x/<slug>/; it adds <slug> to the entry's `seen in`, writes .10x/<slug>/ticket.md naming the entry only by its
 // fingerprint, and prints `ticket: <abs path>`. It reads no `tickets` mode and runs no gh.
 //
+// `list --plannable` prints `<fp> <severity> later <title>` for each confirmed entry with status later whose
+// fingerprint appears nowhere in .10x/roadmap.md, in file order. `route` prints how a ticket for the entry may be
+// opened without disclosing it, `route: <ticket|issue|advisory> — <reason>`: ticket with tickets: files (no gh call);
+// otherwise it reads origin's visibility with gh (no origin, a non-github.com origin, a gh failure or an unknown value
+// exits 2): issue for PRIVATE or INTERNAL; for PUBLIC, issue for needs_validation, low or informational, issue with no
+// tag, else it blames the location line at HEAD (-M -C; a line gone exits 2) and gives advisory when that commit is in
+// a tag, issue when it is in none. Neither writes anything.
+//
 // Writes go through a temp file and a rename under the lock directory .10x/security.lock (retried every 0.2 s for up
 // to 10 s). A security.md that does not parse prints `10x-security: <file>:<line>: <why>` per fault; a symlinked .10x/
 // or security.md is refused. Every refusal prints `10x-security: <why>` and exits 2; `prepare`'s missing skill and
@@ -53,7 +65,7 @@ const path = require('node:path')
 const sec = require(path.join(__dirname, '..', 'scripts', 'security.js'))
 
 const USAGE =
-  'usage: 10x-security add <id> <file> | set <id> <fingerprint> <status> [reason] | remove <id> <fingerprint> | prepare | import run-<n> | ticket <fingerprint> <slug>'
+  'usage: 10x-security add <id> <file> | set <id> <fingerprint> <status> [reason] | remove <id> <fingerprint> | prepare | import run-<n> | ticket <fingerprint> <slug> | list --plannable | route <fingerprint>'
 const SETTABLE = ['fix-now', 'later', 'accepted', 'rejected']
 const RUN = /^run-[1-9][0-9]*$/
 const AUDIT_VERDICTS = ['confirmed', 'needs_validation', 'rejected']
@@ -88,6 +100,8 @@ function main(argv) {
   if (cmd === 'prepare' && args.length === 0) return prepare()
   if (cmd === 'import' && args.length === 1) return importRun(...args)
   if (cmd === 'ticket' && args.length === 2) return ticket(...args)
+  if (cmd === 'list' && args.length === 1 && args[0] === '--plannable') return plannable()
+  if (cmd === 'route' && args.length === 1) return route(...args)
   refuse(USAGE)
 }
 
@@ -237,8 +251,21 @@ function add(id, file) {
 function entryOf(entries, id, fp) {
   const e = entries.find((x) => x.fp === fp)
   if (!e) refuse(`no security entry ${shown(fp)}`)
-  if (e.values['found in'] !== id && !sec.list(e.values['seen in']).includes(id)) refuse(`security entry ${fp} is neither found in nor seen in ${id}`)
+  if (e.values['found in'] !== id && !sec.list(e.values['seen in']).includes(id) && !ticketNames(id, fp))
+    refuse(`security entry ${fp} is neither found in nor seen in ${id}`)
   return e
+}
+
+// True when .10x/<id>/ticket.md, a regular non-symlinked file, has the header line `Security: <fp>`.
+function ticketNames(id, fp) {
+  const dir = path.join(TENX, id)
+  const file = path.join(dir, 'ticket.md')
+  if (!lstat(dir)?.isDirectory() || !lstat(file)?.isFile()) return false
+  for (const l of fs.readFileSync(file, 'utf8').split('\n').slice(1)) {
+    if (!/^[A-Za-z]+: /.test(l)) break
+    if (l.trim() === `Security: ${fp}`) return true
+  }
+  return false
 }
 
 function set(id, fp, status, reason = '') {
@@ -488,6 +515,103 @@ function ticket(fp, slug) {
     },
   )
   process.stdout.write(`ticket: ${file}\n`)
+}
+
+function plannable() {
+  const s = current()
+  const roadmap = path.join(TENX, 'roadmap.md')
+  const planned = lstat(roadmap)?.isFile() ? fs.readFileSync(roadmap, 'utf8') : ''
+  const out = s.entries
+    .filter((e) => e.values.verdict === 'confirmed' && e.values.status === 'later' && !planned.includes(e.fp))
+    .map((e) => `${e.fp} ${e.values.severity} later ${shown(e.values.title)}\n`)
+  process.stdout.write(out.join(''))
+}
+
+const git = (...args) => execFileSync('git', ['-C', ROOT, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+
+// The configured `tickets` value as scripts/lib.sh tickets_mode reads it: absent or null, github for a github.com
+// origin, else files.
+function ticketsMode(origin) {
+  const config = path.join(ROOT, '.claude', '10x.json')
+  let v
+  if (fs.existsSync(config)) {
+    try {
+      v = JSON.parse(fs.readFileSync(config, 'utf8')).tickets
+    } catch (e) {
+      refuse(`cannot read ${config}: ${e.message}`)
+    }
+  }
+  if (v == null) return origin !== null && urlParts(origin).host === 'github.com' ? 'github' : 'files'
+  return Array.isArray(v) ? v.join('\n') : typeof v === 'object' ? JSON.stringify(v) : String(v)
+}
+
+// { host, path } of a remote URL, as scripts/lib.sh url_parts sets o_host and o_path.
+function urlParts(url) {
+  let u = url.replace(/\/$/, '').replace(/\.git$/, '')
+  if (u.includes('://')) {
+    u = u.slice(u.indexOf('://') + 3)
+    const host = u.split('/')[0].replace(/^.*@/, '').split(':')[0]
+    return { host, path: u.includes('/') ? u.slice(u.indexOf('/') + 1) : u }
+  }
+  const m = /^([^/:]+@)?([^/:]+):(.+)$/.exec(u)
+  if (m) return { host: m[2], path: m[3] }
+  return { host: '', path: u.replace(/^\//, '') }
+}
+
+function route(fp) {
+  const e = current().entries.find((x) => x.fp === fp)
+  if (!e) refuse(`no security entry ${shown(fp)}`)
+  const say = (r, why) => process.stdout.write(`route: ${r} — ${why}\n`)
+  let origin = null
+  try {
+    origin = git('remote', 'get-url', 'origin').trim()
+  } catch {}
+  const mode = ticketsMode(origin)
+  if (mode === 'files') return say('ticket', 'tickets: files')
+  if (mode !== 'github') refuse(`unknown tickets value '${shown(mode)}' in .claude/10x.json (want github or files)`)
+  if (origin === null) refuse("route needs origin to read the repo's visibility")
+  const o = urlParts(origin)
+  if (o.host !== 'github.com') refuse('route needs a github.com origin')
+  const segs = o.path.split('/')
+  const repo = segs.slice(-2).join('/')
+  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) refuse('cannot derive OWNER/REPO from origin')
+  let vis
+  try {
+    vis = execFileSync('gh', ['repo', 'view', `github.com/${repo}`, '--json', 'visibility', '--jq', '.visibility'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim()
+  } catch {
+    refuse(`could not read the visibility of github.com/${repo} with gh`)
+  }
+  if (vis === 'PRIVATE' || vis === 'INTERNAL') return say('issue', `repo is ${vis}`)
+  if (vis !== 'PUBLIC') refuse(`unknown visibility '${shown(vis)}' of github.com/${repo} (want PUBLIC, PRIVATE or INTERNAL)`)
+  const v = e.values
+  if (v.verdict !== 'confirmed') return say('issue', `PUBLIC, ${v.verdict}`)
+  if (v.severity === 'low' || v.severity === 'informational') return say('issue', `PUBLIC, ${v.severity}`)
+  const tags = git('tag', '--list').split('\n').filter(Boolean)
+  if (!tags.length) return say('issue', 'PUBLIC, no tag')
+  const at = v.location.lastIndexOf(':')
+  const file = v.location.slice(0, at)
+  const line = v.location.slice(at + 1)
+  // -M -C: a line moved or copied after a release keeps its released commit.
+  let commit
+  try {
+    if (at < 1 || !/^[1-9][0-9]*$/.test(line)) throw new Error()
+    commit = git('blame', '--porcelain', '-M', '-C', '-L', `${line},${line}`, 'HEAD', '--', file).split(' ')[0]
+  } catch {
+    refuse(`location line ${shown(line)} of ${shown(file)} no longer exists at HEAD`)
+  }
+  const released = tags.find((t) => {
+    try {
+      git('merge-base', '--is-ancestor', commit, `refs/tags/${t}`)
+      return true
+    } catch {
+      return false
+    }
+  })
+  if (released === undefined) return say('issue', `PUBLIC, unreleased (${commit.slice(0, 7)} is in no tag)`)
+  say('advisory', `PUBLIC, confirmed ${v.severity}, released in ${released}`)
 }
 
 try {

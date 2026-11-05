@@ -104,7 +104,7 @@ base branch、gates、close 模式、ticket 放在哪裡等選用設定放在 `.
 | `/10x:work` | 規劃 ticket，再到 worktree 裡實作、驗證、審查 |
 | `/10x:close` | rebase、驗證、落地、清理 |
 | `/10x:audit` | 對指定範圍（diff、路徑或整個 repo）執行已安裝的 Cloudflare `security-audit` skill，把結果合併進 `.10x/security.md`，重跑時不會重複分流同一個問題；再逐一和你確認每個新的或延後的項目，並為每個 `fix-now` 開一張本機 ticket |
-| `/10x:roadmap` | 把需求排進 `.10x/roadmap.md` 的版本裡，每個版本寫明排在這裡的理由，你核准後才寫入；可以把一個版本的每個項目各開成一張 ticket，交給 `/10x:batch <version>` 處理並標成 `Done` |
+| `/10x:roadmap` | 把需求排進 `.10x/roadmap.md` 的版本裡，每個版本寫明排在這裡的理由，你核准後才寫入；可以把一個版本的每個項目各開成一張 ticket，交給 `/10x:batch <version>` 處理並標成 `Done`。也會把 `.10x/security.md` 裡延後處理的 `confirmed` 項目列為需求；每張 security ticket 怎麼開由 `10x-security route` 決定：`tickets: files` 開本地 ticket，private repo，或尚未釋出或嚴重度低的項目，開 issue，public repo 裡已釋出且 `medium` 以上的項目則開 draft security advisory 加本地 ticket，絕不開公開 issue。`show` 最後會建議發版前先跑 `/10x:audit <tag>..HEAD` |
 | `/10x:batch` | 在同一個 terminal 處理多張 ticket，每張在背景 worker 裡完成 |
 | `/10x:commit` | 只 commit 這個 session 改過的路徑，訊息照 repo 自己的風格。會直接 commit，只有疑似 secret、範圍不清楚或有不相關的改動時才停下來問。說「message only」就只給草稿 |
 | `/10x:code-review` | 審查還沒 commit 的改動 |
@@ -126,7 +126,7 @@ skills 用到的 script 見 [docs/scripts.md](docs/scripts.md)（英文）。
 ## 安全與權限
 
 - **Guard 只是盡力而為，不是 sandbox。** 它比對的是指令文字，所以 script、alias 或 `eval` 都能繞過。
-- **公開寫入一律會問。** 建立 issue 和貼規劃留言都不在任何 skill 的 `allowed-tools` 裡，所以就算你已經核准草稿，每次還是會跳出權限詢問。在 auto mode 下則由分類器決定，不會跳出詢問。
+- **公開寫入一律會問。** 建立 issue 或 security advisory、貼規劃留言都不在任何 skill 的 `allowed-tools` 裡，所以就算你已經核准草稿，每次還是會跳出權限詢問。在 auto mode 下則由分類器決定，不會跳出詢問。
 - **寫入只吃 ticket id。** push、開 PR、合併 PR 都經過 `10x-land`，它只用 ticket id 組出每個指令，所以不應該在設定裡允許 `gh pr merge` 或 `git push`。
 - **授權只在你輸入 skill 的那個 session 有效。** [Grant hook](docs/hooks.md#grant) 只放行符合該 skill 授權的單一指令，subagent 裡不適用，而 10x Agent 的 script 只能用在你輸入 skill 時指定的那張 ticket。
 - **有些 script 會執行專案的程式碼。** `10x-verify`、`10x-red-proof`、`10x-test` 和 `10x-worktree add` 會跑專案的 gates、setup 和測試，所以授權它們，等同於讓 agent 可以寫入 repo 裡的檔案。

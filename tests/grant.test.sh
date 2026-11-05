@@ -225,6 +225,25 @@ prompt s42 "/10x:roadmap gh-5" >/dev/null
 check "$T: a lone word typed with it binds nothing" allow "$(bash_ s42 "10x-land ticket other-slug")"
 check "$T: nor a pending entry's first slug" allow "$(bash_ s42 "10x-land ticket third-slug")"
 
+T="roadmap: 10x-security list and route are granted, 10x-land advisory asks"
+FPR="sha256:$(printf 'c%.0s' {1..64})"
+check "$T: nothing before" nothing "$(bash_ s46 "10x-security list --plannable")"
+prompt s46 "/10x:roadmap tickets v1" >/dev/null
+check "$T: list --plannable" allow "$(bash_ s46 "10x-security list --plannable")" "granted by /10x:roadmap"
+check "$T: route" allow "$(bash_ s46 "10x-security route $FPR")" "granted by /10x:roadmap"
+check "$T: set still asks" nothing "$(bash_ s46 "10x-security set abc $FPR later")"
+check "$T: advisory is not granted" nothing "$(bash_ s46 "10x-land advisory security-0a1b2c3d")"
+# A copy of roadmap's SKILL.md given a grant for advisory: the refusal is the hook's ALWAYS_ASK and not a missing grant.
+node -e '
+  const fs = require("fs"), f = process.argv[1]
+  fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace("allowed-tools:\n", "allowed-tools:\n  - Bash(10x-land advisory *)\n"))
+' "$plugin/skills/roadmap/SKILL.md"
+prompt s47 "/10x:roadmap tickets v1" >/dev/null
+check "$T: with a grant, advisory still asks" nothing "$(bash_ s47 "10x-land advisory security-0a1b2c3d")"
+check "$T: with two spaces" nothing "$(bash_ s47 "10x-land  advisory security-0a1b2c3d")"
+check "$T: the ticket grant holds" allow "$(bash_ s47 "10x-land ticket security-0a1b2c3d")" "granted by /10x:roadmap"
+cp "$ROOT/skills/roadmap/SKILL.md" "$plugin/skills/roadmap/SKILL.md"
+
 T="audit: prepare and import are granted for the session, ticket and set still ask"
 check "$T: nothing before" nothing "$(bash_ s43 "10x-security prepare")"
 prompt s43 "/10x:audit" >/dev/null
