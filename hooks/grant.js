@@ -29,8 +29,9 @@ const META = /[;&|<>$`\n\r]/
 // later turn cannot start a new batch the user never named.
 const TYPED_ONLY = new Set(['10x-batch init *'])
 // Commands that always ask, whatever a session's record holds — one saved by an older SKILL.md included: the public
-// writes, a batch's plan approval, and starting a batch.
-const ALWAYS_ASK = /^(10x-land (issue|comment)|10x-batch (approve|init))(\s|$)/
+// writes, a batch's plan approval, starting a batch, and settling or removing a security entry (a session can put its
+// own ticket into any entry's `seen in` with `10x-security add`, so the ticket binding alone does not protect them).
+const ALWAYS_ASK = /^(10x-land (issue|comment)|10x-batch (approve|init)|10x-security (set|remove))(\s|$)/
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 // The word that carries the ticket id: `10x-land <sub> <id>`, `10x-verify <id>`, ….
 const ID_WORD = {
@@ -41,6 +42,7 @@ const ID_WORD = {
   '10x-test': 1,
   '10x-review-packet': 1,
   '10x-plan-check': 1,
+  '10x-security': 2,
 }
 const CHUNK = 1 << 20
 const MAX_SCAN = 16 << 20
@@ -126,7 +128,8 @@ function allow(skill) {
 }
 
 function granting(part, command, ticket, skill) {
-  if (ALWAYS_ASK.test(command)) return false
+  // Judged on the words, as bash splits them: two spaces or a tab between them must not get past it.
+  if (ALWAYS_ASK.test(command.split(/\s+/).join(' '))) return false
   if (!part || !Array.isArray(part.grants) || !part.grants.some((g) => typeof g === 'string' && matches(g, command))) return false
   if (ticket === undefined) return true
   return !!ticket && (UNBOUND.has(skill) || part.id === undefined || part.id === ticket)

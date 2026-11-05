@@ -1,0 +1,230 @@
+#!/usr/bin/env node
+// Writes the main checkout's .10x/security.md, so no skill or agent edits it by hand. The format, the fingerprint and
+// the record checks are scripts/security.js's. security.md is never committed: .10x/ is excluded before any write.
+//
+//   10x-security add    <id> <file>
+//   10x-security set    <id> <fingerprint> <status> [reason]
+//   10x-security remove <id> <fingerprint>
+//
+// `add` reads <file>, a regular, non-symlinked, singly linked file inside .10x/<id>/ holding a JSON array of records
+// (`[]` does nothing). Each record has exactly verdict (confirmed or needs_validation), rule (kebab-case), title, path
+// (relative: no leading / or ./, no \, no //, no .. segment), line (an integer >= 1), snippet and trace, plus
+// severity (critical, high, medium, low or informational) exactly when verdict is confirmed. Every fault is printed as
+// `10x-security: records[<i>]: <field> <why>` and nothing is written. The fingerprint is `sha256:` + the sha256 of
+// `<rule>\n<path>\n<snippet>`, the snippet's whitespace runs collapsed to one space and its ends trimmed. A new one
+// appends an entry (location <path>:<line>, status new, found in <id>) and prints `added: <fp>`; a known one adds
+// <id> to its `seen in` unless it is already its `found in` or there, changes nothing else, and prints `seen: <fp>`.
+// `set` writes status (fix-now, later, accepted or rejected; the last two need a reason) and reason (empty without
+// one), and nothing else. `remove` deletes the entry. Both refuse an unknown fingerprint and an entry whose
+// `found in` and `seen in` do not include <id>.
+//
+// Writes go through a temp file and a rename under the lock directory .10x/security.lock (retried every 0.2 s for up
+// to 10 s). A security.md that does not parse prints `10x-security: <file>:<line>: <why>` per fault; a symlinked .10x/
+// or security.md is refused. Every refusal prints `10x-security: <why>` and exits 2.
+
+const { execFileSync } = require('node:child_process')
+const fs = require('node:fs')
+const path = require('node:path')
+const sec = require(path.join(__dirname, '..', 'scripts', 'security.js'))
+
+const USAGE = 'usage: 10x-security add <id> <file> | set <id> <fingerprint> <status> [reason] | remove <id> <fingerprint>'
+const SETTABLE = ['fix-now', 'later', 'accepted', 'rejected']
+
+class Refusal extends Error {}
+const refuse = (...lines) => {
+  throw new Refusal(lines.join('\n'))
+}
+const shown = (s) => String(s).replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/[\x00-\x1f\x7f-\x9f]/g, '?')
+const lstat = (p) => fs.lstatSync(p, { throwIfNoEntry: false })
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+
+let COMMON, ROOT, TENX
+
+function main(argv) {
+  try {
+    COMMON = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    refuse('not in a git repository')
+  }
+  ROOT = path.dirname(COMMON)
+  TENX = path.join(ROOT, '.10x')
+  if (lstat(TENX)?.isSymbolicLink()) refuse(`${TENX} is a symlink`)
+  const [cmd, ...args] = argv
+  if (cmd === 'add' && args.length === 2) return add(...args)
+  if (cmd === 'set' && (args.length === 3 || args.length === 4)) return set(...args)
+  if (cmd === 'remove' && args.length === 2) return remove(...args)
+  refuse(USAGE)
+}
+
+function checkId(id) {
+  if (!sec.ID.test(id)) refuse(`invalid ticket id '${shown(id)}' (letters, digits, . _ -)`)
+}
+
+// The parsed security.md; a fault or a symlink is a refusal.
+function current() {
+  const s = sec.load(TENX)
+  if (s.refusal) refuse(s.refusal)
+  if (s.faults.length) refuse(...s.faults.map((f) => `${s.file}:${f.line}: ${f.why}`))
+  return s
+}
+
+// Keep .10x/ and the worktree dir out of git, as scripts/lib.sh ensure_excluded does.
+function ensureExcluded() {
+  let dir = '.worktrees'
+  const config = path.join(ROOT, '.claude', '10x.json')
+  if (fs.existsSync(config)) {
+    let v
+    try {
+      v = JSON.parse(fs.readFileSync(config, 'utf8')).worktreeDir
+    } catch (e) {
+      refuse(`cannot read ${config}: ${e.message}`)
+    }
+    if (v != null) dir = String(v)
+  }
+  const exclude = path.join(COMMON, 'info', 'exclude')
+  fs.mkdirSync(path.dirname(exclude), { recursive: true })
+  const text = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : ''
+  const have = new Set(text.split('\n'))
+  const missing = ['/.10x/', `/${dir}/`].filter((e) => !have.has(e))
+  if (missing.length) fs.appendFileSync(exclude, (text && !text.endsWith('\n') ? '\n' : '') + missing.map((e) => e + '\n').join(''))
+}
+
+// Runs <change> on the current entries under the lock; writes the result when it differs. <change> returns the
+// entries to write and may refuse, leaving the file as it was.
+function update(change) {
+  ensureExcluded()
+  const lock = path.join(TENX, 'security.lock')
+  const until = Date.now() + 10000
+  for (;;) {
+    try {
+      fs.mkdirSync(lock)
+      break
+    } catch (e) {
+      if (e.code !== 'EEXIST') refuse(`cannot take ${lock}: ${e.message}`)
+      if (Date.now() >= until) {
+        let pid = '?'
+        try {
+          pid = fs.readFileSync(path.join(lock, 'pid'), 'utf8').trim() || '?'
+        } catch {}
+        refuse(`security.md is in use (lock: ${lock}, pid ${shown(pid)}); remove the directory if that process is gone`)
+      }
+      sleep(200)
+    }
+  }
+  try {
+    fs.writeFileSync(path.join(lock, 'pid'), `${process.pid}\n`)
+    const s = current()
+    const before = fs.existsSync(s.file) ? fs.readFileSync(s.file, 'utf8') : null
+    const text = sec.serialise(change(s.entries))
+    if (text === before) return
+    const tmp = path.join(TENX, `.security.md.${process.pid}.tmp`)
+    try {
+      fs.writeFileSync(tmp, text, { flag: 'wx' })
+      fs.renameSync(tmp, s.file)
+    } catch (e) {
+      fs.rmSync(tmp, { force: true })
+      refuse(`cannot write ${s.file}: ${e.message}`)
+    }
+  } finally {
+    fs.rmSync(lock, { recursive: true, force: true })
+  }
+}
+
+// <file> resolved, after need_file's rules: a regular, non-empty file with one link, really inside .10x/<id>/.
+function recordFile(id, file) {
+  const dir = path.join(TENX, id)
+  const st = lstat(file)
+  if (!st || st.isSymbolicLink() || !st.isFile() || st.size === 0) refuse(`${shown(file)} is missing, empty or a symlink`)
+  const dst = lstat(dir)
+  if (!dst || dst.isSymbolicLink() || !dst.isDirectory() || !fs.realpathSync(file).startsWith(fs.realpathSync(dir) + path.sep)) {
+    refuse(`${shown(file)} resolves outside .10x/${id}/`)
+  }
+  if (st.nlink !== 1) refuse(`${shown(file)} has more than one hard link`)
+  return file
+}
+
+function add(id, file) {
+  checkId(id)
+  recordFile(id, file)
+  let records
+  try {
+    records = JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch (e) {
+    refuse(`${shown(file)} is not JSON: ${shown(e.message)}`)
+  }
+  if (!Array.isArray(records)) refuse(`${shown(file)} must hold a JSON array of records`)
+  if (!records.length) return
+  const faults = sec.validate(records)
+  if (faults.length) refuse(...faults)
+  const out = []
+  update((entries) => {
+    const byFp = new Map(entries.map((e) => [e.fp, e]))
+    for (const r of records) {
+      const fp = sec.fingerprint(r.rule, r.path, r.snippet)
+      const known = byFp.get(fp)
+      if (known) {
+        const seen = sec.list(known.values['seen in'])
+        if (known.values['found in'] !== id && !seen.includes(id)) known.values['seen in'] = [...seen, id].join(', ')
+        out.push(`seen: ${fp}`)
+        continue
+      }
+      const values = {
+        title: r.title,
+        verdict: r.verdict,
+        severity: r.verdict === 'confirmed' ? r.severity : '',
+        rule: r.rule,
+        location: `${r.path}:${r.line}`,
+        trace: r.trace,
+        status: 'new',
+        reason: '',
+        'found in': id,
+        'seen in': '',
+        'audit fingerprint': '',
+        'not seen in': '',
+      }
+      const e = { fp, values }
+      entries.push(e)
+      byFp.set(fp, e)
+      out.push(`added: ${fp}`)
+    }
+    return entries
+  })
+  process.stdout.write(out.join('\n') + '\n')
+}
+
+// The entry <fp> of ticket <id>, or a refusal.
+function entryOf(entries, id, fp) {
+  const e = entries.find((x) => x.fp === fp)
+  if (!e) refuse(`no security entry ${shown(fp)}`)
+  if (e.values['found in'] !== id && !sec.list(e.values['seen in']).includes(id)) refuse(`security entry ${fp} is neither found in nor seen in ${id}`)
+  return e
+}
+
+function set(id, fp, status, reason = '') {
+  checkId(id)
+  if (!SETTABLE.includes(status)) refuse(`unknown status '${shown(status)}' (want ${SETTABLE.join(', ')})`)
+  if ((status === 'accepted' || status === 'rejected') && reason.trim() === '') refuse(`${status} needs a reason`)
+  if (sec.CONTROL.test(reason)) refuse('the reason holds a control character')
+  update((entries) => {
+    const e = entryOf(entries, id, fp)
+    e.values.status = status
+    e.values.reason = reason
+    return entries
+  })
+}
+
+function remove(id, fp) {
+  checkId(id)
+  update((entries) => {
+    const e = entryOf(entries, id, fp)
+    return entries.filter((x) => x !== e)
+  })
+}
+
+try {
+  main(process.argv.slice(2))
+} catch (e) {
+  if (!(e instanceof Refusal)) throw e
+  process.stderr.write(e.message.split('\n').map((l) => `10x-security: ${l}\n`).join(''))
+  process.exit(2)
+}

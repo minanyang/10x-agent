@@ -14,7 +14,8 @@ Optional `.claude/10x.json`, committed with the project:
   "redProof": { "command": "pytest {file}", "tests": ["tests/test_*.py"] },
   "preReviewGates": ["ruff check ."],
   "contextGate": { "maxTokens": 200000 },
-  "batch": { "parallel": 2 }
+  "batch": { "parallel": 2 },
+  "security": { "blockClose": "high" }
 }
 ```
 
@@ -31,6 +32,7 @@ Optional `.claude/10x.json`, committed with the project:
 | `redProof.tests` | required with `redProof.command`: git pathspec globs naming the test files (`tests/*.test.sh`) |
 | `preReviewGates` | none. Shell commands (quick gates: lint, typecheck) that `10x-review-packet` runs first; a failure exits 1 and no packet is built |
 | `tdd` | on. `/10x:work` writes, commits and locks the tests (`10x-red-proof <id> --lock`) before implementing, and a locked test changes only through a relock a fresh reviewer approved. `false` (or `"false"`) skips the tests half and the lock |
+| `security.blockClose` | off. One of `critical`, `high`, `medium`, `low`, `informational`: `10x-land check` then refuses to close a ticket while `.10x/security.md` has a confirmed entry found in or seen in it, at or above that severity, whose status is `new` or `fix-now`. Any other value exits 2 |
 | `batch.parallel` | `1`. The most implementation workers `/10x:batch` runs at once; an integer of 1 or more, else `10x-batch` exits 2. Planning always starts every ticket, and close is one at a time |
 | `contextGate.maxTokens` | `200000`; `0` turns the gate off. A file that does not parse, or a `maxTokens` that is not a number, gets the default and a warning |
 

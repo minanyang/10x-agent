@@ -17,11 +17,16 @@
 # `check` first prints the configured close mode, `mode: <close>` (exit 2 on a value other than pr, pr-merge or local,
 # before looking for the worktree), then, still before the worktree lookup, `ticket dir: <abs .10x/<id>>`,
 # `base: <branch> (<ref>)`, `review: <abs path>` or `review: missing`, and `tickets: <github|files>` (exit 2 on any
-# other value; scripts/lib.sh tickets_mode has the default). In pr or pr-merge mode with a github.com origin it then prints the branch's PR,
+# other value; scripts/lib.sh tickets_mode has the default), then `security: <level>` from the main checkout's
+# security.blockClose, or `security: off` without it (exit 2 on a value other than critical, high, medium, low or
+# informational). In pr or pr-merge mode with a github.com origin it then prints the branch's PR,
 # `pr: <STATE> <url>`, or `pr: none` when gh finds none, and in pr or pr-merge mode the PR/MR template the body must
 # follow, `pr template: <path>` relative to the worktree, or `pr template: none`. It exits 1 and lists the files when the
 # ticket's worktree has uncommitted changes. After `clean: <worktree>` it exits 1 with one `locked test changed: <path>`
-# line per file 10x-red-proof --lock locked whose blob at HEAD differs from the lock.
+# line per file 10x-red-proof --lock locked whose blob at HEAD differs from the lock. With security.blockClose set it
+# then prints `security entry open: <fp>` for each confirmed entry of .10x/security.md found in or seen in <id>, with
+# status new or fix-now and a severity at or above the level, and exits 1 when there is one; without the key it never
+# reads security.md.
 # The template is looked up in the worktree: on a GitLab origin in .gitlab/merge_request_templates/, otherwise
 # .github/pull_request_template.md, pull_request_template.md, docs/pull_request_template.md, then
 # .github/PULL_REQUEST_TEMPLATE/; first found wins. Names match in any case; a symlink anywhere on the way does not
@@ -52,6 +57,13 @@
 # naming the missing ones; headings match trimmed, in any case, without closing #s, fenced ones ignored. The repo is
 # pinned to origin; no auto-merge, push or fill flags.
 # `push`, `merge` and `pr` refuse when an origin push URL names a different repo than its fetch URL.
+# `push` (each commit message in <base>..<branch>), `pr` (pr-title, pr-body.md and each commit message in
+# <base>..<branch>), `squash` (commit-msg) and `comment` (comment.md) refuse, before any git push, gh, glab or
+# commit-tree call, text that names an entry of .10x/security.md, whatever
+# its status: its fingerprint, its title in any case, or its location verbatim when not preceded by a path character
+# ([A-Za-z0-9._/-]) and not followed by a digit. Each hit prints `10x: <file> contains security entry <fp>` (for a commit,
+# `commit <7-char sha>`), never the entry's title or location; exit 2. Without security.md nothing matches; a
+# security.md that does not parse, or a symlinked one, exits 2.
 # `issue` (github.com only, and refused unless tickets is github) creates an issue from .10x/drafts/<slug>.md (title, Labels:, Type:, Form:, body);
 # every label must already exist in the repo. When the main checkout has issue forms (.github/ISSUE_TEMPLATE/*.yml
 # besides config.yml) the draft's `Form: <file>` must name one, and every required field's `### <label>` section must
@@ -70,6 +82,7 @@
 set -euo pipefail
 # shellcheck source=../scripts/lib.sh
 source "$(dirname "$(readlink -f "$0")")/../scripts/lib.sh"
+SECURITY_JS="$(dirname "$(readlink -f "$0")")/../scripts/security.js"
 
 usage="usage: 10x-land check|rebase|push|merge|wait|squash|pr|comment <id> | issue|ticket <slug>"
 cmd="${1:-}"; id="${2:-}"
@@ -95,6 +108,23 @@ else
     review="$(task_dir "$id")/review.md"
     if [ -f "$review" ] && [ ! -L "$review" ]; then say "review: $(shown "$review")"; else say "review: missing"; fi
     tickets_line
+    # From the main checkout's config, so a branch cannot turn it off: `off`, `=<severity>`, or `!<anything else>`.
+    # shellcheck disable=SC2016
+    block="$(node -e '
+      const fs = require("fs"), f = process.argv[1], { SEVERITIES } = require(process.argv[2])
+      let c = {}
+      try { if (fs.existsSync(f)) c = JSON.parse(fs.readFileSync(f, "utf8")) } catch (e) { console.error(`10x: cannot read ${f}: ${e.message}`); process.exit(2) }
+      const s = c && typeof c === "object" ? c.security : undefined
+      const v = s && typeof s === "object" ? s.blockClose : undefined
+      if (v == null) process.stdout.write("off")
+      else process.stdout.write((SEVERITIES.includes(v) ? "=" : "!") + (typeof v === "string" ? v : JSON.stringify(v)))
+    ' "$CONFIG" "$SECURITY_JS")" || exit 2
+    case "$block" in
+      off) say "security: off" ;;
+      =*) block="${block#=}"; say "security: $block" ;;
+      *) block="${block#!}"; say "security: $(shown "$block")"
+         die "unknown security.blockClose '$(shown "$block")' in .claude/10x.json (want critical, high, medium, low or informational)" ;;
+    esac
   fi
   path="$(wt_path "$id")"
   branch="$(git -C "$path" rev-parse --abbrev-ref HEAD)"
@@ -243,6 +273,38 @@ need_file() {
   [ ! -L "$ROOT/.10x" ] && [[ "$(readlink -f "$1")" == "$(readlink -f "$ROOT/.10x")/"* ]] || die "$1 resolves outside .10x/"
   [ -n "$(find "$1" -maxdepth 0 -links 1)" ] || die "$1 has more than one hard link"
 }
+# disclosure_check <label> <file> [<label> <file>]… — prints `10x: <label> contains security entry <fp>` on stderr
+# for each entry of .10x/security.md that a file names (the rules are in the header), then exits 2 if any did.
+disclosure_check() {
+  # shellcheck disable=SC2016
+  node -e '
+    const fs = require("fs")
+    const [secJs, tenx, ...pairs] = process.argv.slice(1)
+    const sec = require(secJs)
+    const s = sec.loadOrExit(tenx, "10x: ")
+    let hit = false
+    for (let i = 0; i < pairs.length; i += 2) {
+      for (const fp of sec.disclosed(s.entries, fs.readFileSync(pairs[i + 1], "utf8"))) {
+        console.error(`10x: ${pairs[i]} contains security entry ${fp}`)
+        hit = true
+      }
+    }
+    process.exit(hit ? 2 : 0)
+  ' "$SECURITY_JS" "$ROOT/.10x" "$@" || exit 2
+}
+# commit_sources — appends a `commit <sha7>` label and a file holding its message to $sources for each commit in
+# <base>..<branch>, when .10x/security.md exists (or is a symlink, which disclosure_check refuses).
+commit_sources() {
+  local revs c
+  [ -e "$ROOT/.10x/security.md" ] || [ -L "$ROOT/.10x/security.md" ] || return 0
+  revs="$(git -C "$ROOT" rev-list "$(base_ref)..refs/heads/$branch")" || die "could not list the commits of $branch"
+  msgs="$(mktemp -d)"; trap 'rm -rf "$msgs"' EXIT
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    git -C "$ROOT" log -1 --format=%B "$c" >"$msgs/$c"
+    sources+=("commit $(git -C "$ROOT" rev-parse --short=7 "$c")" "$msgs/$c")
+  done <<<"$revs"
+}
 # parse_draft <draft> — sets title, labels, itype, form and body_from (the first body line) from a draft's header,
 # and labels_line, type_line, form_line: the line of each header line, 0 when absent.
 parse_draft() {
@@ -353,11 +415,25 @@ case "$cmd" in
       say "uncommitted changes in $path:"; say "$dirty"; exit 1
     fi
     say "clean: $path"
+    rc=0
     locked="$(lock_changed "$path")"
     if [ -n "$locked" ]; then
       while IFS= read -r p; do say "locked test changed: $(shown "$p")"; done <<<"$locked"
-      exit 1
+      rc=1
     fi
+    if [ "$block" != off ]; then
+      # shellcheck disable=SC2016
+      open="$(node -e '
+        const [secJs, tenx, id, level] = process.argv.slice(1)
+        const sec = require(secJs)
+        for (const fp of sec.open(sec.loadOrExit(tenx, "10x: ").entries, id, level)) console.log(fp)
+      ' "$SECURITY_JS" "$ROOT/.10x" "$id" "$block")" || exit 2
+      if [ -n "$open" ]; then
+        while IFS= read -r fp; do say "security entry open: $fp"; done <<<"$open"
+        rc=1
+      fi
+    fi
+    exit "$rc"
     ;;
 
   rebase)
@@ -377,6 +453,10 @@ case "$cmd" in
     [ "$branch" != "$base" ] || die "refusing to push the base branch $base"
     has_origin || die "no origin to push to"
     same_push_url
+    # The branch's commit messages are published by the push itself, so they are checked here, not only in `pr`.
+    sources=()
+    commit_sources
+    [ ${#sources[@]} -eq 0 ] || disclosure_check "${sources[@]}"
     if git -C "$ROOT" ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1; then
       git -C "$path" push --force-with-lease="refs/heads/$branch" -u origin "refs/heads/$branch:refs/heads/$branch"
     else
@@ -443,6 +523,7 @@ case "$cmd" in
     onto="$(base_ref)"
     git -C "$ROOT" merge-base --is-ancestor "$onto" "refs/heads/$branch" || die "$onto moved since the rebase — rebase again"
     [ "$(git -C "$ROOT" rev-parse "$onto")" != "$(git -C "$ROOT" rev-parse "refs/heads/$branch")" ] || die "$branch has no commits beyond $onto"
+    disclosure_check "$td/commit-msg" "$td/commit-msg"
     # Rebased onto the base, the branch's tree is the squashed result.
     if [[ "$id" =~ ^gh-([1-9][0-9]*)$ ]] && ! grep -qE "^Closes #${BASH_REMATCH[1]}[[:space:]]*$" "$td/commit-msg"; then
       # Closes #<n> as its own paragraph, before a closing trailer block so git still reads the trailers.
@@ -476,6 +557,9 @@ case "$cmd" in
     need_file "$td/pr-title"; need_file "$td/pr-body.md"
     title="$(head -n 1 "$td/pr-title")"
     [ -n "${title//[[:space:]]/}" ] || die "$td/pr-title has an empty first line"
+    sources=("$td/pr-title" "$td/pr-title" "$td/pr-body.md" "$td/pr-body.md")
+    commit_sources
+    disclosure_check "${sources[@]}"
     pr_template
     if [ -n "$tpl" ]; then
       # shellcheck disable=SC2016
@@ -590,6 +674,7 @@ case "$cmd" in
     # The ticket must have been read from this very issue, not #<n> of another repo. Only line 4, the url
     # 10x-ticket writes in the header, counts: the issue body and comments below it are anyone's text.
     sed -n 4p "$td/ticket.md" | grep -Fixq -- "- url: https://$repo/issues/$number" || die "$td/ticket.md is not issue #$number of $repo; not commenting"
+    disclosure_check "$td/comment.md" "$td/comment.md"
     gh issue comment "$number" --repo "$repo" --body-file "$td/comment.md"
     # A posted comment is never posted again: a second call finds no comment.md. The earlier comment.posted.md is
     # removed first, so a symlink there cannot make mv write outside .10x/ (rm removes the link, not its target).

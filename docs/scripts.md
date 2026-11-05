@@ -29,6 +29,8 @@ On the Bash tool's PATH while the plugin is enabled (not in a plain terminal). T
 - `ticket` (`tickets: files` only) writes `.10x/drafts/<slug>.md` verbatim to `.10x/<slug>/ticket.md` and deletes the draft, with the checks of `issue` for a draft without forms and no `gh` call or `origin`; it refuses `Labels:`, `Type:` and `Form:` header lines, an existing `.10x/<slug>/`, and the slugs `gh-<n>` and `drafts`.
 - `comment` posts `.10x/gh-<n>/comment.md` on issue `<n>` of origin's repo, only when the url in `.10x/gh-<n>/ticket.md`'s header is that issue's, then renames it to `comment.posted.md` so it is posted once.
 - `push`, `merge` and `pr` refuse when origin's push URL names another repo than its fetch URL.
+- `push`, `pr`, `comment` and `squash` refuse, before any push, `gh`/`glab` call or commit, text that names an entry of `.10x/security.md` ([10x-security](#10x-security)), whatever its status: `push` checks every commit message in `<base>..<branch>`, `pr` checks `pr-title`, `pr-body.md` and every commit message in `<base>..<branch>`, `comment` checks `comment.md`, `squash` checks `commit-msg`. An entry matches by its fingerprint, its title (any case) or its `path:line` (not preceded by another path character, not followed by another digit). Each hit prints `10x: <file or commit <sha>> contains security entry <fingerprint>` — never the title or location — and the command exits 2.
+- With `security.blockClose` set ([configuration](configuration.md)), `check` prints `security: <level>` after `tickets:` (`security: off` without it; exit 2 on a value other than the five severities), and after `clean:` one `security entry open: <fingerprint>` line per confirmed entry found in or seen in the ticket whose status is `new` or `fix-now` and whose severity is at or above the level; any such line exits 1. Without the key it never reads `security.md`.
 
 ## 10x-verify
 
@@ -88,6 +90,36 @@ The mechanics of `/10x:batch`. Refusals print `10x-batch: <why>` on stderr with 
 - `check` validates `.10x/roadmap.draft.md`: exit 1 with one `<file>:<line>: <why>` per fault, else one `not kept: <line>` per row or section entry of `roadmap.md` that the draft no longer has byte for byte (a row anywhere in the table, an entry in its own section), then one `new id: <version> <id>` per ticket id a draft row has and the same version's row in `roadmap.md` does not.
 - `apply` runs `check`, writes nothing on a fault, else renames the draft to `.10x/roadmap.md` and prints `roadmap: <path>` and the `not kept:` and `new id:` lines.
 - `link` appends `` `<id>` `` to an item; it refuses an item that already has an id, and an id that is neither `gh-<n>` nor a directory with `.10x/<id>/ticket.md`.
+
+## 10x-security
+
+`10x-security add <id> <file> | set <id> <fingerprint> <status> [reason] | remove <id> <fingerprint>` — the one writer of `.10x/security.md`, the repo-wide record of what `10x:security-reviewer` found outside a ticket's diff, or could not confirm. The file lives under `.10x/`, so it is never committed. Refusals print `10x-security: <why>` with exit 2 and write nothing.
+
+- `add` reads a JSON array of the reviewer's `## Out of diff` records from a file under `.10x/<id>/`. Each record has exactly `verdict` (`confirmed` or `needs_validation`), `rule` (kebab-case), `title`, `path` (repo-relative), `line` (an integer ≥ 1), `snippet`, `trace`, and `severity` (`critical`, `high`, `medium`, `low` or `informational`) only when confirmed; a fault prints `records[<i>]: <field> …` for each faulty record. A new fingerprint is appended with `status: new` and `found in: <id>` (`added: <fp>`); a known one gets `<id>` in `seen in` and nothing else changes (`seen: <fp>`).
+- `set` records `fix-now`, `later`, `accepted` or `rejected` (the last two need a reason) and changes only `status` and `reason`. `remove` deletes one entry. Both refuse an unknown fingerprint and an entry whose `found in` and `seen in` do not include `<id>`. The grant hook binds all three to the session's ticket. `/10x:work` grants only `add`, and the hook never allows `set` or `remove`, so they always ask: any session can put its ticket into an entry's `seen in`.
+- Writes go through a temp file and a rename under the lock `.10x/security.lock`, and `.10x/` is kept in `.git/info/exclude`.
+
+The fingerprint is `sha256:` and the hex sha256 of `<rule>\n<path>\n<snippet>`, where `snippet` is the sink line with each run of whitespace collapsed to one space and the ends trimmed. It has no line number, so the same sink keeps its fingerprint when the code around it moves, and it matches the fingerprint pattern of Cloudflare's security-audit-skill.
+
+`.10x/security.md` is `# Security entries`, then one section per entry, separated by blank lines:
+
+```markdown
+## sha256:<hex>
+- title: <text>
+- verdict: confirmed
+- severity: high
+- rule: command-injection
+- location: <path>:<line>
+- trace: <text>
+- status: new
+- reason:
+- found in: gh-1
+- seen in: gh-4, gh-9
+- audit fingerprint:
+- not seen in:
+```
+
+Fields come in that order, one line each; an empty one ends at the colon. A backslash, newline, carriage return or tab in a value is stored as `\\`, `\n`, `\r`, `\t`. `audit fingerprint` and `not seen in` are kept as they are by every subcommand. A file that does not parse makes every reader exit 2 with `<file>:<line>: <why>`.
 
 ## 10x-grill
 

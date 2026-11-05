@@ -109,6 +109,16 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
+// gh-1 AC12 — 10x-security, the security.md format and fingerprint, and security.blockClose.
+{
+  const name = "docs describe 10x-security, security.md and security.blockClose"
+  const scripts = read("docs/scripts.md"), config = read("docs/configuration.md")
+  const missing = []
+  for (const w of ["10x-security", "security.md", "sha256:"]) if (scripts === null || !scripts.includes(w)) missing.push(`docs/scripts.md: ${w}`)
+  if (config === null || !config.includes("security.blockClose")) missing.push("docs/configuration.md: security.blockClose")
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 // AC4 — heading parity and cross-links.
 {
   const name = "README.zh-TW.md has the same ## and ### headings, level by level, as README.md"

@@ -302,6 +302,19 @@ check "$T: work's packet for the ticket" allow "$(bash_ s30 "10x-review-packet g
 check "$T: work's plan check on another ticket" nothing "$(bash_ s30 "10x-plan-check gh-9")"
 check "10x-test on the typed ticket" allow "$(bash_ s30 "10x-test gh-5 src/a.test.mjs")" "granted by /10x:work"
 check "10x-test on another ticket" nothing "$(bash_ s30 "10x-test gh-9 src/a.test.mjs")"
+# 10x-security binds the id in word 2 for add, set and remove. The copy of work's SKILL.md is given the grant here, so the
+# refusals below are the hook's binding and not a missing grant, whatever work's own allowed-tools say.
+grep -qF '  - Bash(10x-security *)' "$plugin/skills/work/SKILL.md" ||
+  node -e '
+    const fs = require("fs"), f = process.argv[1]
+    fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace("allowed-tools:\n", "allowed-tools:\n  - Bash(10x-security *)\n"))
+  ' "$plugin/skills/work/SKILL.md"
+prompt s37 "/10x:work gh-5" >/dev/null
+check "10x-security on the typed ticket" allow "$(bash_ s37 "10x-security add gh-5 /r/.10x/gh-5/out-of-diff.json")" "granted by /10x:work"
+check "10x-security on another ticket" nothing "$(bash_ s37 "10x-security add gh-9 /r/.10x/gh-9/out-of-diff.json")"
+check "10x-security set on another ticket" nothing "$(bash_ s37 "10x-security set gh-9 sha256:0 later")"
+check "10x-security remove on another ticket" nothing "$(bash_ s37 "10x-security remove gh-9 sha256:0")"
+cp "$ROOT/skills/work/SKILL.md" "$plugin/skills/work/SKILL.md"
 prompt s30 "/10x:close gh-9" >/dev/null
 check "$T: typing the skill again binds the new ticket" allow "$(bash_ s30 "10x-land merge gh-9")"
 check "$T: and not the old one" nothing "$(bash_ s30 "10x-land merge gh-5")"

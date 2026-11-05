@@ -13,6 +13,7 @@ allowed-tools:
   - Bash(10x-test *)
   - Bash(10x-review-packet *)
   - Bash(10x-verify *)
+  - Bash(10x-security add *)
   - Bash(git fetch)
   - Bash(gh pr list *)
   - Bash(glab mr list *)
@@ -29,7 +30,7 @@ One ticket per session. Everything the next session needs lives in `.10x/<id>/`.
 
 `10x-worktree init <id>` and `10x-worktree add <id>` print `ticket dir: <path>` and `base: <branch> (<ref>)`. Every `.10x/<id>/` path in this skill means that ticket dir — in the main checkout, never under the worktree — and every path handed to an agent (`plan.md`, `ticket.md`, the packets) is the absolute one built from it. `<base>` is the branch on the `base:` line; never assume `main`.
 
-The scripts below (`10x-worktree`, `10x-ticket`, `10x-grill`, `10x-plan-check`, `10x-land`, `10x-red-proof`, `10x-test`, `10x-verify`, `10x-review-packet`) are on the Bash tool's PATH while the plugin is enabled. Run them from the project; they find the main checkout themselves. Run one command per Bash call — no `&&`, `;` or `|`.
+The scripts below (`10x-worktree`, `10x-ticket`, `10x-grill`, `10x-plan-check`, `10x-land`, `10x-red-proof`, `10x-test`, `10x-verify`, `10x-review-packet`, `10x-security`) are on the Bash tool's PATH while the plugin is enabled. Run them from the project; they find the main checkout themselves. Run one command per Bash call — no `&&`, `;` or `|`.
 
 ## Step 0 — Which ticket, which phase
 
@@ -230,6 +231,14 @@ Build the packet. It runs the project's `preReviewGates` first: exit 1 means one
 - `10x:code-reviewer`, always. Give it **only** the path of `.10x/<id>/review-packet.md` and the instruction: *"Read the packet first and whole, then everything it lists in one message. Judge the diff against plan.md's acceptance criteria: does it satisfy them, is anything missing, is anything there the plan did not ask for, does it break the repo's conventions. Every item under the packet's `## Plan checks` is a finding. Findings only."*
 - `10x:security-reviewer` too, when the change touches auth or permissions, payments, a new endpoint, or handling of user input, and always when the packet says `security review: required` — same packet, asked only about injection, authorization, secrets and unsafe input in the changed surface.
 
+The security reviewer's reply has `## Findings` (confirmed findings in the diff) and `## Out of diff` (a fenced JSON array of every other record). When it has `## Out of diff`, write that array, without the fence, to `.10x/<id>/out-of-diff.json` with Write, overwriting it, then record it:
+
+```bash
+10x-security add <id> <ticket dir>/out-of-diff.json
+```
+
+A reply with no `## Out of diff` (a hand-back) runs no `add`. An array that does not parse, or an `add` refusal, is an `asked` line carrying the error: never repair the JSON by hand. Only `## Findings` goes to `review.md`; nothing from `## Out of diff` goes into `review.md`, the report, a commit or a PR — `.10x/security.md` holds it, uncommitted, and `10x-land` refuses to publish text that names it.
+
 The packet's `## Plan checks` lists each `## Tests` case not found in the test file's added lines, and each `(gone)` Readers term still in the tree. Every item listed there is a finding, as if a reviewer had reported it as `major`.
 
 **Never give a reviewer the implementer's report or your own summary.** The reviewer judges the diff against the plan, not against an account of it — that is the point of a cold context.
@@ -242,7 +251,7 @@ Write the findings, and the packet's plan checks, to `.10x/<id>/review.md` as a 
 
 | Severity | Default |
 |---|---|
-| `blocker`, `major`, a plan check, any confirmed security finding | fix, always |
+| `blocker`, `major`, a plan check, any confirmed security finding in the diff | fix, always |
 | `minor` | fix if it is a real bug or something the change causes; if it is only taste, answer it in `review.md` as a finding believed wrong; otherwise ask the user |
 | `nit` | fix if it is a one-liner in code you already touched; otherwise it may be skipped without asking |
 
@@ -263,7 +272,7 @@ Every line written in response to the review is read by a reviewer too. Build th
 
 Exit 1 means a pre-review gate failed: fix, commit and rebuild, as in Step 6. Exit 3 means there are no commits since the review: no fixes round, run `10x-verify <id>` once on the final tree, go to Step 8. Exit 2 is an error (no `review-head`, or the reviewed commits were rewritten): write it as an `asked` line, report it and stop, never skip the fixes round silently. It also refuses when `review.md` has no `## Round <n> — full|fixes` heading, and when its last round is a `— fixes` round (those fixes are verified, not reviewed again).
 
-Otherwise, as in Step 6, in **one message**: start `10x-verify <id>` in the background and spawn the reviewers that ran in the full round, plus `10x:security-reviewer` when the fix commits themselves meet Step 6's criterion — the change they touch, or the fixes packet's `security review: required`. Every item in the fixes packet's `## Plan checks` is a finding, as in Step 6. Give each **only** the path of `.10x/<id>/fixes-packet.md` and: *"Read the packet first and whole, then everything it lists in one message. The diff is only the commits made after the review of the round the packet quotes. Judge: does each fix resolve its finding, do the fixes introduce a new problem, is anything there the plan did not ask for. Every item under the packet's `## Plan checks` is a finding. Findings only."* The packet carries the plan and the last round's findings, never its `### Fixes applied` — do not add it. The tree is frozen until all have returned.
+Otherwise, as in Step 6, in **one message**: start `10x-verify <id>` in the background and spawn the reviewers that ran in the full round, plus `10x:security-reviewer` when the fix commits themselves meet Step 6's criterion — the change they touch, or the fixes packet's `security review: required`. Every item in the fixes packet's `## Plan checks` is a finding, as in Step 6. Give each **only** the path of `.10x/<id>/fixes-packet.md` and: *"Read the packet first and whole, then everything it lists in one message. The diff is only the commits made after the review of the round the packet quotes. Judge: does each fix resolve its finding, do the fixes introduce a new problem, is anything there the plan did not ask for. Every item under the packet's `## Plan checks` is a finding. Findings only."* The packet carries the plan and the last round's findings, never its `### Fixes applied` — do not add it. The tree is frozen until all have returned. The security reviewer's `## Out of diff` is handled as in Step 6: written to `.10x/<id>/out-of-diff.json`, then `10x-security add <id> <ticket dir>/out-of-diff.json`, and only `## Findings` goes to `review.md`.
 
 Append the findings to `review.md` as `## Round <n+1> — fixes`, in the same format as Step 6. Act on them with the same table. A fixes round is never reviewed: fixes it calls for are recorded under its own `### Fixes applied`, followed by `10x-red-proof <id>` if tests changed and `10x-verify <id>` on the final tree — no further review.
 
@@ -277,9 +286,19 @@ Applies only when the user approves a change to `plan.md`: a new or changed crit
 4. Continue from Step 3's implementation half in the existing worktree; a new session gets there through Step 0 → Step 2, and `10x-worktree add` re-runs.
 5. Run a new full round (Step 6, next number), then at most one fixes round (Step 7a).
 
+A `fix-now` answer in Step 8 is such a plan change: the new criterion and its `## Tests` row name the entry only by its fingerprint — never its title or `path:line`, which the PR body would carry. The new full round always spawns `10x:security-reviewer`, whatever Step 6's trigger. Once that round's `## Findings` has no finding against the fingerprint, remove the entry: `10x-security remove <id> <fp>`.
+
 Without an approved plan change, there is no further full round.
 
 ## Step 8 — Commit agent memory, report and stop
+
+First, the security entries this ticket found or saw: when `.10x/security.md` has entries with `status: new` whose `found in` or `seen in` is `<id>`, write `- asked: Step 8 security entries: <fp>, <fp>…` to `evidence.md` and ask one question, in one message, that contains that line word for word and lists each entry — fingerprint, severity (or `needs_validation`), title, location — with the four statuses: `fix-now` (this ticket fixes it), `later`, `accepted` (reason required) or `rejected` (judged not real, reason required). Record each answer:
+
+```bash
+10x-security set <id> <fp> <status> [reason]
+```
+
+then remove the `asked` line. `10x-security set` and `remove` always ask for the user's permission: this skill grants only `10x-security add`, and the grant hook never allows the other two. A `fix-now` reopens the plan through Step 7b. The question is conversation text: it is never written to `review.md`, the report, a commit or a PR.
 
 Agents write their memory (`.claude/agent-memory/`) under the session's working directory — the main checkout, or the worktree once the session has moved there. Once the last round is over, commit it on the ticket branch — also again after a Step 7b loop that reopened the work after an earlier report. Not after each round: moving memory out of the main checkout would hide it from the next round's reviewers. The packets leave `.claude/agent-memory` out of their diff, so a memory commit is never reviewed; they list each commit that touches it, with its paths, and one that is not the memory commit is a finding.
 

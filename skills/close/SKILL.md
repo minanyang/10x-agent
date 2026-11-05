@@ -43,7 +43,7 @@ Run one command per Bash call — no `&&`, `;` or `|` — so each call matches t
 10x-worktree path <id>
 ```
 
-`check` prints `mode: <close>` first: that value is the mode for the whole run, in every step below — never read `.claude/10x.json` for it. An exit 2 from `check` that names an unknown close mode or an unreadable config is a stop: quote the script's line and say the valid values are `pr`, `pr-merge` and `local`. Then, before it looks for the worktree, it prints `ticket dir: <path>`, `base: <branch> (<ref>)`, and `review: <path>` or `review: missing`, then `tickets: <value>`. An exit 2 right after the `tickets:` line whose message is `unknown tickets value …` is a stop: quote the script's line and say the valid values are `github` and `files`. Every `.10x/<id>/` path in this skill (`review.md`, `pr-title`, `pr-body.md`, `commit-msg`) is under that ticket dir — in the main checkout, never under the worktree — and `<base>` is the branch on the `base:` line. An exit 2 after the `tickets:` line saying the ticket has no worktree is the no-worktree case below. In `pr` or `pr-merge` mode, `check` also prints the branch's PR on GitHub: `pr: <STATE> <url>`, or `pr: none`; and the repo's PR/MR template the body must follow, `pr template: <path>` (relative to the worktree), or `pr template: none`.
+`check` prints `mode: <close>` first: that value is the mode for the whole run, in every step below — never read `.claude/10x.json` for it. An exit 2 from `check` that names an unknown close mode or an unreadable config is a stop: quote the script's line and say the valid values are `pr`, `pr-merge` and `local`. Then, before it looks for the worktree, it prints `ticket dir: <path>`, `base: <branch> (<ref>)`, and `review: <path>` or `review: missing`, then `tickets: <value>`. An exit 2 right after the `tickets:` line whose message is `unknown tickets value …` is a stop: quote the script's line and say the valid values are `github` and `files`. Next comes `security: <level>` or `security: off` — the `security.blockClose` setting; an exit 2 whose message is `unknown security.blockClose …` is a stop: quote it and say the valid values are `critical`, `high`, `medium`, `low` and `informational`. Every `.10x/<id>/` path in this skill (`review.md`, `pr-title`, `pr-body.md`, `commit-msg`) is under that ticket dir — in the main checkout, never under the worktree — and `<base>` is the branch on the `base:` line. An exit 2 after the `tickets:` line saying the ticket has no worktree is the no-worktree case below. In `pr` or `pr-merge` mode, `check` also prints the branch's PR on GitHub: `pr: <STATE> <url>`, or `pr: none`; and the repo's PR/MR template the body must follow, `pr template: <path>` (relative to the worktree), or `pr template: none`.
 
 Stop and say why if any of these holds:
 
@@ -51,9 +51,10 @@ Stop and say why if any of these holds:
 - no worktree for `<id>`: look for an open PR of the branch instead (the second run of `pr` mode, Step 4);
 - uncommitted changes in the worktree;
 - `check` printed `locked test changed: <path>` lines: a locked test changed without a relock that red-proof accepted — that is `/10x:work`'s job;
+- `check` printed `security entry open: <fp>` lines: a confirmed security entry of this ticket at or above `security.blockClose` is still `new` or `fix-now` — name the fingerprints only; the user settles them through `/10x:work`. Not a stop on the `pr: MERGED` cleanup run below;
 - `review: missing`, or the review it names lists a `blocker` / `major` with neither a fix nor a reason — each round's in that round's `### Fixes applied` — that is `/10x:work`'s job.
 
-`pr: MERGED <url>` means the PR was merged since the last run: once the `gh auth status` and uncommitted-changes checks pass, go straight to Step 4 (`sync-base`, then `rm`) — no `review.md` check, rebase, verify, push or `10x-land pr`. Any other `pr:` line (`OPEN`, `CLOSED`, `none`) goes on as below.
+`pr: MERGED <url>` means the PR was merged since the last run: once the `gh auth status` and uncommitted-changes checks pass, go straight to Step 4, whatever `security entry open:` lines `check` printed (`sync-base`, then `rm`) — no `review.md` check, rebase, verify, push or `10x-land pr`. Any other `pr:` line (`OPEN`, `CLOSED`, `none`) goes on as below.
 
 ## Step 1 — Rebase onto the current base
 
@@ -91,6 +92,8 @@ It must pass on the rebased tree. A failure here is new (the base moved): fix it
    - **2** — failed checks or any other refusal: stop, report the PR URL and what it named.
 
    Never merge around a refusal.
+
+   `10x-land push`, `pr`, `squash` and `comment` refuse text that names an entry of `.10x/security.md` — its fingerprint, title or `path:line` — naming only the file or commit and the fingerprint; `push` checks the branch's commit messages before anything leaves the machine. For `pr-title`, `pr-body.md` or `commit-msg`, rewrite the text without it and run the command again; a commit message on the branch is the user's to reword — stop and name the commit. Never remove or re-set an entry to get past the refusal.
 4. `pr`: report the PR URL and stop. The worktree stays until the PR is merged.
 
 **`local`:**
