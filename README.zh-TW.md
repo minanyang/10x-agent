@@ -104,7 +104,7 @@ base branch、gates、close 模式、ticket 放在哪裡等選用設定放在 `.
 | `/10x:work` | 規劃 ticket，再到 worktree 裡實作、驗證、審查 |
 | `/10x:close` | rebase、驗證、落地、清理 |
 | `/10x:audit` | 對指定範圍（diff、路徑或整個 repo）執行已安裝的 Cloudflare `security-audit` skill，把結果合併進 `.10x/security.md`，重跑時不會重複分流同一個問題；再逐一和你確認每個新的或延後的項目，並為每個 `fix-now` 開一張本機 ticket |
-| `/10x:roadmap` | 把需求排進 `.10x/roadmap.md` 的版本裡，每個版本寫明排在這裡的理由，你核准後才寫入；可以把一個版本的每個項目各開成一張 ticket，交給 `/10x:batch <version>` 處理並標成 `Done`。也會把 `.10x/security.md` 裡延後處理的 `confirmed` 項目列為需求；每張 security ticket 怎麼開由 `10x-security route` 決定：`tickets: files` 開本地 ticket，private repo 或尚未釋出、嚴重度低的項目開 issue，public repo 裡已釋出且 `medium` 以上的項目則開 draft security advisory 加本地 ticket，絕不開公開 issue。`show` 最後會建議發版前先跑 `/10x:audit <tag>..HEAD` |
+| `/10x:roadmap` | 把需求排進 `.10x/roadmap.md` 的版本裡，每個版本寫明排在這裡的理由，你核准後才寫入；可以把一個版本的每個項目各開成一張 ticket，交給 `/10x:batch <version>` 處理並標成 `Done`。也會把 `.10x/security.md` 裡延後處理的 `confirmed` 項目列為需求；每張 security ticket 怎麼開由 `10x-security route` 決定：`tickets: files` 開本地 ticket，private repo，或尚未釋出或嚴重度低的項目，開 issue，public repo 裡已釋出且 `medium` 以上的項目則開 draft security advisory 加本地 ticket，絕不開公開 issue。`show` 最後會建議發版前先跑 `/10x:audit <tag>..HEAD` |
 | `/10x:batch` | 在同一個 terminal 處理多張 ticket，每張在背景 worker 裡完成 |
 | `/10x:commit` | 只 commit 這個 session 改過的路徑，訊息照 repo 自己的風格。會直接 commit，只有疑似 secret、範圍不清楚或有不相關的改動時才停下來問。說「message only」就只給草稿 |
 | `/10x:code-review` | 審查還沒 commit 的改動 |
