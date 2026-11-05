@@ -321,23 +321,24 @@ let login = null
 // null when issue <n> of origin's repo was written by the `gh` login, else the refusal line: a batch worker acts on
 // its ticket's text unattended, so a stranger's issue could steer it. The login comes from `gh api user --jq .login`,
 // once per process, the author from `gh issue view <n> --json author`; they compare case-insensitively.
+const ghRun = (argv) => {
+  const r = spawnSync('gh', argv, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  if (r.error) return { why: r.error.code === 'ENOENT' ? '`gh` is not installed' : r.error.message }
+  if (r.status !== 0) return { why: (r.stderr || 'gh failed').trim() }
+  return { out: r.stdout.trim() }
+}
+
 function owner(n) {
   const cannot = (why) => `cannot check the author of gh-${n}: ${flat(why)}`
-  const gh = (argv) => {
-    const r = spawnSync('gh', argv, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-    if (r.error) return { why: r.error.code === 'ENOENT' ? '`gh` is not installed' : r.error.message }
-    if (r.status !== 0) return { why: (r.stderr || 'gh failed').trim() }
-    return { out: r.stdout.trim() }
-  }
   const o = originRepo()
   if (o.why) return cannot(o.why)
   if (login === null) {
-    const u = gh(['api', 'user', '--jq', '.login'])
+    const u = ghRun(['api', 'user', '--jq', '.login'])
     if (u.why) return cannot(u.why)
     if (!u.out) return cannot('gh api user printed no login')
     login = u.out
   }
-  const v = gh(['issue', 'view', n, '--repo', `github.com/${o.repo}`, '--json', 'author'])
+  const v = ghRun(['issue', 'view', n, '--repo', `github.com/${o.repo}`, '--json', 'author'])
   if (v.why) return cannot(v.why)
   let author
   try {
@@ -348,6 +349,23 @@ function owner(n) {
   const who = author && typeof author.login === 'string' && author.login ? author.login : null
   if (who && who.toLowerCase() === login.toLowerCase()) return null
   return `not your issue: gh-${n} (author ${who || 'unknown'})`
+}
+
+// True when a comment on issue <n> is by someone other than the issue's author, or when that cannot be told: ticket.md
+// carries every comment, so auto mode leaves such a plan for the human to approve.
+function strangerComments(n) {
+  const o = originRepo()
+  if (o.why) return true
+  const v = ghRun(['issue', 'view', n, '--repo', `github.com/${o.repo}`, '--json', 'author,comments'])
+  if (v.why) return true
+  try {
+    const { author, comments } = JSON.parse(v.out)
+    const who = author?.login
+    if (typeof who !== 'string' || !who || !Array.isArray(comments)) return true
+    return comments.some((c) => typeof c?.author?.login !== 'string' || c.author.login.toLowerCase() !== who.toLowerCase())
+  } catch {
+    return true
+  }
 }
 
 function search(q) {
@@ -994,6 +1012,7 @@ async function loop(argv) {
   const auto = mode() === 'auto'
   const own = new Map()
   const refused = new Map()
+  const held = new Set()
   let woke = false
   let wake = null
   const sleep = (ms) => new Promise((res) => setTimeout(res, ms))
@@ -1049,9 +1068,11 @@ async function loop(argv) {
       }
       const r = rows.find((e) => e.id === id)
       const replyFile = path.join(bdir(id), 'reply.md')
-      if (!fs.existsSync(replyFile) && auto && r.last.session_kind === 'plan' && !heldBack(id)) {
-        if (r.approvable) put(path.join(bdir(id), 'auto-approved'), recordApproval(id) + '\n')
-        else if (fixedSent(id) < FIXED_MAX) put(replyFile, FIXED_REPLY)
+      if (!fs.existsSync(replyFile) && auto && r.last.session_kind === 'plan' && !heldBack(id) && !held.has(id)) {
+        if (r.approvable) {
+          if (roadmap.GH.test(id) && strangerComments(id.slice(3))) held.add(id)
+          else put(path.join(bdir(id), 'auto-approved'), recordApproval(id) + '\n')
+        } else if (fixedSent(id) < FIXED_MAX) put(replyFile, FIXED_REPLY)
       }
       if (fs.existsSync(replyFile)) started = (await start(id, 'reply')) || started
     }
@@ -1059,7 +1080,7 @@ async function loop(argv) {
     if (now && !ownOpen() && !now.some((r) => Object.values(RUNNING).includes(r.phase))) {
       writeBoard(now)
       markDone(now)
-      process.stdout.write(JSON.stringify({ items: items(now, auto, refused) }) + '\n')
+      process.stdout.write(JSON.stringify({ items: items(now, auto, refused, held) }) + '\n')
       process.exit(0)
     }
     if (!woke) {
@@ -1073,13 +1094,13 @@ async function loop(argv) {
 }
 
 // What the human is needed for, in board order, at most one item per ticket.
-function items(rows, auto, refused) {
+function items(rows, auto, refused, held) {
   const out = []
   for (const r of rows) {
     const item = (need, evidence) => out.push({ id: r.id, need, evidence })
     if (refused.has(r.id)) item('failed', refused.get(r.id))
     else if (r.phase === 'failed') item('failed', r.evidence)
-    else if (r.phase === 'waiting') item(r.approvable && (!auto || heldBack(r.id)) ? 'approve' : 'answer', r.evidence)
+    else if (r.phase === 'waiting') item(r.approvable && (!auto || heldBack(r.id) || held.has(r.id)) ? 'approve' : 'answer', r.evidence)
     else if (r.denied && !['landed', 'pr-open', 'dropped'].includes(r.phase)) item('denied', r.evidence)
   }
   if (out.length) return out
