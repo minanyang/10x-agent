@@ -733,8 +733,8 @@ async function run(argv) {
       } catch {}
     })
 
-  // One worker run, recorded in runs.tsv. Started in auto mode, its stream-json's first line is read as soon as it is
-  // complete: an init event reporting another permission mode means auto mode is unavailable, and the worker is stopped.
+  // One worker run, recorded in runs.tsv. Started in auto mode, its stream-json's init event is read as soon as its line
+  // is complete: reporting another permission mode, it means auto mode is unavailable, and the worker is stopped.
   // The prompt goes after `--`, so a reply starting with `-` is never an option.
   const once = async (mode, sess) => {
     const prev = runs(id)
@@ -801,18 +801,23 @@ async function run(argv) {
   process.exit(0)
 }
 
-// The permissionMode of a stream-json log's first line: undefined while that line is incomplete, null when it is not an
-// init event naming a mode.
+// The permissionMode of a stream-json log's init event, read from its complete lines: other system events (SessionStart
+// hooks) may come first. undefined while no init line is there yet; null when the init names no mode, or when an event
+// that is not a system one comes first (init precedes every turn).
 function initMode(file) {
-  const text = readOr(file)
-  const nl = text === null ? -1 : text.indexOf('\n')
-  if (nl < 0) return undefined
-  try {
-    const ev = JSON.parse(text.slice(0, nl))
-    return ev && ev.type === 'system' && ev.subtype === 'init' && typeof ev.permissionMode === 'string' ? ev.permissionMode : null
-  } catch {
-    return null
+  const text = readOr(file) || ''
+  for (const l of text.slice(0, text.lastIndexOf('\n') + 1).split('\n')) {
+    if (!l.trim()) continue
+    let ev
+    try {
+      ev = JSON.parse(l)
+    } catch {
+      continue
+    }
+    if (!ev || ev.type !== 'system') return null
+    if (ev.subtype === 'init') return typeof ev.permissionMode === 'string' ? ev.permissionMode : null
   }
+  return undefined
 }
 
 // Every top-level assistant text block of a stream-json log, in order, and its permission denials.
