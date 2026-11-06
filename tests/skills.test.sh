@@ -503,6 +503,54 @@ for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/S
   ]))
 }
 
+// batch accepts `auto` as its first argument: it initialises with --auto, runs `10x-batch loop` in the background,
+// relays only the items loop printed, and on done ends with the board and every ticket's ## Auto decisions.
+{
+  const name = "batch: auto runs 10x-batch loop in the background and relays its items"
+  const text = fs.readFileSync(`${dir}/batch/SKILL.md`, "utf8")
+  const front = (/^---\n([\s\S]*?)\n---/.exec(text) || ["", ""])[1].split("\n")
+  const step0 = (/^## Step 0\b[\s\S]*?(?=^## Step )/m.exec(text) || [""])[0]
+  const loopPara = text.split(/\n\s*\n/).find((p) => p.includes("10x-batch loop") && p.includes("run_in_background")) || ""
+  const missing = [
+    [front.includes("  - Bash(10x-batch loop)"), "the grant Bash(10x-batch loop)"],
+    [step0.includes("10x-batch init --auto <tickets>"), "Step 0 runs 10x-batch init --auto <tickets>"],
+    [step0.includes("/10x:batch auto auto"), "Step 0: a ticket named auto is written /10x:batch auto auto"],
+    [loopPara.includes("7200000"), "10x-batch loop runs with run_in_background and timeout: 7200000"],
+    [["answer", "approve", "failed", "denied", "done"].every((k) => text.includes(`\`${k}\``)), "the item kinds answer, approve, failed, denied and done"],
+    [/only (the )?items/i.test(text), "relays only the items loop printed"],
+    [text.includes("## Auto decisions") && text.includes("verbatim"), "the final reply holds each ticket's ## Auto decisions verbatim"],
+  ].filter(([c]) => !c).map(([, w]) => w)
+  missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
+}
+
+// batch resumes with 10x-batch loop when it has no arguments and status shows mode: auto, and for `auto` with no tickets.
+{
+  const name = "batch: an auto batch resumes with 10x-batch loop"
+  const text = fs.readFileSync(`${dir}/batch/SKILL.md`, "utf8")
+  const step0 = (/^## Step 0\b[\s\S]*?(?=^## Step )/m.exec(text) || [""])[0]
+  const missing = [
+    [step0.includes("mode: auto"), "Step 0 reads mode: auto from status"],
+    [step0.includes("`/10x:batch auto`") || /`auto`[^\n]*(alone|no tickets)/.test(step0), "Step 0 names `auto` with no tickets"],
+    [step0.includes("10x-batch loop"), "Step 0 resumes with 10x-batch loop"],
+  ].filter(([c]) => !c).map(([, w]) => w)
+  missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
+}
+
+// work gains no issue-author check: the check lives in 10x-batch alone, and neither work's skill nor a script it runs
+// asks gh who wrote an issue.
+{
+  const name = "work: adds no issue-author check"
+  const root = `${dir}/..`
+  const read = (f) => (fs.existsSync(`${root}/${f}`) ? fs.readFileSync(`${root}/${f}`, "utf8") : "")
+  const needles = ["not your issue", "api user", "--json author", "cannot check the author"]
+  const files = ["skills/work/SKILL.md", ...["10x-worktree", "10x-ticket", "10x-plan-check", "10x-land", "10x-test", "10x-verify", "10x-grill"].map((s) => `bin/${s}`)]
+  const dirty = files.flatMap((f) => needles.filter((n) => read(f).includes(n)).map((n) => `${f}: ${n}`))
+  const batch = read("bin/10x-batch")
+  const owner = needles.slice(0, 3).filter((n) => !batch.includes(n))
+  dirty.length ? bad(`${name} (${dirty.join("; ")})`)
+    : owner.length ? bad(`${name} (the check is not in bin/10x-batch: lacks ${owner.join(", ")})`) : ok(name)
+}
+
 for (const skill of ["open", "work", "close", "batch", "roadmap", "audit"])
   fs.existsSync(`${dir}/${skill}/SKILL.md`) && /^## Replies$/m.test(fs.readFileSync(`${dir}/${skill}/SKILL.md`, "utf8"))
     ? ok(`${skill}: has a ## Replies section`) : bad(`${skill}: lacks a ## Replies section`)

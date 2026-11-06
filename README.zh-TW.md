@@ -77,7 +77,7 @@ base branch、gates、close 模式、ticket 放在哪裡等選用設定放在 `.
 
 - `batch.parallel` 限制同時實作的 worker 數（預設 `1`）；ticket 一次落地一張。
 - `claude --resume <session id>` 可以進入某個 worker。
-- 規劃階段只會寫入 `.10x/`。核准之後，worker 會在無人看守下依 ticket 內容改檔、執行指令：只批次處理你信任的 issue。
+- `/10x:batch auto <tickets>` 會自行核准沒有產品問題的計畫；批次只收你自己開的 issue，因為別人的 issue 可能操縱 worker。
 - 要允許 `Bash(git -C * add *)` 和 `Bash(git -C * commit *)`（[注意事項](tests/e2e/README.md)）；其他被拒絕的指令會列在 board 上。
 - `pr` 模式下，檔案重疊的 ticket 會產生重疊的 PR；大於 1 時，agent memory 會落在多個 branch。
 

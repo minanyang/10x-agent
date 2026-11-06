@@ -2,21 +2,29 @@
 // Schedules, records and lands a batch of tickets, each through `/10x:work` and `/10x:close` in its own
 // `claude -p` worker; /10x:batch relays the workers' turns and the user's answers.
 //
-//   10x-batch init <ticket>... [--search "<query>"]
+//   10x-batch init [--auto] <ticket>... [--search "<query>"]
 //   10x-batch run <id> plan|reply|implement|close
 //   10x-batch status
 //   10x-batch drop <id>
 //   10x-batch approve <id>
+//   10x-batch loop
 //
-// State lives in the main checkout's .10x/_batch/: `tickets` (one id per line, board order), `board.md`, and per
+// With TENX_BATCH set (every worker has it), init, run, drop, approve and loop refuse before reading anything, so a
+// worker cannot drive its own batch; status still runs.
+//
+// State lives in the main checkout's .10x/_batch/: `tickets` (one id per line, board order), `mode` (`auto` or
+// `default`; anything else, or no file, is default), `board.md`, and per
 // ticket <id>/: runs.tsv (`n kind session session_kind start end exit pid`, times in epoch ms, end and exit empty
 // while a run is open), <nn>-<kind>.jsonl (the worker's stream-json), <nn>-denials.tsv (`<tool>\t<command or tool>`),
 // turn.md (every assistant text of the latest run), reply.md (the next reply, moved to <nn>-reply.md once sent),
 // <nn>-landed (the base and sha a close run left), <nn>-fallback (the mode a run started in when auto mode was
-// unavailable) and `dropped`. A phase is never stored: every command derives it from these files and .10x/<id>/.
+// unavailable), `auto-approved` (the plan hash `loop` approved), run.err (the stderr of loop's latest run) and
+// `dropped`. A phase is never stored: every command derives it from these files and .10x/<id>/.
 //
 // `init` resolves every argument before writing anything (`<n>`, `#<n>`, `gh-<n>`, an issue URL of origin's repo,
-// `--search` once, or an id with .10x/<id>/ticket.md) and exits 2 naming each one that resolves to no ticket. An
+// `--search` once, or an id with .10x/<id>/ticket.md) and exits 2 naming each one that resolves to no ticket, and each
+// gh-<n> whose author is not the `gh` login (`not your issue: gh-<n> (author <login>)`): a stranger's issue could
+// steer a worker. `--auto` records the auto mode. An
 // argument that resolves to no ticket, is a valid id and not a number is tried as a version of .10x/roadmap.md
 // (scripts/roadmap.js): it resolves to the ticket ids of its row, each resolved as an argument, except a gh-<n> whose
 // issue is closed, which is left out; a row with no id exits 2. The version names go to `versions`, the closed ids to
@@ -31,7 +39,8 @@
 // --disallowedTools for the commands hooks/grant.js always asks for (10x-land issue/comment/advisory, 10x-batch
 // approve/init, 10x-security set/remove/ticket). It refuses a plan, implement or close that `status` does not list, a reply
 // to a planning session while a plan-session run that started before the ticket's latest run ended is open, and a
-// reply whose first line starts with `/`. SIGTERM and SIGINT are forwarded to the worker. It prints
+// reply whose first line starts with `/`, and a gh-<n> ticket whose issue is no longer the user's. Every worker gets
+// TENX_BATCH=1. SIGTERM and SIGINT are forwarded to the worker. It prints
 // `phase: <phase>` and `board: <path>`, exit 0 once the worker ran, whatever its exit code.
 // `status` writes and prints the board, then the actions allowed now: `plan <id>`, `implement <id>`, `close <id>`,
 // `answer <id>[ approvable]`, and `done` when every ticket is settled. `status` and `init` also set the State of each
@@ -42,6 +51,12 @@
 // tools (they may write only under .10x/<id>/); its Bash is auto mode's call, and a worker of an approved ticket, which
 // can run commands, could write it too. A plan session's ticket is `approved`
 // only when plan.md says so and that record matches it. It then writes the approve reply to reply.md.
+// `loop` drives the batch until a human is needed: each pass writes the board, starts every plan, implement and close
+// action and every reply whose reply.md exists as a detached `run`, and in auto mode approves a draft that passes
+// 10x-plan-check (writing `auto-approved`) or sends a planning question FIXED_REPLY (at most 3 times), unless
+// .10x/<id>/comment.md or product-questions.md exists. It waits for one of its runs or 10 seconds between passes, and
+// once nothing runs prints one line, {"items":[…]}: per ticket `failed`, `answer`, `approve` or `denied` with its
+// evidence, or [{"need":"done"}] when every ticket is settled.
 // `drop` sends SIGTERM to the ticket's open worker (a process whose command line holds the run's session), marks it
 // dropped and rewrites the board.
 //
@@ -68,13 +83,19 @@ const KINDS = ['plan', 'reply', 'implement', 'close']
 const HEADER = ['n', 'kind', 'session', 'session_kind', 'start', 'end', 'exit', 'pid']
 const RUNNING = { plan: 'planning', implement: 'implementing', close: 'closing' }
 const SETTLED = new Set(['landed', 'pr-open', 'failed', 'held', 'dropped'])
-const USAGE = 'usage: 10x-batch init <ticket>... [--search "<query>"] | run <id> plan|reply|implement|close | status | drop <id> | approve <id>'
+const USAGE = 'usage: 10x-batch init [--auto] <ticket>... [--search "<query>"] | run <id> plan|reply|implement|close | status | drop <id> | approve <id> | loop'
 const APPROVE_REPLY = 'Approved. Set `Status: approved` in plan.md and stop; the implementation runs in a new session.\n'
+const FIXED_REPLY =
+  "Auto mode: no human answers this batch's questions. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, one line per question (its number, the choice and why), and go on.\n"
+const FIXED_MAX = 3
+const POLL_MS = 10000
 
 const die = (msg) => {
   process.stderr.write(`10x-batch: ${msg}\n`)
   process.exit(2)
 }
+
+if (process.env.TENX_BATCH && ['init', 'run', 'drop', 'approve', 'loop'].includes(process.argv[2])) die('refused inside a batch worker')
 
 let common
 try {
@@ -90,6 +111,7 @@ const PARALLEL = parallel()
 const TENX_DIR = path.join(ROOT, '.10x')
 const BATCH = path.join(TENX_DIR, '_batch')
 const TICKETS = path.join(BATCH, 'tickets')
+const MODE = path.join(BATCH, 'mode')
 const BOARD = path.join(BATCH, 'board.md')
 const VERSIONS = path.join(BATCH, 'versions')
 const CLOSED = path.join(BATCH, 'versions.closed')
@@ -98,6 +120,8 @@ for (const p of [TENX_DIR, BATCH]) if (fs.lstatSync(p, { throwIfNoEntry: false }
 
 const tdir = (id) => path.join(TENX_DIR, id)
 const approval = (id) => path.join(common, '10x-batch', `${id}.approved`)
+// The comment authors of a gh-<n> ticket.md as init saw it, kept beside the approval records, out of a worker's reach.
+const commenters = (id) => path.join(common, '10x-batch', `${id}.commenters`)
 // What the user approved: plan.md with its Status line blanked, so the worker's `Status: approved` keeps the hash.
 const planHash = (text) => createHash('sha256').update(text.replace(/^Status:.*$/m, 'Status:')).digest('hex')
 const bdir = (id) => {
@@ -156,8 +180,10 @@ function git(argv) {
 function init(argv) {
   const items = []
   let searched = false
+  let auto = false
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] !== '--search') items.push({ arg: argv[i] })
+    if (argv[i] === '--auto') auto = true
+    else if (argv[i] !== '--search') items.push({ arg: argv[i] })
     else if (searched || i + 1 >= argv.length) die(USAGE)
     else {
       searched = true
@@ -173,6 +199,10 @@ function init(argv) {
   for (const it of items) {
     if (it.search === undefined) {
       const r = resolve(it.arg)
+      if (r.refused) {
+        errors.push(r.refused)
+        continue
+      }
       const v = r.id || !ID.test(it.arg) || /^[0-9]+$/.test(it.arg) ? null : version(it.arg)
       if (r.id) add(r.id)
       else if (!v) errors.push(`no ticket: ${it.arg}${r.why ? ` (${flat(r.why)})` : ''}`)
@@ -187,6 +217,7 @@ function init(argv) {
           else {
             const t = resolve(id)
             if (t.id) add(t.id)
+            else if (t.refused) errors.push(t.refused)
             else errors.push(`no ticket: ${it.arg} → ${id}${t.why ? ` (${flat(t.why)})` : ''}`)
           }
         }
@@ -202,6 +233,7 @@ function init(argv) {
     for (const n of s.numbers) {
       const r = fetchGh(n)
       if (r.id) add(r.id)
+      else if (r.refused) errors.push(r.refused)
       else errors.push(`no ticket: ${label} → #${n} (${flat(r.why)})`)
     }
   }
@@ -217,8 +249,17 @@ function init(argv) {
     archive()
   }
   // A ticket batched again needs a new approval.
-  for (const id of ids) fs.rmSync(approval(id), { force: true })
+  for (const id of ids) {
+    fs.rmSync(approval(id), { force: true })
+    fs.rmSync(commenters(id), { force: true })
+    const logins = roadmap.GH.test(id) ? ticketCommenters(id) : null
+    if (logins) {
+      fs.mkdirSync(path.dirname(commenters(id)), { recursive: true })
+      put(commenters(id), logins.map((l) => l + '\n').join(''))
+    }
+  }
   fs.mkdirSync(BATCH, { recursive: true })
+  put(MODE, `${auto ? 'auto' : 'default'}\n`)
   put(TICKETS, ids.join('\n') + '\n')
   if (versions.length) put(VERSIONS, versions.join('\n') + '\n')
   if (closed.length) put(CLOSED, closed.join('\n') + '\n')
@@ -266,20 +307,98 @@ function resolve(a) {
   return { id: a }
 }
 
-// gh-<n>, its ticket.md kept when it exists, else written by 10x-ticket.
+// gh-<n>, its ticket.md written by 10x-ticket every time, so init records commenters from the issue and never from a
+// file an earlier batch's worker may have edited; { refused } when the issue is not the user's. An existing ticket.md
+// is checked before it is fetched again, so a stranger's issue leaves it untouched.
 function fetchGh(n) {
   const id = `gh-${n}`
   const ticket = path.join(tdir(id), 'ticket.md')
-  if (fs.existsSync(ticket)) return { id }
+  const kept = fs.existsSync(ticket)
+  if (kept) {
+    const refused = owner(n)
+    if (refused) return { refused }
+  }
   const existed = fs.existsSync(tdir(id))
   const step = (bin, argv) => {
     const r = spawnSync(path.join(__dirname, bin), argv, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
     return r.status === 0 ? null : (r.stderr || r.stdout || `${bin} failed`).trim() || `${bin} failed`
   }
   const why = step('10x-worktree', ['init', id]) || step('10x-ticket', ['github', n, '--out', ticket])
-  if (!why) return { id }
+  if (kept) return why ? { why } : { id }
+  const refused = why ? null : owner(n)
+  if (!why && !refused) return { id }
   if (!existed) fs.rmSync(tdir(id), { recursive: true, force: true })
-  return { why }
+  return why ? { why } : { refused }
+}
+
+let login = null
+// null when issue <n> of origin's repo was written by the `gh` login, else the refusal line: a batch worker acts on
+// its ticket's text unattended, so a stranger's issue could steer it. The login comes from `gh api user --jq .login`,
+// once per process, the author from `gh issue view <n> --json author`; they compare case-insensitively.
+const ghRun = (argv) => {
+  const r = spawnSync('gh', argv, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  if (r.error) return { why: r.error.code === 'ENOENT' ? '`gh` is not installed' : r.error.message }
+  if (r.status !== 0) return { why: (r.stderr || 'gh failed').trim() }
+  return { out: r.stdout.trim() }
+}
+
+function owner(n) {
+  const cannot = (why) => `cannot check the author of gh-${n}: ${flat(why)}`
+  const o = originRepo()
+  if (o.why) return cannot(o.why)
+  if (login === null) {
+    const u = ghRun(['api', 'user', '--jq', '.login'])
+    if (u.why) return cannot(u.why)
+    if (!u.out) return cannot('gh api user printed no login')
+    login = u.out
+  }
+  const v = ghRun(['issue', 'view', n, '--repo', `github.com/${o.repo}`, '--json', 'author'])
+  if (v.why) return cannot(v.why)
+  let author
+  try {
+    author = JSON.parse(v.out).author
+  } catch {
+    return cannot(`gh answered with something other than JSON: ${v.out.slice(0, 200)}`)
+  }
+  const who = author && typeof author.login === 'string' && author.login ? author.login : null
+  if (who && who.toLowerCase() === login.toLowerCase()) return null
+  return `not your issue: gh-${n} (author ${who || 'unknown'})`
+}
+
+// The comment authors 10x-ticket wrote under `## Comments` in ticket <id>'s ticket.md, lowercased; null when the file
+// is missing or the section has no author line.
+function ticketCommenters(id) {
+  const text = readOr(path.join(tdir(id), 'ticket.md'))
+  if (text === null) return null
+  const lines = text.split('\n')
+  const at = lines.indexOf('## Comments')
+  if (at === -1) return []
+  const read = lines.slice(at + 1).map((l) => /^\*\*(.+)\*\* \([0-9]{4}-[0-9]{2}-[0-9]{2}\):$/.exec(l)).filter(Boolean)
+  return read.length ? read.map((m) => m[1].toLowerCase()) : null
+}
+
+// True when a comment on issue <n> is by someone other than the issue's author, or when that cannot be told: ticket.md
+// carries every comment, so auto mode leaves such a plan for the human to approve. Both the issue as it is now and the
+// authors init recorded from the ticket.md the worker read are checked, so a comment deleted after `init`, or dropped
+// from ticket.md by the worker, still counts; no record holds the plan.
+function strangerComments(n) {
+  const o = originRepo()
+  if (o.why) return true
+  const v = ghRun(['issue', 'view', n, '--repo', `github.com/${o.repo}`, '--json', 'author,comments'])
+  if (v.why) return true
+  let who, logins
+  try {
+    const { author, comments } = JSON.parse(v.out)
+    who = author?.login
+    if (typeof who !== 'string' || !who || !Array.isArray(comments)) return true
+    logins = comments.map((c) => c?.author?.login)
+  } catch {
+    return true
+  }
+  const seen = readOr(commenters(`gh-${n}`))
+  if (seen === null) return true
+  logins.push(...seen.split('\n').filter(Boolean))
+  return logins.some((l) => typeof l !== 'string' || l.toLowerCase() !== who.toLowerCase())
 }
 
 function search(q) {
@@ -329,6 +448,8 @@ function archive() {
 }
 
 // ---------------------------------------------------------------- records and phases
+
+const mode = () => ((readOr(MODE) || '').trim() === 'auto' ? 'auto' : 'default')
 
 function readIds() {
   const text = readOr(TICKETS)
@@ -420,6 +541,11 @@ function deriveAll(ids) {
   for (const r of rows) {
     r.relocked = r.phase === 'dropped' ? [] : relocks(r.id)
     if (r.relocked.length) r.evidence = [r.evidence, ...r.relocked.map((x) => `relocked: ${x}`)].filter(Boolean).join('; ')
+  }
+  // `loop` approved the plan, not the user: shown first in every phase but dropped.
+  for (const r of rows) {
+    const hash = r.phase === 'dropped' ? '' : (readOr(path.join(bdir(r.id), 'auto-approved')) || '').trim()
+    if (hash) r.evidence = [`auto-approved (sha256 ${hash.slice(0, 12)})`, r.evidence].filter(Boolean).join('; ')
   }
   // The latest run fell back from auto mode: the mode it ran in.
   for (const r of rows) {
@@ -619,7 +745,7 @@ function refusal(rows, i, kind) {
 
 function board(rows) {
   const cell = (s) => (s ? flat(s).replace(/\|/g, '\\|') : '—')
-  const lines = ['# Batch board', '', '| # | Ticket | Phase | Session | Outcome | Evidence |', '|---|---|---|---|---|---|']
+  const lines = ['# Batch board', '', `mode: ${mode()}`, '', '| # | Ticket | Phase | Session | Outcome | Evidence |', '|---|---|---|---|---|---|']
   rows.forEach((r, i) =>
     lines.push(`| ${i + 1} | ${r.id} | ${r.phase} | ${cell(r.session)} | ${SETTLED.has(r.phase) ? r.phase : '—'} | ${cell(r.evidence)} |`),
   )
@@ -690,6 +816,10 @@ async function run(argv) {
   const { ids, rows, i } = ticketRows(id)
   const r = rows[i]
   if (r.phase === 'dropped') die(`${kind} ${id} refused: ${id} is dropped`)
+  if (roadmap.GH.test(id)) {
+    const refused = owner(id.slice(3))
+    if (refused) die(refused)
+  }
   let prompt, flag, session, sessionKind
   const replyFile = path.join(bdir(id), 'reply.md')
   if (kind === 'reply') {
@@ -720,8 +850,9 @@ async function run(argv) {
   // Every worker starts in auto mode. A plan session's writes are kept under .10x/<id>/ by hooks/plan-boundary.js, which
   // reads TENX_BATCH_PLAN_DIR; no other worker gets the variable, whatever this process inherited.
   // `claude -p` stops background tasks 10 minutes after the last turn unless CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS is 0,
-  // which would kill /10x:work's delegated engineer agents; a value the user set is kept.
-  const env = { ...process.env, CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS ?? '0' }
+  // which would kill /10x:work's delegated engineer agents; a value the user set is kept. TENX_BATCH makes this script
+  // refuse to let the worker drive the batch.
+  const env = { ...process.env, TENX_BATCH: '1', CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: process.env.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS ?? '0' }
   delete env.TENX_BATCH_PLAN_DIR
   if (sessionKind === 'plan') env.TENX_BATCH_PLAN_DIR = tdir(id)
   // The commands hooks/grant.js keeps in ALWAYS_ASK — keep the two lists the same. No worker needs them (the conductor
@@ -881,11 +1012,132 @@ function approve(argv) {
   const { rows, i } = ticketRows(id)
   const r = rows[i]
   if (r.phase !== 'waiting' || !r.approvable) die(`approve ${id} refused: ${id} is ${r.phase}${r.phase === 'waiting' ? ' and its plan.md is not a draft that passes 10x-plan-check' : ''}`)
+  const hash = recordApproval(id)
+  process.stdout.write(`approved: ${id}\nplan: ${rel(path.join(tdir(id), 'plan.md'))} sha256 ${hash.slice(0, 12)}\nreply: ${rel(path.join(bdir(id), 'reply.md'))}\n`)
+}
+
+// The approval record of ticket <id>'s plan.md and the approve reply; returns the hash.
+function recordApproval(id) {
   fs.mkdirSync(path.dirname(approval(id)), { recursive: true })
   const hash = planHash(fs.readFileSync(path.join(tdir(id), 'plan.md'), 'utf8'))
   put(approval(id), hash + '\n')
+  fs.mkdirSync(bdir(id), { recursive: true })
   put(path.join(bdir(id), 'reply.md'), APPROVE_REPLY)
-  process.stdout.write(`approved: ${id}\nplan: ${rel(path.join(tdir(id), 'plan.md'))} sha256 ${hash.slice(0, 12)}\nreply: ${rel(path.join(bdir(id), 'reply.md'))}\n`)
+  return hash
+}
+
+// ---------------------------------------------------------------- loop
+
+// A product question is the human's: the worker's comment for the issue, or its list of product questions.
+const heldBack = (id) => fs.existsSync(path.join(tdir(id), 'comment.md')) || fs.existsSync(path.join(tdir(id), 'product-questions.md'))
+
+const fixedSent = (id) => {
+  let names = []
+  try {
+    names = fs.readdirSync(bdir(id))
+  } catch {}
+  return names.filter((f) => /^[0-9]+-reply\.md$/.test(f) && readOr(path.join(bdir(id), f)) === FIXED_REPLY).length
+}
+
+async function loop(argv) {
+  if (argv.length) die(USAGE)
+  const ids = readIds()
+  const auto = mode() === 'auto'
+  const own = new Map()
+  const refused = new Map()
+  const held = new Set()
+  let woke = false
+  let wake = null
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms))
+  const ownOpen = () => [...own.values()].some((c) => !c.exited)
+
+  // A detached `run`, so stopping this process leaves it running. It returns once the run's row is recorded or the
+  // run has ended, so the next pass derives it; false when it was refused before recording one.
+  const start = async (id, kind) => {
+    fs.mkdirSync(bdir(id), { recursive: true })
+    const errFile = path.join(bdir(id), 'run.err')
+    const before = runs(id).length
+    const fd = fs.openSync(errFile, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW)
+    const env = { ...process.env }
+    delete env.TENX_BATCH
+    const c = { exited: false, code: null, ran: false }
+    const child = spawn(process.execPath, [__filename, 'run', id, kind], { cwd: ROOT, detached: true, stdio: ['ignore', 'ignore', fd], env })
+    fs.closeSync(fd)
+    // Only the end of a run that started wakes the loop: a refused one is retried at the next wake, not at once.
+    const done = (code) => {
+      if (c.exited) return
+      Object.assign(c, { exited: true, code })
+      if (!c.ran) return
+      woke = true
+      wake?.()
+    }
+    child.on('error', () => done(null))
+    child.on('exit', (code) => done(code))
+    own.set(id, c)
+    while (!c.exited && runs(id).length === before) await sleep(50)
+    if (!(c.exited && c.code === 2 && runs(id).length === before)) {
+      c.ran = true
+      if (c.exited) woke = true
+      return true
+    }
+    const line = (readOr(errFile) || '').split('\n').filter((l) => l.startsWith('10x-batch: ')).pop()
+    if (line && /^10x-batch: (not your issue|cannot check the author)/.test(line)) refused.set(id, line)
+    return false
+  }
+
+  for (;;) {
+    woke = false
+    const rows = deriveAll(ids)
+    writeBoard(rows)
+    let started = false
+    for (const a of actions(rows)) {
+      const m = /^(plan|implement|close|answer) (\S+)( approvable)?$/.exec(a)
+      if (!m) continue
+      const [, kind, id] = m
+      if (own.get(id)?.exited === false || refused.has(id)) continue
+      if (kind !== 'answer') {
+        started = (await start(id, kind)) || started
+        continue
+      }
+      const r = rows.find((e) => e.id === id)
+      const replyFile = path.join(bdir(id), 'reply.md')
+      if (!fs.existsSync(replyFile) && auto && r.last.session_kind === 'plan' && !heldBack(id) && !held.has(id)) {
+        if (r.approvable) {
+          if (roadmap.GH.test(id) && strangerComments(id.slice(3))) held.add(id)
+          else put(path.join(bdir(id), 'auto-approved'), recordApproval(id) + '\n')
+        } else if (fixedSent(id) < FIXED_MAX) put(replyFile, FIXED_REPLY)
+      }
+      if (fs.existsSync(replyFile)) started = (await start(id, 'reply')) || started
+    }
+    const now = started ? null : deriveAll(ids)
+    if (now && !ownOpen() && !now.some((r) => Object.values(RUNNING).includes(r.phase))) {
+      writeBoard(now)
+      markDone(now)
+      process.stdout.write(JSON.stringify({ items: items(now, auto, refused, held) }) + '\n')
+      process.exit(0)
+    }
+    if (!woke) {
+      await new Promise((res) => {
+        wake = res
+        setTimeout(res, POLL_MS)
+      })
+      wake = null
+    }
+  }
+}
+
+// What the human is needed for, in board order, at most one item per ticket.
+function items(rows, auto, refused, held) {
+  const out = []
+  for (const r of rows) {
+    const item = (need, evidence) => out.push({ id: r.id, need, evidence })
+    if (refused.has(r.id)) item('failed', refused.get(r.id))
+    else if (r.phase === 'failed') item('failed', r.evidence)
+    else if (r.phase === 'waiting') item(r.approvable && (!auto || heldBack(r.id) || held.has(r.id)) ? 'approve' : 'answer', r.evidence)
+    else if (r.denied && !['landed', 'pr-open', 'dropped'].includes(r.phase)) item('denied', r.evidence)
+  }
+  if (out.length) return out
+  return rows.every((r) => SETTLED.has(r.phase)) ? [{ need: 'done' }] : []
 }
 
 const [cmd, ...args] = process.argv.slice(2)
@@ -894,4 +1146,5 @@ else if (cmd === 'run') run(args)
 else if (cmd === 'status' && !args.length) status()
 else if (cmd === 'drop') drop(args)
 else if (cmd === 'approve') approve(args)
+else if (cmd === 'loop') loop(args)
 else die(USAGE)
