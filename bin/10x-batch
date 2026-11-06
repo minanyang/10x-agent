@@ -26,9 +26,10 @@
 // gh-<n> whose author is not the `gh` login (`not your issue: gh-<n> (author <login>)`): a stranger's issue could
 // steer a worker. `--auto` records the auto mode. An
 // argument that resolves to no ticket, is a valid id and not a number is tried as a version of .10x/roadmap.md
-// (scripts/roadmap.js): it resolves to the ticket ids of its row, each resolved as an argument, except a gh-<n> whose
-// issue is closed, which is left out; a row with no id exits 2. The version names go to `versions`, the closed ids to
-// `versions.closed`. A previous batch is archived to .10x/_batch.<YYYYMMDD-HHMMSS>/ when every ticket of it is
+// (scripts/roadmap.js): it resolves to the ticket ids of its row, each resolved as an argument, except an id with
+// .10x/<id>/landed (written by `10x-worktree rm` once the branch landed), whatever its ticket source, and a gh-<n> whose
+// issue is closed, which are left out; a row with no id exits 2. The version names go to `versions`, the landed and
+// closed ids to `versions.closed`, less any id also named directly, which is batched again. A previous batch is archived to .10x/_batch.<YYYYMMDD-HHMMSS>/ when every ticket of it is
 // settled, else refused; the approval records of the tickets it takes in are deleted.
 // `run` starts one worker turn and waits for it: ${TENX_BATCH_CLAUDE:-claude} -p … --output-format stream-json
 // --verbose --permission-mode auto, a plan session's worker with TENX_BATCH_PLAN_DIR set to .10x/<id> for
@@ -210,6 +211,10 @@ function init(argv) {
       else {
         versions.includes(it.arg) || versions.push(it.arg)
         for (const id of v.ids) {
+          if (fs.existsSync(path.join(tdir(id), 'landed'))) {
+            closed.includes(id) || closed.push(id)
+            continue
+          }
           const m = roadmap.GH.test(id) ? id.slice(3) : null
           const s = m ? issueState(m) : {}
           if (s.why) errors.push(`no ticket: ${it.arg} → ${id} (${flat(s.why)})`)
@@ -241,6 +246,8 @@ function init(argv) {
     for (const e of errors) process.stderr.write(`10x-batch: ${e}\n`)
     process.exit(2)
   }
+  // A ticket named directly is batched again, never also counted as landed.
+  for (let k = closed.length - 1; k >= 0; k--) if (ids.includes(closed[k])) closed.splice(k, 1)
   if (fs.existsSync(BATCH)) {
     if (fs.existsSync(TICKETS)) {
       const open = deriveAll(readIds()).filter((r) => !SETTLED.has(r.phase))

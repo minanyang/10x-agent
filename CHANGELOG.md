@@ -9,6 +9,7 @@
 - `/10x:batch` workers run in auto mode, so routine read-only checks are no longer denied with no one there to approve them. A new hook keeps a plan session's file writes under `.10x/<id>/`, symlinks and `..` included. When auto mode is unavailable, `10x-batch` stops the worker and runs the turn again in the previous modes, and the board says so. Subagents may run `10x-test` for the ticket their session is bound to.
 - `/10x:batch auto <tickets>` takes a batch from queued to landed with no human turn while no product question is open: the new `10x-batch loop` plans, approves a plan that passes `10x-plan-check`, implements and closes, and stops only for what needs you. Batches now take only your own GitHub issues, and a batch worker can no longer run `10x-batch` commands that drive the batch.
 - Inside a `/10x:batch` worker, `10x-land issue|comment|advisory` and `10x-security set|remove|ticket` refuse whatever path or wrapper runs them; direct `gh` writes stay the auto-mode classifier's call.
+- A landed ticket is no longer batched again when you batch its roadmap version, and the version reads `Done`: `10x-worktree rm` writes `.10x/<id>/landed` after every close, and `10x-batch init <version>` leaves out any ticket with that record, file tickets included. A ticket landed before this change counts as landed once you create `.10x/<id>/landed` by hand (any content).
 
 ## 0.1.0 — 2026-11-05
 
