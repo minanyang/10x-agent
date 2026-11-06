@@ -4,6 +4,7 @@
 set -uo pipefail
 BIN="$(cd "$(dirname "$0")/.." && pwd)/bin"
 export PATH="$BIN:$PATH"
+unset TENX_BATCH # a batch worker's gates run this suite; the TENX_BATCH cases set it per call
 fail=0
 ok()   { echo "ok    $1"; }
 bad()  { echo "FAIL  $1"; fail=1; }
@@ -830,6 +831,10 @@ export STUB_LOG="$tmp/stub.log"
 lw="$tmp/land/.worktrees/L1"
 
 expect "check on a clean worktree" 0 10x-land check L1
+cp "$tmp/out" "$tmp/check.plain"
+TENX_BATCH=1 10x-land check L1 >"$tmp/check.batch" 2>&1; rc=$?
+[ "$rc" -eq 0 ] && cmp -s "$tmp/check.plain" "$tmp/check.batch" &&
+  ok "TENX_BATCH: check runs as without it" || { bad "TENX_BATCH: check runs as without it"; cat "$tmp/check.batch"; }
 # check: after mode:, before the worktree lookup, the ticket dir, the base and the review
 lrp="$(cd "$tmp/land" && pwd -P)"
 line_is() { # <n> <expected under $tmp/land> — line <n> of the output, in either path form
@@ -1848,6 +1853,35 @@ git remote set-url origin https://gitlab.example.com/grp/land.git
 : >"$tmp/stub.log"
 expect "comment refuses a GitLab origin" 2 10x-land comment gh-7
 git remote set-url origin git@github.com:acme/land.git
+
+# TENX_BATCH: inside a batch worker issue, comment and advisory refuse before reading or writing anything, however invoked
+printf '# Add the thing\nLabels: bug, ui\nType: Bug\n\n## Context\nbody\n\n## Acceptance criteria\n- [ ] AC1 — it exists\n' >"$tmp/land/.10x/drafts/thing.md"
+: >"$tmp/stub.log"
+snap10x() { find "$tmp/land/.10x" -print0 | sort -z | xargs -0 cksum 2>&1; }
+snap10x >"$tmp/batch.before"
+batch_bad=0
+for args in "issue thing" "comment gh-7" "advisory thing"; do
+  # shellcheck disable=SC2086  # $args is split on purpose
+  for form in name path shell; do
+    case "$form" in
+      name)  TENX_BATCH=1 10x-land $args >"$tmp/out" 2>&1 ;;
+      path)  TENX_BATCH=1 "$BIN/10x-land" $args >"$tmp/out" 2>&1 ;;
+      shell) TENX_BATCH=1 sh -c "10x-land $args" >"$tmp/out" 2>&1 ;;
+    esac
+    rc=$?
+    { [ "$rc" -eq 2 ] && [ "$(cat "$tmp/out")" = "10x: refused inside a batch worker" ]; } || { batch_bad=1; echo "      $args ($form): exit $rc"; cat "$tmp/out"; }
+  done
+done
+[ "$batch_bad" = 0 ] && ok "TENX_BATCH: issue, comment and advisory refuse by name, by absolute path and through sh -c" ||
+  bad "TENX_BATCH: issue, comment and advisory refuse by name, by absolute path and through sh -c"
+snap10x >"$tmp/batch.after"
+[ ! -s "$tmp/stub.log" ] && cmp -s "$tmp/batch.before" "$tmp/batch.after" && [ -f "$tmp/land/.10x/drafts/thing.md" ] && [ -s "$gd/comment.md" ] &&
+  ok "TENX_BATCH: a refused issue, comment or advisory creates, posts, renames or deletes nothing" ||
+  { bad "TENX_BATCH: a refused issue, comment or advisory creates, posts, renames or deletes nothing"; cat "$tmp/stub.log"; diff "$tmp/batch.before" "$tmp/batch.after"; }
+TENX_BATCH=1 10x-land comment L1 >"$tmp/out" 2>&1; rc=$?
+[ "$rc" -eq 2 ] && [ "$(cat "$tmp/out")" = "10x: refused inside a batch worker" ] && ! grep -qF "comment needs a GitHub issue ticket id" "$tmp/out" &&
+  ok "TENX_BATCH: comment with a bad id reports the batch refusal" || { bad "TENX_BATCH: comment with a bad id reports the batch refusal"; cat "$tmp/out"; }
+rm "$tmp/land/.10x/drafts/thing.md"
 
 # 10x-ticket reads the issue from origin's repo only
 : >"$tmp/stub.log"

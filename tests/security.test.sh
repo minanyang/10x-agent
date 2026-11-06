@@ -11,6 +11,7 @@ bad() { echo "FAIL  $1"; fail=1; }
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 export PATH="$BIN:$PATH"
+unset TENX_BATCH # a batch worker's gates run this suite; the TENX_BATCH cases set it per call
 
 git -c init.defaultBranch=main init -q --bare "$tmp/origin.git"
 git -c init.defaultBranch=main init -q "$tmp/repo"
@@ -298,6 +299,51 @@ need "it is the second, byte for byte" cmp -s "$S" "$tmp/only2.md"
 need "an unknown fingerprint is refused" exits 2 remove T1 "$FP1"
 need "another ticket is refused" exits 2 remove T9 "$FP2"
 need "the second is still there" test "$(entries)" = 1
+end
+
+# ---------------------------------------------------------------- TENX_BATCH
+
+# bsnap — every path under .10x/ with its checksum.
+bsnap() { find .10x -print0 | sort -z | xargs -0 cksum 2>&1; }
+reset
+arr "$(r1)" | put T1 out.json
+begin "TENX_BATCH: set, remove and ticket refuse and leave security.md and drafts byte-identical"
+need "T1 adds" exits 0 add T1 "$root/.10x/T1/out.json"
+mkdir -p .10x/drafts && printf '# T\n\nb\n' >.10x/drafts/x.md
+bsnap >"$tmp/bsnap.before"
+TENX_BATCH=1 need "set: exit 2" exits 2 set T1 "$FP1" later
+need "set: the refusal line" out_is "10x-security: refused inside a batch worker"
+TENX_BATCH=1 need "remove: exit 2" exits 2 remove T1 "$FP1"
+need "remove: the refusal line" out_is "10x-security: refused inside a batch worker"
+TENX_BATCH=1 need "ticket: exit 2" exits 2 ticket "$FP1" newslug
+need "ticket: the refusal line" out_is "10x-security: refused inside a batch worker"
+bsnap >"$tmp/bsnap.after"
+need ".10x/ byte-identical" cmp -s "$tmp/bsnap.before" "$tmp/bsnap.after"
+need "no .10x/newslug/" test ! -e .10x/newslug
+end
+
+reset
+begin "TENX_BATCH: set with too few arguments reports the batch refusal"
+TENX_BATCH=1 need "exit 2" exits 2 set
+need "the refusal line, not the usage" out_is "10x-security: refused inside a batch worker"
+end
+
+reset
+arr "$(r1)" | put T1 out.json
+begin "TENX_BATCH: add and list --plannable run as without it"
+need "add without: exit 0" exits 0 add T1 "$root/.10x/T1/out.json"
+cp "$tmp/out" "$tmp/add.plain"; cp "$S" "$tmp/sec.plain"
+reset
+arr "$(r1)" | put T1 out.json
+TENX_BATCH=1 need "add with: exit 0" exits 0 add T1 "$root/.10x/T1/out.json"
+need "add: same output" cmp -s "$tmp/out" "$tmp/add.plain"
+need "add: byte-identical security.md" cmp -s "$S" "$tmp/sec.plain"
+need "set later" exits 0 set T1 "$FP1" later
+need "list without: exit 0" exits 0 list --plannable
+cp "$tmp/out" "$tmp/list.plain"
+TENX_BATCH=1 need "list with: exit 0" exits 0 list --plannable
+need "list: same output" cmp -s "$tmp/out" "$tmp/list.plain"
+need "list: an entry printed" test -s "$tmp/out"
 end
 
 # ---------------------------------------------------------------- audit: fixtures
