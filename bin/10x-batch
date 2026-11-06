@@ -307,13 +307,16 @@ function resolve(a) {
   return { id: a }
 }
 
-// gh-<n>, its ticket.md kept when it exists, else written by 10x-ticket; { refused } when the issue is not the user's.
+// gh-<n>, its ticket.md written by 10x-ticket every time, so init records commenters from the issue and never from a
+// file an earlier batch's worker may have edited; { refused } when the issue is not the user's. An existing ticket.md
+// is checked before it is fetched again, so a stranger's issue leaves it untouched.
 function fetchGh(n) {
   const id = `gh-${n}`
   const ticket = path.join(tdir(id), 'ticket.md')
-  if (fs.existsSync(ticket)) {
+  const kept = fs.existsSync(ticket)
+  if (kept) {
     const refused = owner(n)
-    return refused ? { refused } : { id }
+    if (refused) return { refused }
   }
   const existed = fs.existsSync(tdir(id))
   const step = (bin, argv) => {
@@ -321,6 +324,7 @@ function fetchGh(n) {
     return r.status === 0 ? null : (r.stderr || r.stdout || `${bin} failed`).trim() || `${bin} failed`
   }
   const why = step('10x-worktree', ['init', id]) || step('10x-ticket', ['github', n, '--out', ticket])
+  if (kept) return why ? { why } : { id }
   const refused = why ? null : owner(n)
   if (!why && !refused) return { id }
   if (!existed) fs.rmSync(tdir(id), { recursive: true, force: true })
