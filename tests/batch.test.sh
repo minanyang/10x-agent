@@ -1073,6 +1073,20 @@ need "no approval record" test ! -e .git/10x-batch/gh-8.approved
 need "no auto-approved" test ! -e "$B/gh-8/auto-approved"
 end
 
+reset
+begin "loop: a stranger's comment seen at init holds the plan though ticket.md and the issue drop it"
+STUB_COMMENTERS="9:other" vb init --auto gh-9
+# What a steered worker could do inside its ticket dir: drop the comments from ticket.md.
+sed -i.bak '/^## Comments$/,$d' .10x/gh-9/ticket.md; rm -f .10x/gh-9/ticket.md.bak
+need "ticket.md no longer names the stranger" eval '! grep -qF "**other**" .10x/gh-9/ticket.md'
+WORKER_SCRIPT=flow lp 90
+need "loop finished" finished
+need "gh-9 is an approve item" \
+  printed '{"items":[{"id":"gh-9","need":"approve","evidence":".10x/_batch/gh-9/turn.md"}]}'
+need "no approval record" test ! -e .git/10x-batch/gh-9.approved
+need "no auto-approved" test ! -e "$B/gh-9/auto-approved"
+end
+
 reset; echo '{"close":"pr-merge"}' >.claude/10x.json; ticket t1
 begin "loop: auto mode closes with the configured close"
 vb init --auto t1
