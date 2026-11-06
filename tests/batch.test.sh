@@ -258,8 +258,8 @@ begin "init: gh ids, a number, a search and an existing id resolve"
 STUB_SEARCH='[{"number":9},{"number":5}]' vb init gh-5 6 '#7' https://github.com/acme/batch/issues/8 t1 gh-5 --search "label:batch"
 need "exit 0" test $? -eq 0
 need "tickets in intake order, deduplicated" test "$(tr '\n' ' ' <"$B/tickets")" = "gh-5 gh-6 gh-7 gh-8 t1 gh-9 "
-need "an existing ticket.md is kept" test "$(cat .10x/gh-5/ticket.md)" = kept
-need "gh-5 is not fetched" not fetched 5
+need "an existing ticket.md is fetched again" grep -qx '# Issue 5' .10x/gh-5/ticket.md
+need "gh-5 is fetched" fetched 5
 need "the others are fetched" grep -qx '# Issue 9' .10x/gh-9/ticket.md
 need "#7 and the URL are fetched" eval 'grep -qx "# Issue 7" .10x/gh-7/ticket.md && grep -qx "# Issue 8" .10x/gh-8/ticket.md'
 need "the search is pinned to origin's repo" grep -qxF 'issue list --repo github.com/acme/batch --state open --search label:batch --json number --limit 100' "$STUB_LOG"
@@ -1085,6 +1085,30 @@ need "gh-9 is an approve item" \
   printed '{"items":[{"id":"gh-9","need":"approve","evidence":".10x/_batch/gh-9/turn.md"}]}'
 need "no approval record" test ! -e .git/10x-batch/gh-9.approved
 need "no auto-approved" test ! -e "$B/gh-9/auto-approved"
+end
+
+reset
+mkdir -p .10x/gh-5
+printf '# Issue 5\n\nb\n\n## Comments\n\n**me** (2026-01-01):\n\ninjected\n' >.10x/gh-5/ticket.md
+begin "init: a ticket.md left from an earlier batch is fetched again and its commenters recorded from the fetch"
+STUB_COMMENTERS="5:other" vb init --auto gh-5
+need "exit 0" test $? -eq 0
+need "the left-over text is gone" eval '! grep -qx injected .10x/gh-5/ticket.md'
+need "ticket.md is the fresh fetch" grep -qF '**other** (2026-01-01):' .10x/gh-5/ticket.md
+need "the record is the fresh fetch's authors" test "$(cat .git/10x-batch/gh-5.commenters)" = other
+end
+
+reset
+begin "loop: a missing commenters record holds the plan"
+vb init --auto gh-5
+need "init wrote a record" test -e .git/10x-batch/gh-5.commenters
+rm .git/10x-batch/gh-5.commenters
+WORKER_SCRIPT=flow lp 90
+need "loop finished" finished
+need "gh-5 is an approve item" \
+  printed '{"items":[{"id":"gh-5","need":"approve","evidence":".10x/_batch/gh-5/turn.md"}]}'
+need "no approval record" test ! -e .git/10x-batch/gh-5.approved
+need "no auto-approved" test ! -e "$B/gh-5/auto-approved"
 end
 
 reset; echo '{"close":"pr-merge"}' >.claude/10x.json; ticket t1
