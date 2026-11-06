@@ -22,7 +22,9 @@
 # present). Re-running `add` for an existing ticket reports the worktree and leaves it alone. Either way it
 # prints `ticket dir:` and `base:` as `init` does, before its `created:` or `exists:` line.
 # `rm` removes the worktree and deletes its branch only if the branch is merged
-# (`git branch -d`); an unmerged branch is kept and reported.
+# (`git branch -d`); an unmerged branch is kept and reported. Once it deletes the branch it writes
+# .10x/<id>/landed, one line `landed on <base> at <short sha>` (the text of 10x-batch's <nn>-landed), which
+# `10x-batch init <version>` reads as landed; a symlinked .10x/<id> or landed file is reported and left alone.
 # `sync-base` fetches the base and fast-forwards it in the main checkout when the main checkout
 # is on the base and git allows the fast-forward (uncommitted changes to files the incoming
 # commits do not touch are carried over); otherwise it leaves it and says why.
@@ -158,6 +160,21 @@ case "$cmd" in
     else
       say "kept branch $branch (not merged into HEAD of the main checkout or $(base_ref))"
       exit 0
+    fi
+    # The landed record 10x-batch init reads, in the text of batch's <nn>-landed (landedOn() in bin/10x-batch).
+    b="$(base_branch)"
+    ref="refs/remotes/origin/$b"
+    if [ "$(cfg close pr)" = local ] || ! git -C "$ROOT" show-ref --verify --quiet "$ref"; then ref="refs/heads/$b"; fi
+    if sha="$(git -C "$ROOT" rev-parse --short "$ref" 2>/dev/null)"; then line="landed on $b at $sha"; else line="landed (worktree removed)"; fi
+    ensure_excluded
+    dir="$(task_dir "$id")"
+    if [ -L "$dir" ] || [ -L "$dir/landed" ]; then
+      [ -L "$dir" ] && p="$dir" || p="$dir/landed"
+      say "landed record not written: $(shown "$p") is a symlink"
+    else
+      mkdir -p "$dir"
+      printf '%s\n' "$line" >"$dir/landed"
+      say "recorded: $(shown "$dir/landed")"
     fi
     # A PR merged without "delete branch" leaves the pushed branch behind.
     if git -C "$ROOT" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
