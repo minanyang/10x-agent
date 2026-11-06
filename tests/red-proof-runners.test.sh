@@ -94,7 +94,7 @@ EOF
     ok "$runner: --lock refuses a skipped test" || { bad "$runner: --lock refuses a skipped test (exit $rc)"; sed 's/^/      /' "$tmp/out"; }
 }
 
-case_runner jest '{ "name": "fixture", "private": true, "jest": {} }' js \
+case_runner jest '{ "name": "fixture", "private": true, "jest": { "watchman": false } }' js \
   'exports.add = (a, b) => a + b' \
   'exports.add = (a, b) => a + b
 exports.mul = (a, b) => a * b' \

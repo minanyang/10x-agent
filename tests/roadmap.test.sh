@@ -243,7 +243,8 @@ reset; roadmap >"$R"; mkdir -p .10x/t9 && echo '# t9' >.10x/t9/ticket.md
 begin "link: appends the id to the item and refuses an item that has one"
 need "gh-<n>: exit 0" exits 0 link v2 2 gh-12
 need "a files-mode id: exit 0" exits 0 link v2 1 t9
-need "only that row changed" test "$(diff <(roadmap) "$R" | grep '^[<>]')" = "$(printf '%s\n' \
+roadmap >"$tmp/cur"
+need "only that row changed" test "$(diff "$tmp/cur" "$R" | grep '^[<>]')" = "$(printf '%s\n' \
   '< | v2 | use `md-check.js` sections; a \| pipe | Needs v1'"'"'s parser | Planned |' \
   '> | v2 | use `md-check.js` sections `t9`; a \| pipe `gh-12` | Needs v1'"'"'s parser | Planned |')"
 need "show lists the ids" eval 'exits 0 show v2 && line "  1. use \`md-check.js\` sections \`t9\`" && line "  2. a | pipe \`gh-12\`"'
