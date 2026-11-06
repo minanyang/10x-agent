@@ -90,7 +90,7 @@ Takes a batch from queued to landed with no human turn while no product question
 
 - A draft plan that passes `10x-plan-check` is approved by `loop` itself: the same approval record `10x-batch approve` writes, and `auto-approved (sha256 <hash>)` on the board. In auto mode a plan with no product question is therefore implemented with no permission prompt.
 - A planning worker's questions get a fixed reply, never a model's answer: it answers technical questions with its own recommendation, recording each under `## Auto decisions` in `plan.md`, and lists product questions in `.10x/<id>/product-questions.md` instead. That file, or a `comment.md` to post on the issue, holds the ticket for you; so does a fourth question stop.
-- An issue's comments reach the worker through `ticket.md`, whoever wrote them, so a plan for an issue with a comment by anyone but its author — on the issue now or in the `ticket.md` the worker read, or whose comments `gh` cannot list — is not approved by `loop`: it waits for your `approve`.
+- An issue's comments reach the worker through `ticket.md`, whoever wrote them, so a plan for an issue with a comment by anyone but its author — on the issue now or in the `ticket.md` the worker was given at `init`, whose authors `init` records under the git dir where a worker cannot edit them, or whose comments `gh` cannot list — is not approved by `loop`: it waits for your `approve`.
 - `close` follows the configured `close`, as in the default mode.
 - `/10x:batch` with no arguments, or `/10x:batch auto` alone, resumes an auto batch with `10x-batch loop`. In the default mode `loop` only sends a `reply.md` you wrote and never approves.
 

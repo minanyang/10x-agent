@@ -120,6 +120,8 @@ for (const p of [TENX_DIR, BATCH]) if (fs.lstatSync(p, { throwIfNoEntry: false }
 
 const tdir = (id) => path.join(TENX_DIR, id)
 const approval = (id) => path.join(common, '10x-batch', `${id}.approved`)
+// The comment authors of a gh-<n> ticket.md as init saw it, kept beside the approval records, out of a worker's reach.
+const commenters = (id) => path.join(common, '10x-batch', `${id}.commenters`)
 // What the user approved: plan.md with its Status line blanked, so the worker's `Status: approved` keeps the hash.
 const planHash = (text) => createHash('sha256').update(text.replace(/^Status:.*$/m, 'Status:')).digest('hex')
 const bdir = (id) => {
@@ -247,7 +249,15 @@ function init(argv) {
     archive()
   }
   // A ticket batched again needs a new approval.
-  for (const id of ids) fs.rmSync(approval(id), { force: true })
+  for (const id of ids) {
+    fs.rmSync(approval(id), { force: true })
+    fs.rmSync(commenters(id), { force: true })
+    const logins = roadmap.GH.test(id) ? ticketCommenters(id) : null
+    if (logins) {
+      fs.mkdirSync(path.dirname(commenters(id)), { recursive: true })
+      put(commenters(id), logins.map((l) => l + '\n').join(''))
+    }
+  }
   fs.mkdirSync(BATCH, { recursive: true })
   put(MODE, `${auto ? 'auto' : 'default'}\n`)
   put(TICKETS, ids.join('\n') + '\n')
@@ -351,9 +361,22 @@ function owner(n) {
   return `not your issue: gh-${n} (author ${who || 'unknown'})`
 }
 
+// The comment authors 10x-ticket wrote under `## Comments` in ticket <id>'s ticket.md, lowercased; null when the file
+// is missing or the section has no author line.
+function ticketCommenters(id) {
+  const text = readOr(path.join(tdir(id), 'ticket.md'))
+  if (text === null) return null
+  const lines = text.split('\n')
+  const at = lines.indexOf('## Comments')
+  if (at === -1) return []
+  const read = lines.slice(at + 1).map((l) => /^\*\*(.+)\*\* \([0-9]{4}-[0-9]{2}-[0-9]{2}\):$/.exec(l)).filter(Boolean)
+  return read.length ? read.map((m) => m[1].toLowerCase()) : null
+}
+
 // True when a comment on issue <n> is by someone other than the issue's author, or when that cannot be told: ticket.md
 // carries every comment, so auto mode leaves such a plan for the human to approve. Both the issue as it is now and the
-// ticket.md the worker read are checked, so a comment deleted after `init` still counts.
+// authors init recorded from the ticket.md the worker read are checked, so a comment deleted after `init`, or dropped
+// from ticket.md by the worker, still counts; no record holds the plan.
 function strangerComments(n) {
   const o = originRepo()
   if (o.why) return true
@@ -368,14 +391,9 @@ function strangerComments(n) {
   } catch {
     return true
   }
-  const text = readOr(path.join(tdir(`gh-${n}`), 'ticket.md'))
-  if (text === null) return true
-  const at = text.split('\n').indexOf('## Comments')
-  if (at !== -1) {
-    const read = text.split('\n').slice(at + 1).map((l) => /^\*\*(.+)\*\* \([0-9]{4}-[0-9]{2}-[0-9]{2}\):$/.exec(l)).filter(Boolean)
-    if (!read.length) return true
-    logins.push(...read.map((m) => m[1]))
-  }
+  const seen = readOr(commenters(`gh-${n}`))
+  if (seen === null) return true
+  logins.push(...seen.split('\n').filter(Boolean))
   return logins.some((l) => typeof l !== 'string' || l.toLowerCase() !== who.toLowerCase())
 }
 
