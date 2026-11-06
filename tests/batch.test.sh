@@ -582,6 +582,23 @@ need "the permission flags are unchanged" test "$(tr '\n' ',' <"$WORKER_LOG.perm
   "--permission-mode auto,--permission-mode default --allowedTools Edit(.10x/t1/**),--permission-mode auto,--permission-mode auto,--permission-mode acceptEdits,--permission-mode auto,"
 end
 
+reset; ticket t1
+begin "TENX_BATCH: every command a worker is denied refuses inside a batch worker"
+vb init t1
+vb run t1 plan
+denied="$(tr '|' '\n' <"$WORKER_LOG.disallowed" | sed -n 's/^Bash(\(.*\) \*)$/\1/p' | sort -u)"
+need "at least one denied command" test -n "$denied"
+snap >"$tmp/deny.before"; : >"$STUB_LOG"
+while IFS=' ' read -r script sub; do
+  TENX_BATCH=1 "$BIN/$script" "$sub" x >"$tmp/out" 2>&1; rc=$?
+  need "$script $sub: exit 2" test "$rc" = 2
+  need "$script $sub: refused inside a batch worker" grep -q ': refused inside a batch worker$' "$tmp/out"
+done <<<"$denied"
+snap >"$tmp/deny.after"
+need "nothing under .10x or .git changed" cmp -s "$tmp/deny.before" "$tmp/deny.after"
+need "no gh call" test ! -s "$STUB_LOG"
+end
+
 reset; ticket t1 t2
 begin "board: a fallback run shows auto mode unavailable"
 vb init t1 t2

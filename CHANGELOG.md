@@ -8,6 +8,7 @@
 - `10x-land pr`, `comment` and `squash` refuse text that names a recorded security entry; `security.blockClose` in `.claude/10x.json` makes `/10x:close` refuse a ticket with an open confirmed entry at or above a severity.
 - `/10x:batch` workers run in auto mode, so routine read-only checks are no longer denied with no one there to approve them. A new hook keeps a plan session's file writes under `.10x/<id>/`, symlinks and `..` included. When auto mode is unavailable, `10x-batch` stops the worker and runs the turn again in the previous modes, and the board says so. Subagents may run `10x-test` for the ticket their session is bound to.
 - `/10x:batch auto <tickets>` takes a batch from queued to landed with no human turn while no product question is open: the new `10x-batch loop` plans, approves a plan that passes `10x-plan-check`, implements and closes, and stops only for what needs you. Batches now take only your own GitHub issues, and a batch worker can no longer run `10x-batch` commands that drive the batch.
+- Inside a `/10x:batch` worker, `10x-land issue|comment|advisory` and `10x-security set|remove|ticket` refuse whatever path or wrapper runs them; direct `gh` writes stay the auto-mode classifier's call.
 
 ## 0.1.0 — 2026-11-05
 

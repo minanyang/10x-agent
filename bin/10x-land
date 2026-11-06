@@ -90,6 +90,9 @@
 # `comment` (github.com only) posts .10x/<id>/comment.md as a comment on issue <n> of id gh-<n>, in origin's
 # repo, only when the url in .10x/<id>/ticket.md's header is that issue's, then renames it to comment.posted.md;
 # it needs no worktree, since /10x:work posts it while planning.
+# With TENX_BATCH set (every /10x:batch worker has it), `issue`, `comment` and `advisory` print
+# `10x: refused inside a batch worker` and exit 2 before checking their arguments or reading anything, whatever path
+# or wrapper runs the script; the other subcommands run as without it.
 
 set -euo pipefail
 # shellcheck source=../scripts/lib.sh
@@ -99,6 +102,9 @@ BIN_DIR="$(dirname "$(readlink -f "$0")")"
 
 usage="usage: 10x-land check|rebase|push|merge|wait|squash|pr|comment <id> | issue|ticket|advisory <slug>"
 cmd="${1:-}"; id="${2:-}"
+if [ -n "${TENX_BATCH:-}" ]; then
+  case "$cmd" in issue|comment|advisory) die "refused inside a batch worker" ;; esac
+fi
 [ $# -eq 2 ] || die "$usage"
 if [ "$cmd" = issue ] || [ "$cmd" = ticket ] || [ "$cmd" = advisory ]; then
   [[ "$id" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "invalid draft slug '$id' (lowercase letters, digits, -)"

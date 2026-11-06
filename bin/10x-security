@@ -57,7 +57,9 @@
 // Writes go through a temp file and a rename under the lock directory .10x/security.lock (retried every 0.2 s for up
 // to 10 s). A security.md that does not parse prints `10x-security: <file>:<line>: <why>` per fault; a symlinked .10x/
 // or security.md is refused. Every refusal prints `10x-security: <why>` and exits 2; `prepare`'s missing skill and
-// un-ignored run directory exit 1.
+// un-ignored run directory exit 1. With TENX_BATCH set (every /10x:batch worker has it), `set`, `remove` and `ticket`
+// print `10x-security: refused inside a batch worker` and exit 2 before checking their arguments or reading anything,
+// whatever path or wrapper runs the script; the other subcommands run as without it.
 
 const { execFileSync } = require('node:child_process')
 const fs = require('node:fs')
@@ -85,6 +87,7 @@ const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
 let COMMON, ROOT, TENX
 
 function main(argv) {
+  if (process.env.TENX_BATCH && ['set', 'remove', 'ticket'].includes(argv[0])) refuse('refused inside a batch worker')
   try {
     COMMON = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
   } catch {

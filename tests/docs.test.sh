@@ -192,6 +192,19 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
+// gh-11 AC6 — the TENX_BATCH refusal of 10x-land and 10x-security, and that it is a layer, not a boundary.
+{
+  const name = "docs name the TENX_BATCH refusal of 10x-land and 10x-security and call it a layer, not a boundary"
+  const loop = read("docs/loop.md"), scripts = read("docs/scripts.md")
+  const missing = []
+  for (const w of ["10x: refused inside a batch worker", "10x-security: refused inside a batch worker"])
+    if (scripts === null || !scripts.includes(w)) missing.push(`docs/scripts.md: ${w}`)
+  for (const w of ["a layer, not a boundary", "env -u TENX_BATCH", "`gh` directly"])
+    if (loop === null || !loop.includes(w)) missing.push(`docs/loop.md: ${w}`)
+  if (loop !== null && loop.includes("matches the command as typed")) missing.push('docs/loop.md: still says "matches the command as typed"')
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 // gh-7 AC22 — the changelog and both READMEs name /10x:batch auto; neither README keeps the trust sentence.
 {
   const name = "README and CHANGELOG mention batch auto mode"
