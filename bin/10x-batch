@@ -856,7 +856,9 @@ async function run(argv) {
   delete env.TENX_BATCH_PLAN_DIR
   if (sessionKind === 'plan') env.TENX_BATCH_PLAN_DIR = tdir(id)
   // The commands hooks/grant.js keeps in ALWAYS_ASK — keep the two lists the same. No worker needs them (the conductor
-  // posts comments and approves), so every run is denied them rather than left to auto mode's classifier.
+  // posts comments and approves), so every run is denied them rather than left to auto mode's classifier. Each of them
+  // also refuses on its own under TENX_BATCH (tests/batch.test.sh checks every one), so a full path or `sh -c` that
+  // slips past these rules still fails.
   const denied = [
     '10x-land issue',
     '10x-land comment',
