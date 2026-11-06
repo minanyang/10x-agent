@@ -1422,7 +1422,7 @@ mkdir -p "$B/t2"; touch "$B/t2/dropped"
 printf 'n\tkind\tsession\tsession_kind\tstart\tend\texit\tpid\n1\timplement\ts-t2-1\timplement\t1\t2\t0\t1\n' >"$B/t2/runs.tsv"
 need "a dropped marker and a runs.tsv at the old path are ignored" phase_is t2 queued
 printf 't1\n' >"$B/tickets"
-need "a tickets file at the old path is ignored" acts_are "answer t1,plan t2"
+need "a tickets file at the old path is ignored" acts_are "plan t2,answer t1"
 printf 'auto\n' >"$B/mode"
 need "a mode file at the old path is ignored" eval 'vb status && line "mode: default"'
 approved t1 a
