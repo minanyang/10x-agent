@@ -743,6 +743,7 @@ expect "rm TR" 0 10x-worktree rm TR
 # remove
 expect "rm keeps an unmerged branch" 0 10x-worktree rm T1
 grep -q 'kept branch feat/T1-mul' "$tmp/out" && ok "unmerged branch kept" || bad "unmerged branch kept"
+[ ! -e .10x/T1/landed ] && ok "rm writes no landed record when it keeps the branch" || bad "rm writes no landed record when it keeps the branch"
 [ ! -e "$wt" ] && ok "worktree gone" || bad "worktree gone"
 
 # a merged branch is deleted on rm (local fast-forward, base not pushed)
@@ -754,8 +755,11 @@ expect "rm T4" 0 10x-worktree rm T4
 echo 'export const one = 1' >"$tmp/repo/.worktrees/T2/src/one.mjs"
 git -C "$tmp/repo/.worktrees/T2" add -A && git -C "$tmp/repo/.worktrees/T2" commit -qm "feat: one"
 git merge -q --ff-only feat/T2
+rm -rf .10x/T2
 expect "rm after a local merge" 0 10x-worktree rm T2
 grep -q 'deleted branch feat/T2' "$tmp/out" && ok "merged branch deleted" || bad "merged branch deleted"
+[ "$(cat .10x/T2/landed 2>/dev/null)" = "landed on main at $(git rev-parse --short origin/main)" ] && grep -q '^recorded: .*/\.10x/T2/landed$' "$tmp/out" &&
+  ok "rm writes the landed record, creating .10x/<id>/, after a merge git sees" || { bad "rm writes the landed record, creating .10x/<id>/, after a merge git sees"; cat "$tmp/out"; }
 
 # a squash-merged PR: git does not call the branch merged, but its changes are on origin/main
 expect "worktree add T3" 0 10x-worktree add T3
@@ -770,6 +774,30 @@ git merge -q --squash feat/T3 && git commit -qm "feat: two (#3)" && git push -q 
 expect "rm after a squash merge" 0 10x-worktree rm T3
 grep -q 'deleted branch feat/T3 (its changes are on origin/main)' "$tmp/out" && ok "squash-merged branch deleted" || bad "squash-merged branch deleted"
 [ -z "$(git ls-remote --heads origin feat/T3)" ] && ok "merged remote branch deleted" || bad "merged remote branch deleted"
+[ "$(cat .10x/T3/landed 2>/dev/null)" = "landed on main at $(git rev-parse --short origin/main)" ] &&
+  ok "pr-merge close records the landing for a file ticket" || { bad "pr-merge close records the landing for a file ticket"; cat "$tmp/out"; }
+
+# a gh-<n> ticket squash-merged on origin, then sync-base and rm, as a pr-merge close runs them
+expect "worktree add gh-3" 0 10x-worktree add gh-3 --no-setup
+printf 'export const four = 4\n' >"$tmp/repo/.worktrees/gh-3/src/four.mjs"
+git -C "$tmp/repo/.worktrees/gh-3" add -A && git -C "$tmp/repo/.worktrees/gh-3" commit -qm "feat: four"
+git -C "$tmp/repo/.worktrees/gh-3" push -q origin feat/gh-3
+git clone -q "$tmp/origin.git" "$tmp/merger"
+git -C "$tmp/merger" -c user.email=t@t -c user.name=t merge -q --squash origin/feat/gh-3 >/dev/null &&
+  git -C "$tmp/merger" -c user.email=t@t -c user.name=t commit -qm "feat: four (#3)" && git -C "$tmp/merger" push -q origin main
+expect "sync-base after the gh-3 merge" 0 10x-worktree sync-base
+expect "rm gh-3 after a squash merge on origin" 0 10x-worktree rm gh-3
+[ "$(cat .10x/gh-3/landed 2>/dev/null)" = "landed on main at $(git rev-parse --short origin/main)" ] &&
+  ok "pr-merge close records the landing for a gh ticket" || { bad "pr-merge close records the landing for a gh ticket"; cat "$tmp/out"; }
+
+# a pr close leaves the PR open: the branch is pushed, not merged, and rm keeps it
+expect "worktree add T9" 0 10x-worktree add T9 --no-setup
+printf 'export const nine = 9\n' >"$tmp/repo/.worktrees/T9/src/nine.mjs"
+git -C "$tmp/repo/.worktrees/T9" add -A && git -C "$tmp/repo/.worktrees/T9" commit -qm "feat: nine"
+git -C "$tmp/repo/.worktrees/T9" push -q origin feat/T9
+expect "rm T9 with an unmerged PR" 0 10x-worktree rm T9
+grep -q 'kept branch feat/T9' "$tmp/out" && [ ! -e .10x/T9/landed ] &&
+  ok "pr close with an unmerged PR leaves no landed record" || { bad "pr close with an unmerged PR leaves no landed record"; cat "$tmp/out"; }
 
 # rm never forces: a worktree with uncommitted changes stays
 expect "worktree add T6" 0 10x-worktree add T6 --no-setup
@@ -1977,6 +2005,8 @@ git cat-file commit main | sed '1,/^$/d' | cmp -s - "$td/commit-msg" && ok "non-
 expect "squash refuses a branch not rebased onto the base" 2 10x-land squash L1
 expect "rm after a local squash" 0 10x-worktree rm L1
 grep -q 'deleted branch feat/L1 (its changes are on main)' "$tmp/out" && ok "locally squashed branch deleted" || bad "locally squashed branch deleted"
+[ "$(cat .10x/L1/landed 2>/dev/null)" = "landed on main at $(git rev-parse --short main)" ] &&
+  ok "local close records the landing for a file ticket" || { bad "local close records the landing for a file ticket"; cat "$tmp/out"; }
 10x-worktree add L0 --no-setup >/dev/null
 mkdir -p .10x/L0 && echo "feat: nothing" >.10x/L0/commit-msg
 expect "squash refuses a branch with nothing beyond the base" 2 10x-land squash L0
@@ -2040,6 +2070,8 @@ gh_squash() { # <id> <commit-msg contents>
   10x-land rebase "$1" >/dev/null && 10x-land squash "$1" >/dev/null && 10x-worktree rm "$1" >/dev/null
 }
 gh_squash gh-9 $'fix: nine\n  \n'
+[ "$(cat .10x/gh-9/landed 2>/dev/null)" = "landed on main at $(git rev-parse --short main)" ] &&
+  ok "local close records the landing for a gh ticket" || bad "local close records the landing for a gh ticket"
 git cat-file commit main | sed '1,/^$/d' | cmp -s - <(printf 'fix: nine\n\nCloses #9\n') && ok "gh ticket: Closes #9 appended after a subject-only message" || bad "gh ticket: Closes #9 appended after a subject-only message"
 gh_squash gh-10 $'feat: ten\n\nBody.\n\nCo-Authored-By: A <a@b>\n'
 git cat-file commit main | sed '1,/^$/d' | cmp -s - <(printf 'feat: ten\n\nBody.\n\nCloses #10\n\nCo-Authored-By: A <a@b>\n') && ok "gh ticket: Closes #10 goes before the trailer block" || bad "gh ticket: Closes #10 goes before the trailer block"

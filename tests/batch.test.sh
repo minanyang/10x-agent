@@ -307,6 +307,45 @@ need "done once gh-5 landed" eval 'vb status && line "roadmap: v1 Done $(date +%
 end
 
 reset; ticket t1 t2
+roadmap '| v1 | a `t1`; b `t2`; c `gh-5` | base | Planned |'
+printf 'landed on main at abc1234\n' >.10x/t1/landed
+mkdir -p .10x/gh-5 && printf 'landed on main at abc1234\n' >.10x/gh-5/landed
+begin "init: a version leaves out its landed tickets and counts them as landed"
+need "exit 0" exits 0 init v1
+need "only the open ticket is queued" test "$(cat "$B/tickets")" = t2
+need "the landed ones are recorded" test "$(tr '\n' ' ' <"$B/versions.closed")" = "t1 gh-5 "
+need "no issue view for the landed gh ticket" not grep -q '^issue view 5 ' "$STUB_LOG"
+need "not done while t2 is open" eval 'not has "roadmap: " && grep -qF "| Planned |" .10x/roadmap.md'
+end
+
+reset; ticket t1 t2
+roadmap '| v1 | a `t1`; b `t2` | base | Planned |'
+printf 'landed on main at abc1234\n' >.10x/t1/landed
+printf 'landed on main at abc1234\n' >.10x/t2/landed
+begin "init: a version whose tickets all landed reads Done <date>"
+today="$(date +%Y-%m-%d)"
+need "exit 0" exits 0 init v1
+need "prints it" line "roadmap: v1 Done $today"
+need "v1 reads Done <date>" grep -qxF "| v1 | a \`t1\`; b \`t2\` | base | Done $today |" .10x/roadmap.md
+end
+
+reset; ticket t1 t2
+roadmap '| v1 | a `t1`; b `t2` | base | Planned |'
+printf 'landed on main at abc1234\n' >.10x/t1/landed
+begin "init: a landed ticket named directly is queued again"
+need "init t1 exits 0" exits 0 init t1
+need "t1 is queued" test "$(cat "$B/tickets")" = t1
+vb drop t1
+need "init t1 v1 exits 0" exits 0 init t1 v1
+need "t1 and t2 are queued" test "$(tr '\n' ' ' <"$B/tickets")" = "t1 t2 "
+need "t1 is not counted as landed" not grep -qx t1 "$B/versions.closed"
+vb drop t1; vb drop t2
+need "init v1 t1 exits 0" exits 0 init v1 t1
+need "t1 is queued whatever the order" test "$(tr '\n' ' ' <"$B/tickets")" = "t2 t1 "
+need "t1 is still not counted as landed" not grep -qx t1 "$B/versions.closed"
+end
+
+reset; ticket t1 t2
 roadmap '| v1 | a `t1`; b `t2` | base | Planned |' '| v2 | c `t1` | after | Planned |'
 cp .10x/roadmap.md "$tmp/before.md"
 begin "status: a version whose tickets all landed reads Done <date>"
