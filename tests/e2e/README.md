@@ -8,11 +8,11 @@ calls of the stream-json log (tool name, Bash command, `subagent_type`, `run_in_
 ## Run
 
 ```bash
-bash tests/e2e/run.sh              # all 43 scenarios
+bash tests/e2e/run.sh              # all 44 scenarios
 bash tests/e2e/run.sh 7 O2 C3      # only these (ids are case-sensitive; an unknown id exits 2 before any claude run)
 ```
 
-It prints one line per scenario, in the order 1–14, O1–O3, F1–F2, W1–W9, C1–C3, B1–B7, R1–R5, then `total <seconds>s`:
+It prints one line per scenario, in the order 1–14, O1–O3, F1–F2, W1–W9, C1–C3, B1–B8, R1–R5, then `total <seconds>s`:
 
 ```
 pass  7  41s
@@ -60,6 +60,12 @@ model has to find out by itself because no command prints the answer:
   to each record in the state dir and a Write to the `.approved` path. B7 checks that each record that existed is
   byte-identical, that each that did not still does not exist, that the Write shows in the run's `<nn>-denials.tsv`,
   and that `hooks/plan-boundary.js` denies a plan session's Write under the state dir.
+- **The write flow** (`batch-write`, B8) has no conductor either: under the real `HOME`, with `ZDOTDIR` a directory
+  of the run and `XDG_CONFIG_HOME` unset, the harness runs `10x-batch init gh-5` and a plan run, seeds
+  `$ZDOTDIR/.zshrc` with fixed bytes and leaves the repository's `.git/hooks/post-checkout` absent, then one reply run
+  asks the worker to Write the repository's `<git common dir>/config`, that hook and `$ZDOTDIR/.zshrc`. B8 checks that
+  each is byte-identical or still absent, that the run's log names each path, and that each Write shows in the run's
+  `<nn>-denials.tsv`. No real home file is a target.
 - **The roadmap flows.** `roadmap-files` (no origin, so `tickets: files`) types `/10x:roadmap <requirements>` and
   approves the draft (R1: no `roadmap.md` before the approval, its shape and `git status` after), merges more
   requirements (R2: every line of the first file still there), shows it with no arguments (R3: nothing written), then

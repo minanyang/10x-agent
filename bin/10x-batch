@@ -50,7 +50,10 @@
 // (auto mode unavailable), it is stopped and the turn runs again as a new run in the mode used before auto mode: a plan
 // session in default with Edit(.10x/<id>/**) allowed, implement and close in acceptEdits. Every run gets
 // --disallowedTools for the commands hooks/grant.js always asks for (10x-land issue/comment/advisory, 10x-batch
-// approve/init/accept-green, 10x-security set/remove/ticket) and Edit of S and of the four settings files, and --settings right
+// approve/init/accept-green, 10x-security set/remove/ticket), Edit of S and of the four settings files, and Edit of what
+// a process outside the sandbox runs (writeDeny(): the git common dir, every <worktree dir>/*/.git, the main checkout's
+// .envrc, the zsh files of $ZDOTDIR and $HOME/.zshenv, the bash, git, ssh and login-agent files of $HOME, the plugin
+// root, each as a real path and, when a symlink, its target too), and --settings right
 // after --verbose: Claude Code's sandbox, required (a worker whose sandbox is unavailable writes <nn>-sandbox and its
 // ticket fails with `sandbox unavailable`, never run again), its writes kept to the temp dir, the package-manager and
 // toolchain caches, /dev/stdout and /dev/fd. It refuses a plan, implement or close that `status` does not list, a reply
@@ -147,6 +150,55 @@ const ROADMAP = path.join(TENX_DIR, 'roadmap.md')
 // What a worker's sandboxed Bash may write besides the working directory, and the settings that could widen it.
 const ALLOW_WRITE = [os.tmpdir(), ...['.npm', 'Library/pnpm', 'Library/Caches', '.cache', 'Library/Developer'].map((x) => path.join(HOME, x)), '/dev/stdout', '/dev/fd']
 const SETTINGS_FILES = [path.join(ROOT, '.claude'), path.join(HOME, '.claude')].flatMap((d) => [path.join(d, 'settings.json'), path.join(d, 'settings.local.json')])
+// What a process outside the sandbox later runs — git, a shell, a login agent, this plugin's scripts — which a worker's
+// Write and Edit tools must not reach: real paths, plus the real path of any that is a symlink. zsh reads $HOME/.zshenv
+// before ZDOTDIR is set; a relative ZDOTDIR or XDG_CONFIG_HOME is ignored. `<worktree dir>/*/.git` covers the worktrees
+// a run creates after it starts. A path through a dangling symlink, at it or at an ancestor, is denied with the path
+// the link names, as far as it resolves.
+// Built by run() only.
+function writeDeny() {
+  const real = (p) => {
+    for (let hops = 0; hops < 40; hops++) {
+      try {
+        return canonical(p)
+      } catch {
+        // The deepest existing ancestor (or p itself) is a dangling link: follow it, keep the rest of the path.
+        const rest = []
+        let cur = p
+        while (!fs.lstatSync(cur, { throwIfNoEntry: false })) {
+          rest.unshift(path.basename(cur))
+          cur = path.dirname(cur)
+        }
+        if (!fs.lstatSync(cur).isSymbolicLink()) return p
+        p = path.join(path.resolve(path.dirname(cur), fs.readlinkSync(cur)), ...rest)
+      }
+    }
+    return p
+  }
+  const abs = (v) => (v && path.isAbsolute(v) ? real(v) : null)
+  const home = canonical(HOME)
+  const zdot = abs(process.env.ZDOTDIR) || home
+  const xdgConfig = abs(process.env.XDG_CONFIG_HOME)
+  const files = [
+    path.join(canonical(ROOT), '.envrc'),
+    ...['.zshrc', '.zshenv', '.zprofile', '.zlogin'].map((f) => path.join(zdot, f)),
+    ...['.zshenv', '.bashrc', '.bash_profile', '.bash_login', '.profile', '.gitconfig', '.ssh/config'].map((f) => path.join(home, f)),
+  ]
+  const dirs = [
+    fs.realpathSync(common),
+    path.join(home, '.config', 'git'),
+    ...(xdgConfig ? [path.join(xdgConfig, 'git')] : []),
+    ...['Library/LaunchAgents', '.config/systemd/user', '.config/autostart'].map((d) => path.join(home, d)),
+    canonical(path.join(__dirname, '..')),
+  ]
+  return [
+    ...new Set([
+      ...files.flatMap((f) => [f, real(f)]),
+      ...dirs.flatMap((d) => [d, real(d)]).map((d) => `${d}/**`),
+      `${canonical(WT_DIR)}/*/.git`,
+    ]),
+  ]
+}
 const SANDBOX = JSON.stringify({
   sandbox: {
     enabled: true,
@@ -982,8 +1034,9 @@ async function run(argv) {
     '10x-security ticket',
   ]
     .flatMap((c) => [`Bash(${c}:*)`, `Bash(${c} *)`])
-    // The sandbox wraps only Bash: Write and Edit would otherwise reach the records, and settings that widen the sandbox.
-    .concat([`${S}/**`, ...SETTINGS_FILES].map((p) => `Edit(/${p})`))
+    // The sandbox wraps only Bash: Write and Edit would otherwise reach the records, settings that widen the sandbox,
+    // and files a process outside the sandbox runs.
+    .concat([`${S}/**`, ...SETTINGS_FILES, ...writeDeny()].map((p) => `Edit(/${p})`))
   // Today's mode for the session kind, used only when auto mode is unavailable.
   const fallback = sessionKind === 'plan' ? ['default', '--allowedTools', `Edit(.10x/${id}/**)`] : ['acceptEdits']
   const live = { child: null, signalled: false }

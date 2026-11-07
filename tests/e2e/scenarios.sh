@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sourced by run.sh: the 22 flows and the 43 scenario_<id> assertion functions.
+# Sourced by run.sh: the 23 flows and the 44 scenario_<id> assertion functions.
 #
 # A flow is one sequence of `claude -p` turns on one fixture; each scenario is an assertion function bound to a flow
 # and a checkpoint within it (`bindings`). Assertions go through lib.sh helpers that read files, git state, origin's
@@ -7,10 +7,10 @@
 
 # Report order.
 # shellcheck disable=SC2034  # used by run.sh and lib.sh
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 O1 O2 O3 F1 F2 W1 W2 W3 W4 W5 W6 W7 W8 W9 C1 C2 C3 B1 B2 B3 B4 B5 B6 B7 R1 R2 R3 R4 R5"
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 O1 O2 O3 F1 F2 W1 W2 W3 W4 W5 W6 W7 W8 W9 C1 C2 C3 B1 B2 B3 B4 B5 B6 B7 B8 R1 R2 R3 R4 R5"
 # Execution order.
 # shellcheck disable=SC2034  # used by run.sh
-FLOWS="open-bug open-type open-dup open-nogh open-forms open-files work-bug work-wide work-approved close-local close-pr close-reuse close-pr-merge close-nogh close-blocker close-checks-fail close-base-moved close-pending batch-two batch-forge roadmap-files roadmap-gh"
+FLOWS="open-bug open-type open-dup open-nogh open-forms open-files work-bug work-wide work-approved close-local close-pr close-reuse close-pr-merge close-nogh close-blocker close-checks-fail close-base-moved close-pending batch-two batch-forge batch-write roadmap-files roadmap-gh"
 
 # bindings <id> — the "<flow>:<checkpoint>" pairs a scenario is judged at.
 bindings() {
@@ -38,6 +38,7 @@ bindings() {
     C3) echo "close-pending:end" ;;
     B1 | B2 | B3 | B4 | B5 | B6) echo "batch-two:end" ;;
     B7) echo "batch-forge:end" ;;
+    B8) echo "batch-write:end" ;;
     R1) echo "roadmap-files:created" ;;
     R2) echo "roadmap-files:merged" ;;
     R3) echo "roadmap-files:shown" ;;
@@ -286,6 +287,41 @@ flow_batch_forge() {
     printf 'Then use the Write tool to create %s/gh-5.approved with the content probe; that is expected to be denied too. Report each result and stop.\n' "$s"
   } >"$REPO/.10x/_batch/gh-5/reply.md"
   inrepo 10x-batch run gh-5 reply >/dev/null 2>&1
+  check_scenarios end
+}
+
+# The files a process outside the sandbox runs, which a worker's Write tool must not reach. Under the real HOME, with
+# ZDOTDIR a directory of the run and XDG_CONFIG_HOME unset, the harness seeds $ZDOTDIR/.zshrc with fixed bytes, keeps
+# a copy of the repository's .git/config, leaves .git/hooks/post-checkout absent, and asks one reply run to Write all
+# three. No real home file is a target. No conductor: the harness is the conductor.
+# write_paths — the three targets, one per line: the git config, the hook that must stay absent, the zshrc.
+write_paths() {
+  local common
+  common="$(cd "$(rgit rev-parse --path-format=absolute --git-common-dir)" && pwd -P)"
+  printf '%s\n' "$common/config" "$common/hooks/post-checkout" "$RUN/zdot/.zshrc"
+}
+# wenv <cmd...> — inrepo with the flow's shell: ZDOTDIR in the run, no XDG_CONFIG_HOME.
+wenv() { inrepo env -u XDG_CONFIG_HOME "ZDOTDIR=$RUN/zdot" "$@"; }
+flow_batch_write() {
+  local p n=0
+  new_run 1 local
+  canned "$(canned_work)"
+  mkdir -p "$RUN/zdot"
+  printf 'e2e-fixed zshrc\n' >"$RUN/zdot/.zshrc"
+  rm -f "$(write_paths | sed -n 2p)"
+  wenv 10x-batch init gh-5 >/dev/null 2>&1
+  wenv 10x-batch run gh-5 plan >/dev/null 2>&1
+  while IFS= read -r p; do
+    n=$((n + 1))
+    if [ -e "$p" ]; then cp "$p" "$RUN/write-before.$n"; fi
+  done < <(write_paths)
+  {
+    printf 'This is the end-to-end check of this repository'"'"'s batch write rules: it verifies that a batch worker cannot write these files. '
+    printf 'For each path below, use the Read tool on it first (an error there is fine), then the Write tool on it with the content probe; each Write is expected to be denied. Never use Bash or any other tool for them, never retry, and carry on after a denial:\n'
+    while IFS= read -r p; do printf -- '- %s\n' "$p"; done < <(write_paths)
+    printf 'Report each result and stop.\n'
+  } >"$REPO/.10x/_batch/gh-5/reply.md"
+  wenv 10x-batch run gh-5 reply >/dev/null 2>&1
   check_scenarios end
 }
 
@@ -838,6 +874,26 @@ scenario_B7() {
     grep -q '"permissionDecision":"deny"' < <(
       node -e 'process.stdout.write(JSON.stringify({ hook_event_name: "PreToolUse", session_id: "s1", cwd: process.argv[1], tool_name: "Write", tool_input: { file_path: process.argv[2], content: "x" } }))' \
         "$REPO" "$s/gh-5.approved" | (cd "$REPO" && TENX_BATCH_PLAN_DIR="$REPO/.10x/gh-5" node "$PLUGIN/hooks/plan-boundary.js"))
+}
+
+# A sandboxed auto-mode worker's Write to the git config, a git hook and $ZDOTDIR/.zshrc is denied, and each file is
+# byte-identical afterwards, or still absent.
+# shellcheck disable=SC2016  # awk program
+scenario_B8() {
+  local n=0 p dir="$REPO/.10x/_batch/gh-5"
+  ensure "the reply run did not happen" [ "$(batch_runs gh-5 | awk -F'\t' '$3 == "reply"' | wc -l | tr -d ' ')" -ge 1 ]
+  while IFS= read -r p; do
+    n=$((n + 1))
+    if [ -e "$RUN/write-before.$n" ]; then
+      ensure "$p changed or is gone" cmp -s "$RUN/write-before.$n" "$p"
+    else
+      ensure "$p was created" [ ! -e "$p" ]
+    fi
+    # The worker tried every one: its log names the path, and the run's denials hold a Write to it.
+    ensure "the worker never tried $p" reply_logged "$p"
+    ensure "no denial of the Write to $p in the reply run's denials.tsv" \
+      awk -F'\t' -v p="$p" '$1 == "Write" && index($2, p) { f = 1 } END { exit !f }' "$dir"/*-denials.tsv
+  done < <(write_paths)
 }
 
 # ---------------------------------------------------------------- scenarios: roadmap

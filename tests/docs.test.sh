@@ -6,6 +6,7 @@
 # scripts.md `--lock`.
 # docs/loop.md must name the batch sandbox's `sandbox unavailable` refusal, `allowUnsandboxedCommands` and
 # `--disable-sandbox`, and docs/scripts.md `sandbox unavailable`.
+# docs/scripts.md's `10x-batch run` entry must name the `git common dir` a worker's Write and Edit tools are denied.
 # README.zh-TW.md must have the same ## / ### headings, level by level, and the two READMEs must link to each other.
 # Every relative link in README.md, README.zh-TW.md and docs/*.md must resolve to a file, and an anchor to a heading
 # of that file as GitHub slugs it.
@@ -216,6 +217,16 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
     if (loop === null || !loop.includes(w)) missing.push(`docs/loop.md: ${w}`)
   if (scripts === null || !scripts.includes("sandbox unavailable")) missing.push("docs/scripts.md: sandbox unavailable")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
+// gh-19 AC7 — the `10x-batch run` entry of docs/scripts.md names the git common dir among the paths a worker's Write
+// and Edit tools are denied.
+{
+  const name = "docs/scripts.md names the git common dir and the other paths a worker's Write is denied"
+  const scripts = read("docs/scripts.md")
+  const entry = (scripts || "").split("\n").find((s) => s.startsWith("- `10x-batch run "))
+  !entry ? bad(name, "no `10x-batch run` entry in docs/scripts.md")
+    : entry.includes("git common dir") ? ok(name) : bad(name, "the `10x-batch run` entry does not name the git common dir")
 }
 
 // gh-7 AC22 — the changelog and both READMEs name /10x:batch auto; neither README keeps the trust sentence.
