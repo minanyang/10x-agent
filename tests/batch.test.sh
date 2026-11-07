@@ -678,7 +678,7 @@ write_rules() {
   home="$(cd "$HOME" && pwd -P)"; plug="$(cd "$BIN/.." && pwd -P)"
   zdot="${1:-$home}"; wt="${2:-$root/.worktrees}"
   for p in "$root/.git/**" "$wt/*/.git" "$root/.envrc" "$zdot/.zshrc" "$zdot/.zshenv" "$zdot/.zprofile" "$zdot/.zlogin" \
-    "$zdot/.zshrc.zwc" "$zdot/.zshenv.zwc" "$zdot/.zprofile.zwc" "$zdot/.zlogin.zwc" "$zdot/.zlogout" \
+    "$zdot/.zshrc.zwc" "$zdot/.zshenv.zwc" "$zdot/.zprofile.zwc" "$zdot/.zlogin.zwc" "$zdot/.zlogout" "$zdot/.zlogout.zwc" \
     "$home/.zshenv" "$home/.zshenv.zwc" "$home/.bashrc" "$home/.bash_profile" "$home/.bash_login" "$home/.bash_logout" \
     "$home/.profile" "$home/.gitconfig" \
     "$home/.config/git/**" "$home/.ssh/config" "$home/Library/LaunchAgents/**" "$home/.config/systemd/user/**" \
@@ -764,7 +764,7 @@ home="$(cd "$HOME" && pwd -P)"
 vb init t1
 ZDOTDIR="$tmp/zdot" vb run t1 plan
 need "exit 0" test $? -eq 0
-for f in .zshrc .zshenv .zprofile .zlogin .zshrc.zwc .zshenv.zwc .zprofile.zwc .zlogin.zwc .zlogout; do
+for f in .zshrc .zshenv .zprofile .zlogin .zshrc.zwc .zshenv.zwc .zprofile.zwc .zlogin.zwc .zlogout .zlogout.zwc; do
   need "ZDOTDIR's $f" denies "Edit(/$tmp/zdot/$f)"
 done
 need "the home's .zshenv, read before ZDOTDIR is set" denies "Edit(/$home/.zshenv)"
@@ -827,7 +827,7 @@ sandbox_deny() {
   zdot="${1:-$home}"; wt="${2:-$root/.worktrees}"; cfg="${3-}"; common="$root/.git"
   {
     for p in "$root/.envrc" "$zdot/.zshrc" "$zdot/.zshenv" "$zdot/.zprofile" "$zdot/.zlogin" \
-      "$zdot/.zshrc.zwc" "$zdot/.zshenv.zwc" "$zdot/.zprofile.zwc" "$zdot/.zlogin.zwc" "$zdot/.zlogout" \
+      "$zdot/.zshrc.zwc" "$zdot/.zshenv.zwc" "$zdot/.zprofile.zwc" "$zdot/.zlogin.zwc" "$zdot/.zlogout" "$zdot/.zlogout.zwc" \
       "$home/.zshenv" "$home/.zshenv.zwc" "$home/.bashrc" "$home/.bash_profile" "$home/.bash_login" "$home/.bash_logout" \
       "$home/.profile" "$home/.gitconfig" "$home/.ssh/config" \
       "$home/.config/git" "$home/Library/LaunchAgents" "$home/.config/systemd/user" "$home/.config/autostart" "$plug" \
@@ -920,7 +920,7 @@ export ZDOTDIR="$tmp/zdot"
 six_runs .worktrees/t1
 unset ZDOTDIR
 same_deny "$(sandbox_deny "$tmp/zdot" "" "")"
-for f in .zshrc .zshenv .zprofile .zlogin .zshrc.zwc .zshenv.zwc .zprofile.zwc .zlogin.zwc .zlogout; do
+for f in .zshrc .zshenv .zprofile .zlogin .zshrc.zwc .zshenv.zwc .zprofile.zwc .zlogin.zwc .zlogout .zlogout.zwc; do
   need "ZDOTDIR's $f" has_deny 1 "$tmp/zdot/$f"
 done
 need "the home's .zshenv" has_deny 1 "$home/.zshenv"
