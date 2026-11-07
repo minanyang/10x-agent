@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sourced by run.sh: the 24 flows and the 45 scenario_<id> assertion functions.
+# Sourced by run.sh: the 24 flows and the 46 scenario_<id> assertion functions.
 #
 # A flow is one sequence of `claude -p` turns on one fixture; each scenario is an assertion function bound to a flow
 # and a checkpoint within it (`bindings`). Assertions go through lib.sh helpers that read files, git state, origin's
@@ -7,7 +7,7 @@
 
 # Report order.
 # shellcheck disable=SC2034  # used by run.sh and lib.sh
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 O1 O2 O3 F1 F2 W1 W2 W3 W4 W5 W6 W7 W8 W9 C1 C2 C3 B1 B2 B3 B4 B5 B6 B7 B8 B9 R1 R2 R3 R4 R5"
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 O1 O2 O3 F1 F2 W1 W2 W3 W4 W5 W6 W7 W8 W9 C1 C2 C3 B1 B2 B3 B4 B5 B6 B7 B8 B9 B10 R1 R2 R3 R4 R5"
 # Execution order.
 # shellcheck disable=SC2034  # used by run.sh
 FLOWS="open-bug open-type open-dup open-nogh open-forms open-files work-bug work-wide work-approved close-local close-pr close-reuse close-pr-merge close-nogh close-blocker close-checks-fail close-base-moved close-pending batch-two batch-forge batch-write batch-bash roadmap-files roadmap-gh"
@@ -39,7 +39,7 @@ bindings() {
     B1 | B2 | B3 | B4 | B5 | B6) echo "batch-two:end" ;;
     B7) echo "batch-forge:end" ;;
     B8) echo "batch-write:end" ;;
-    B9) echo "batch-bash:end" ;;
+    B9 | B10) echo "batch-bash:end" ;;
     R1) echo "roadmap-files:created" ;;
     R2) echo "roadmap-files:merged" ;;
     R3) echo "roadmap-files:shown" ;;
@@ -338,15 +338,32 @@ bash_paths() {
   root="$(cd "$REPO" && pwd -P)"
   printf '%s\n' "$common/info/attributes" "$root/.envrc" "$RUN/zdot/.zshrc" "$root/.worktrees/gh-6/.git" "$common/commondir"
 }
+# B10 (gh-27): ~/Library/pnpm, pnpm's PNPM_HOME on macOS and on the worker's PATH, is in no allowWrite path, store
+# included. The harness creates ~/Library/pnpm/.10x-e2e-probe with fixed bytes before init, appends ~/Library/pnpm to
+# the PATH of init, plan and reply, and deletes the probes after the checks, whatever the result, with ~/Library/pnpm
+# and its store if it created them.
+# pnpm_paths — B10's three targets, one per line: a new file in ~/Library/pnpm, the probe, a new file in its store.
+pnpm_paths() {
+  local run
+  run="$(basename "$RUN")"
+  printf '%s\n' "$HOME/Library/pnpm/.10x-e2e-new-$run" "$HOME/Library/pnpm/.10x-e2e-probe" "$HOME/Library/pnpm/store/.10x-e2e-store-$run"
+}
 flow_batch_bash() {
   local p n=0
+  # benv <cmd...> — wenv with ~/Library/pnpm appended to the PATH.
+  benv() { wenv env "PATH=$E2E_PATH:$HOME/Library/pnpm" "$@"; }
   new_run 1 local
   canned "$(canned_work)"
   mkdir -p "$RUN/zdot"
   printf 'e2e-fixed zshrc\n' >"$RUN/zdot/.zshrc"
   rm -f "$REPO/.envrc"
-  wenv 10x-batch init gh-5 >/dev/null 2>&1
-  wenv 10x-batch run gh-5 plan >/dev/null 2>&1
+  [ -d "$HOME/Library/pnpm" ] || : >"$RUN/pnpm-created"
+  [ -d "$HOME/Library/pnpm/store" ] || : >"$RUN/pnpm-store-created"
+  mkdir -p "$HOME/Library/pnpm"
+  printf 'e2e-fixed pnpm probe\n' >"$HOME/Library/pnpm/.10x-e2e-probe"
+  cp "$HOME/Library/pnpm/.10x-e2e-probe" "$RUN/pnpm-probe-before"
+  benv 10x-batch init gh-5 >/dev/null 2>&1
+  benv 10x-batch run gh-5 plan >/dev/null 2>&1
   wenv 10x-worktree add gh-6 --no-setup >/dev/null 2>&1
   while IFS= read -r p; do
     n=$((n + 1))
@@ -356,10 +373,17 @@ flow_batch_bash() {
     printf 'This is the end-to-end check of this repository'"'"'s batch sandbox: it verifies that a batch worker'"'"'s Bash cannot write these files. '
     printf 'Each command below is expected to fail with "Operation not permitted". Run each with the Bash tool, exactly as written, one call per command, never with dangerouslyDisableSandbox, never retry, and carry on after a failure:\n'
     while IFS= read -r p; do printf -- '- echo probe >> %s\n' "$p"; done < <(bash_paths)
+    printf -- '- echo probe > %s\n' "$(pnpm_paths | sed -n 1p)"
+    printf -- '- echo probe >> %s\n' "$(pnpm_paths | sed -n 2p)"
+    printf -- '- echo probe > %s\n' "$(pnpm_paths | sed -n 3p)"
     printf 'Report each result and stop.\n'
   } >"$REPO/.10x/_batch/gh-5/reply.md"
-  wenv 10x-batch run gh-5 reply >/dev/null 2>&1
+  benv 10x-batch run gh-5 reply >/dev/null 2>&1
   check_scenarios end
+  while IFS= read -r p; do rm -f "$p"; done < <(pnpm_paths)
+  if [ -e "$RUN/pnpm-store-created" ]; then rmdir "$HOME/Library/pnpm/store" 2>/dev/null; fi
+  if [ -e "$RUN/pnpm-created" ]; then rmdir "$HOME/Library/pnpm" 2>/dev/null; fi
+  return 0
 }
 
 # No origin: tickets: files. Each typed /10x:roadmap is its own session: requirements and their approval (created),
@@ -965,6 +989,27 @@ scenario_B9() {
     ensure "a Bash denial for $p in the reply run's denials.tsv: the classifier refused it, not the sandbox" \
       not awk -F'\t' -v p="$p" '$1 == "Bash" && index($2, p) { f = 1 } END { exit !f }' "$dir"/*-denials.tsv
   done < <(bash_paths)
+}
+
+# A sandboxed auto-mode worker's Bash cannot write ~/Library/pnpm: a new file there, an append to the harness's probe and
+# a new file in its store each exit non-zero, the new files stay absent and the probe byte-identical, and the run's
+# denials.tsv holds no Bash denial for them: an auto-mode classifier refusal is not the sandbox's.
+# shellcheck disable=SC2016  # awk program
+scenario_B10() {
+  local n=0 p dir="$REPO/.10x/_batch/gh-5"
+  ensure "the reply run did not happen" [ "$(batch_runs gh-5 | awk -F'\t' '$3 == "reply"' | wc -l | tr -d ' ')" -ge 1 ]
+  while IFS= read -r p; do
+    n=$((n + 1))
+    if [ "$n" = 2 ]; then
+      ensure "$p changed or is gone" cmp -s "$RUN/pnpm-probe-before" "$p"
+    else
+      ensure "$p was created" [ ! -e "$p" ]
+    fi
+    ensure "the worker never tried $p" reply_logged "$p"
+    ensure "the Bash write to $p did not exit non-zero" bash_failed "$p"
+    ensure "a Bash denial for $p in the reply run's denials.tsv: the classifier refused it, not the sandbox" \
+      not awk -F'\t' -v p="$p" '$1 == "Bash" && index($2, p) { f = 1 } END { exit !f }' "$dir"/*-denials.tsv
+  done < <(pnpm_paths)
 }
 
 # ---------------------------------------------------------------- scenarios: roadmap
