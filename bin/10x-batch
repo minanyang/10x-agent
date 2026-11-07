@@ -55,15 +55,17 @@
 // checkout's .claude/, ~/.claude/ and, when set, $CLAUDE_CONFIG_DIR's settings.json and settings.local.json, each also
 // as a real path and its symlink target), and Edit of what
 // a process outside the sandbox runs (writeDeny(): the git common dir, every <worktree dir>/*/.git, the main checkout's
-// .envrc, the zsh files of $ZDOTDIR and $HOME/.zshenv, the bash, git, ssh and login-agent files of $HOME, the plugin
+// .envrc, the zsh files of $ZDOTDIR (with .zlogout and the compiled .zwc) and $HOME/.zshenv(.zwc), the bash (with
+// .bash_logout), git, ssh and login-agent files of $HOME, the plugin
 // root, ~/.claude.json, ~/.claude/plugins and ~/.claude/hooks and, when CLAUDE_CONFIG_DIR is set, its .claude.json,
 // plugins and hooks, each as a real path and, when a symlink, its target too), and --settings right
 // after --verbose: Claude Code's sandbox, required (a worker whose sandbox is unavailable writes <nn>-sandbox and its
 // ticket fails with `sandbox unavailable`, never run again), its writes kept to the temp dir, the package-manager and
 // toolchain caches, /dev/stdout and /dev/fd, and its denyWrite the same writeDeny() files plus the settings files,
-// except the git common dir, narrowed to config, config.worktree, hooks, info/attributes, commondir and the admin dir and .git
-// file of every worktree registered when the run starts but the ticket's own. It refuses a plan, implement or close that `status` does not list, a reply
-// to a planning session while a plan-session run that started before the ticket's latest run ended is open, and a
+// except the git common dir, narrowed to config, config.worktree, hooks, info/attributes, commondir and the admin dir
+// and .git file of every worktree registered when the run starts but the ticket's own. It refuses a plan, implement or
+// close that `status` does not list, a reply to a planning session while a plan-session run that started before the
+// ticket's latest run ended is open, and a
 // reply whose first line starts with `/`, and a gh-<n> ticket whose issue is no longer the user's. Every worker gets
 // TENX_BATCH=1. SIGTERM and SIGINT are forwarded to the worker. It prints
 // `phase: <phase>` and `board: <path>`, exit 0 once the worker ran, whatever its exit code.
@@ -200,8 +202,9 @@ function writeDeny(id) {
   const claude = [home, ...(configDir === undefined ? [] : [path.resolve(ROOT, configDir)])]
   const files = [
     path.join(canonical(ROOT), '.envrc'),
-    ...['.zshrc', '.zshenv', '.zprofile', '.zlogin'].map((f) => path.join(zdot, f)),
-    ...['.zshenv', '.bashrc', '.bash_profile', '.bash_login', '.profile', '.gitconfig', '.ssh/config'].map((f) => path.join(home, f)),
+    // zsh runs a newer <file>.zwc instead of <file>, and .zlogout when a login shell exits.
+    ...['.zshrc', '.zshenv', '.zprofile', '.zlogin'].flatMap((f) => [f, `${f}.zwc`]).concat('.zlogout').map((f) => path.join(zdot, f)),
+    ...['.zshenv', '.zshenv.zwc', '.bashrc', '.bash_profile', '.bash_login', '.bash_logout', '.profile', '.gitconfig', '.ssh/config'].map((f) => path.join(home, f)),
     ...claude.map((d) => path.join(d, '.claude.json')),
   ]
   const dirs = [
@@ -1098,7 +1101,7 @@ async function run(argv) {
     const log = path.join(bdir(id), `${nn}-${kind}.jsonl`)
     put(turn, '')
     const out = fs.openSync(log, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW)
-    const child = spawn(bin, ['-p', '--output-format', 'stream-json', '--verbose', '--settings', settings,'--permission-mode', ...mode, '--disallowedTools', ...denied, flag, sess, '--', prompt], {
+    const child = spawn(bin, ['-p', '--output-format', 'stream-json', '--verbose', '--settings', settings, '--permission-mode', ...mode, '--disallowedTools', ...denied, flag, sess, '--', prompt], {
       cwd: ROOT,
       stdio: ['ignore', out, 'inherit'],
       env,
