@@ -727,6 +727,23 @@ end
 denies() { head -1 "$WORKER_LOG.disallowed" | tr '|' '\n' | grep -qxF -- "$1"; }
 
 reset; ticket t1
+begin "run: a symlinked or dangling settings path is denied where it points"
+# ~/.claude is a link to hreal, CLAUDE_CONFIG_DIR a link to cfgreal, whose settings.local.json is a dangling link.
+mkdir -p "$tmp/h" "$tmp/hreal" "$tmp/cfgreal"; ln -s "$tmp/hreal" "$tmp/h/.claude"
+ln -s "$tmp/cfgreal" "$tmp/cfglink"; ln -s "$tmp/gone/s.json" "$tmp/cfgreal/settings.local.json"
+HOME="$tmp/h" CLAUDE_CONFIG_DIR="$tmp/cfglink" vb init t1
+HOME="$tmp/h" CLAUDE_CONFIG_DIR="$tmp/cfglink" vb run t1 plan
+need "exit 0" test $? -eq 0
+for r in "$tmp/h/.claude/settings.json" "$tmp/hreal/settings.json" "$tmp/h/.claude/settings.local.json" \
+  "$tmp/hreal/settings.local.json" "$tmp/cfglink/settings.json" "$tmp/cfgreal/settings.json" \
+  "$tmp/cfglink/settings.local.json" "$tmp/gone/s.json"; do
+  need "denies $r" denies "Edit(/$r)"
+done
+need "each rule once" test -z "$(head -1 "$WORKER_LOG.disallowed" | tr '|' '\n' | sort | uniq -d)"
+rm -rf "${tmp:?}/h" "${tmp:?}/hreal" "${tmp:?}/cfgreal" "${tmp:?}/cfglink"
+end
+
+reset; ticket t1
 echo '{"close":"local","worktreeDir":"wt"}' >.claude/10x.json
 begin "run: the write rules follow worktreeDir and the git common dir"
 vb init t1
