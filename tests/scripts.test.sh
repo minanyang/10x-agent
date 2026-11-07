@@ -761,6 +761,34 @@ grep -q 'deleted branch feat/T2' "$tmp/out" && ok "merged branch deleted" || bad
 [ "$(cat .10x/T2/landed 2>/dev/null)" = "landed on main at $(git rev-parse --short origin/main)" ] && grep -q '^recorded: .*/\.10x/T2/landed$' "$tmp/out" &&
   ok "rm writes the landed record, creating .10x/<id>/, after a merge git sees" || { bad "rm writes the landed record, creating .10x/<id>/, after a merge git sees"; cat "$tmp/out"; }
 
+# a branch with no commits of its own: add records where it cut it, rm deletes it and writes no landed record
+expect "worktree add T10" 0 10x-worktree add T10 --no-setup
+[ "$(cat .10x/T10/start 2>/dev/null)" = "$(git -C "$tmp/repo/.worktrees/T10" rev-parse HEAD)" ] && [ "$(wc -l <.10x/T10/start)" -eq 1 ] &&
+  ok "add records the commit it cut the branch at" || { bad "add records the commit it cut the branch at"; cat "$tmp/out"; }
+expect "rm T10 with no commits" 0 10x-worktree rm T10
+grep -qxF 'deleted branch feat/T10 (no commits of its own); no landed record' "$tmp/out" && [ ! -e .10x/T10/landed ] &&
+  ! git show-ref --verify --quiet refs/heads/feat/T10 &&
+  ok "rm of a branch with no commits of its own deletes it and writes no landed record" ||
+  { bad "rm of a branch with no commits of its own deletes it and writes no landed record"; cat "$tmp/out"; }
+
+# a merged branch with commits of its own still gets the landed record, with or without a recorded start
+for t in T11 T12; do
+  expect "worktree add $t" 0 10x-worktree add "$t" --no-setup
+  echo "export const n$t = 1" >"$tmp/repo/.worktrees/$t/src/$t.mjs"
+  git -C "$tmp/repo/.worktrees/$t" add -A && git -C "$tmp/repo/.worktrees/$t" commit -qm "feat: $t"
+  git merge -q --no-edit "feat/$t"
+done
+t11_start=0; [ -s .10x/T11/start ] && t11_start=1
+expect "rm T11 after a merge" 0 10x-worktree rm T11
+[ "$t11_start" = 1 ] && [ "$(cat .10x/T11/landed 2>/dev/null)" = "landed on main at $(git rev-parse --short origin/main)" ] &&
+  ok "rm of a merged branch with a recorded start writes the landed record" ||
+  { bad "rm of a merged branch with a recorded start writes the landed record"; cat "$tmp/out"; }
+rm -f .10x/T12/start
+expect "rm T12 after a merge" 0 10x-worktree rm T12
+[ "$(cat .10x/T12/landed 2>/dev/null)" = "landed on main at $(git rev-parse --short origin/main)" ] &&
+  ok "rm of a merged branch with no recorded start writes the landed record" ||
+  { bad "rm of a merged branch with no recorded start writes the landed record"; cat "$tmp/out"; }
+
 # a squash-merged PR: git does not call the branch merged, but its changes are on origin/main
 expect "worktree add T3" 0 10x-worktree add T3
 wt3="$tmp/repo/.worktrees/T3"

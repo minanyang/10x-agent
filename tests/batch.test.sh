@@ -372,6 +372,19 @@ need "t1 is still not counted as landed" not grep -qx t1 "$SB/versions.closed"
 end
 
 reset; ticket t1 t2
+roadmap '| v1 | a `t1`; b `t2` | base | Planned |'
+git remote set-url origin "$tmp/origin.git"
+10x-worktree add t1 --no-setup >"$tmp/wt.out" 2>&1
+10x-worktree rm t1 >>"$tmp/wt.out" 2>&1
+git remote set-url origin git@github.com:acme/batch.git
+begin "init: a version keeps a ticket whose worktree was removed with no commits"
+need "no landed record for t1" eval 'test ! -e .10x/t1/landed || { cat "$tmp/wt.out"; false; }'
+need "exit 0" exits 0 init v1
+need "t1 and t2 are queued" test "$(tr '\n' ' ' <"$SB/tickets")" = "t1 t2 "
+need "t1 is not counted as landed" not grep -qx t1 "$SB/versions.closed"
+end
+
+reset; ticket t1 t2
 roadmap '| v1 | a `t1`; b `t2` | base | Planned |' '| v2 | c `t1` | after | Planned |'
 cp .10x/roadmap.md "$tmp/before.md"
 begin "status: a version whose tickets all landed reads Done <date>"
