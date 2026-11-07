@@ -61,7 +61,7 @@
 // after --verbose: Claude Code's sandbox, required (a worker whose sandbox is unavailable writes <nn>-sandbox and its
 // ticket fails with `sandbox unavailable`, never run again), its writes kept to the temp dir, the package-manager and
 // toolchain caches, /dev/stdout and /dev/fd, and its denyWrite the same writeDeny() files plus the settings files,
-// except the git common dir, narrowed to config, config.worktree, hooks, info/attributes and the admin dir and .git
+// except the git common dir, narrowed to config, config.worktree, hooks, info/attributes, commondir and the admin dir and .git
 // file of every worktree registered when the run starts but the ticket's own. It refuses a plan, implement or close that `status` does not list, a reply
 // to a planning session while a plan-session run that started before the ticket's latest run ended is open, and a
 // reply whose first line starts with `/`, and a gh-<n> ticket whose issue is no longer the user's. Every worker gets
@@ -186,8 +186,9 @@ function real(p) {
 // through a dangling symlink, at it or at an ancestor, is denied with the path the link names, as far as it resolves.
 // The git common dir differs between the two: Edit gets all of it and `<worktree dir>/*/.git`, which covers the
 // worktrees a run creates after it starts, since the Write tool never does git. The sandbox, where the worker's own git
-// runs, gets only the files git runs code from (config, config.worktree, hooks, info/attributes), plus the admin dir and
-// the .git file (its `gitdir`) of every worktree registered now, except ticket <id>'s own, <worktree dir>/<id>; and the
+// runs, gets only the files git runs code from (config, config.worktree, hooks, info/attributes) and commondir, which
+// git reads in any git dir and follows to another config and hooks, plus the admin dir and the .git file (its `gitdir`,
+// resolved against the admin dir) of every worktree registered now, except ticket <id>'s own, <worktree dir>/<id>; and the
 // settings files, which run() denies Edit separately.
 // Built by run() only.
 function writeDeny(id) {
@@ -220,7 +221,9 @@ function writeDeny(id) {
   } catch {}
   for (const e of entries) {
     const admin = path.join(gitDir, 'worktrees', e.name)
-    const gitFile = readOr(path.join(admin, 'gitdir'))?.trim()
+    // git writes gitdir relative to the admin dir under worktree.useRelativePaths.
+    const raw = readOr(path.join(admin, 'gitdir'))?.trim()
+    const gitFile = raw && real(path.resolve(admin, raw))
     if (gitFile === own) continue
     trees.push(admin, ...(gitFile ? [gitFile] : []))
   }
@@ -228,7 +231,7 @@ function writeDeny(id) {
   return {
     edit: [...new Set([...both(files), ...both([gitDir, ...dirs]).map((d) => `${d}/**`), `${canonical(WT_DIR)}/*/.git`])],
     sandbox: [
-      ...new Set(both([...files, ...dirs, ...SETTINGS_FILES, ...['config', 'config.worktree', 'hooks', 'info/attributes'].map((f) => path.join(gitDir, f)), ...trees])),
+      ...new Set(both([...files, ...dirs, ...SETTINGS_FILES, ...['config', 'config.worktree', 'hooks', 'info/attributes', 'commondir'].map((f) => path.join(gitDir, f)), ...trees])),
     ],
   }
 }
