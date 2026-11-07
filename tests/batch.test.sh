@@ -119,6 +119,8 @@ chmod +x "$tmp/stub/gh" "$tmp/stub/worker"
 export PATH="$tmp/stub:$BIN:$PATH" STUB_LOG="$tmp/stub.log" WORKER_LOG="$tmp/worker.log" STUB_ISSUES="5 6 7 8 9"
 export TENX_BATCH_CLAUDE="$tmp/stub/worker"
 unset CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS TENX_BATCH_PLAN_DIR TENX_BATCH
+# The worker's write rules follow ZDOTDIR and XDG_CONFIG_HOME: the cases set them where they matter.
+unset ZDOTDIR XDG_CONFIG_HOME
 
 git -c init.defaultBranch=main init -q --bare "$tmp/origin.git"
 git -c init.defaultBranch=main init -q "$tmp/repo"
@@ -650,6 +652,29 @@ done
 edits="Edit(/$S/**)|Edit(/$root/.claude/settings.json)|Edit(/$root/.claude/settings.local.json)|Edit(/$HOME/.claude/settings.json)|Edit(/$HOME/.claude/settings.local.json)"
 # rules <lines> — each line's rules sorted, the lines made unique: the order of the rules within a run is not the case's concern.
 rules() { local l; while IFS= read -r l; do printf '%s\n' "$l" | tr '|' '\n' | sort | tr '\n' ' '; echo; done <<<"$1" | sort -u; }
+# write_rules [<zdot>] [<worktree dir>] — the Edit rules on the files a process outside the sandbox runs, joined by |:
+# the git common dir, every worktree's .git file, .envrc, the zsh files of <zdot> (default the real home) and the
+# home's .zshenv, the bash, git, ssh and login-agent files of the real home, the plugin root, and the real path of
+# each of them that is a symlink.
+write_rules() {
+  local home plug zdot wt p r out=() seen="|"
+  home="$(cd "$HOME" && pwd -P)"; plug="$(cd "$BIN/.." && pwd -P)"
+  zdot="${1:-$home}"; wt="${2:-$root/.worktrees}"
+  for p in "$root/.git/**" "$wt/*/.git" "$root/.envrc" "$zdot/.zshrc" "$zdot/.zshenv" "$zdot/.zprofile" "$zdot/.zlogin" \
+    "$home/.zshenv" "$home/.bashrc" "$home/.bash_profile" "$home/.bash_login" "$home/.profile" "$home/.gitconfig" \
+    "$home/.config/git/**" "$home/.ssh/config" "$home/Library/LaunchAgents/**" "$home/.config/systemd/user/**" \
+    "$home/.config/autostart/**" "$plug/**"; do
+    out+=("$p")
+    if [ -L "${p%/\*\*}" ]; then
+      r="$(node -e 'console.log(require("fs").realpathSync(process.argv[1]))' "${p%/\*\*}")"
+      [ "$p" = "${p%/\*\*}" ] && out+=("$r") || out+=("$r/**")
+    fi
+  done
+  for p in "${out[@]}"; do
+    case "$seen" in *"|Edit(/$p)|"*) ;; *) seen+="Edit(/$p)|" ;; esac
+  done
+  seen="${seen#|}"; printf '%s' "${seen%|}"
+}
 vb init t1 t2
 WORKER_MODE=default vb run t1 plan
 echo "go" >"$B/t1/reply.md"; vb run t1 reply
@@ -658,9 +683,36 @@ WORKER_MODE=default vb run t1 implement
 evidence t1 "- AC1 — met: x"; mkdir -p .worktrees/t1
 vb run t1 close
 need "six runs: plan and its fallback, reply, implement and its fallback, close" test "$(wc -l <"$WORKER_LOG.disallowed" | tr -d ' ')" = 6
-need "each run gets every rule, and the five Edit rules on the state dir and the settings files" test "$(rules "$(cat "$WORKER_LOG.disallowed")")" = "$(rules "$want|$edits")"
+need "each run gets every rule, the Edit rules on the state dir and settings files, and the write rules" test "$(rules "$(cat "$WORKER_LOG.disallowed")")" = "$(rules "$want|$edits|$(write_rules)")"
 need "the permission flags are unchanged" test "$(tr '\n' ',' <"$WORKER_LOG.perm")" = \
   "--permission-mode auto,--permission-mode default --allowedTools Edit(.10x/t1/**),--permission-mode auto,--permission-mode auto,--permission-mode acceptEdits,--permission-mode auto,"
+end
+
+# denies <rule> — the first run's --disallowedTools holds <rule> exactly.
+denies() { head -1 "$WORKER_LOG.disallowed" | tr '|' '\n' | grep -qxF -- "$1"; }
+
+reset; ticket t1
+echo '{"close":"local","worktreeDir":"wt"}' >.claude/10x.json
+begin "run: the write rules follow worktreeDir and the git common dir"
+vb init t1
+vb run t1 plan
+need "exit 0" test $? -eq 0
+need "the repository's real git common dir" denies "Edit(/$root/.git/**)"
+need "every worktree's .git file under worktreeDir" denies "Edit(/$root/wt/*/.git)"
+need "not under the default worktree dir" not denies "Edit(/$root/.worktrees/*/.git)"
+need "the full rule set" test "$(rules "$(cat "$WORKER_LOG.disallowed")")" = "$(rules "$want|$edits|$(write_rules "" "$root/wt")")"
+end
+
+reset; ticket t1
+begin 'run: the zsh rules follow ZDOTDIR and still deny $HOME/.zshenv'
+home="$(cd "$HOME" && pwd -P)"
+vb init t1
+ZDOTDIR="$tmp/zdot" vb run t1 plan
+need "exit 0" test $? -eq 0
+for f in .zshrc .zshenv .zprofile .zlogin; do need "ZDOTDIR's $f" denies "Edit(/$tmp/zdot/$f)"; done
+need "the home's .zshenv, read before ZDOTDIR is set" denies "Edit(/$home/.zshenv)"
+need "not the home's .zshrc" not denies "Edit(/$home/.zshrc)"
+need "the full rule set" test "$(rules "$(cat "$WORKER_LOG.disallowed")")" = "$(rules "$want|$edits|$(write_rules "$tmp/zdot")")"
 end
 
 reset; ticket t1
