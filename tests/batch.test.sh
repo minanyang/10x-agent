@@ -656,7 +656,8 @@ rules() { local l; while IFS= read -r l; do printf '%s\n' "$l" | tr '|' '\n' | s
 # the git common dir, every worktree's .git file, .envrc, the zsh files of <zdot> (default the real home) and the
 # home's .zshenv, the bash, git, ssh and login-agent files of the real home, the plugin root, and the real path of
 # each of them whose real path differs (a symlink at it or at any ancestor; a dangling link followed to what it names).
-# real_of <path> — <path> with its deepest existing ancestor resolved through realpath and the rest appended.
+# real_of <path> — <path> with its deepest existing ancestor resolved through realpath and the rest appended; a
+# dangling link, at <path> or at that ancestor, followed to what it names.
 real_of() {
   node -e '
     const fs = require("fs"), path = require("path")
@@ -664,7 +665,10 @@ real_of() {
     for (let hops = 0; hops < 40; hops++) {
       const rest = []; let cur = p
       while (!fs.lstatSync(cur, { throwIfNoEntry: false })) { rest.unshift(path.basename(cur)); cur = path.dirname(cur) }
-      try { p = path.join(fs.realpathSync(cur), ...rest); break } catch { if (cur !== p) break; p = path.resolve(path.dirname(p), fs.readlinkSync(p)) }
+      try { p = path.join(fs.realpathSync(cur), ...rest); break } catch {
+        if (!fs.lstatSync(cur).isSymbolicLink()) break
+        p = path.join(path.resolve(path.dirname(cur), fs.readlinkSync(cur)), ...rest)
+      }
     }
     console.log(p)' "$1"
 }
@@ -738,6 +742,16 @@ need "and its target" denies "Edit(/$tmp/zt/rc)"
 need "the dangling .zshenv" denies "Edit(/$tmp/zd/.zshenv)"
 need "and the path its link names" denies "Edit(/$tmp/zt/missing)"
 need "the full rule set" test "$(rules "$(cat "$WORKER_LOG.disallowed")")" = "$(rules "$want|$edits|$(write_rules "$tmp/zd")")"
+end
+
+reset; ticket t1
+begin 'run: a startup file under a dangling symlinked directory is denied where the link points'
+ln -sfn "$tmp/zgone" "$tmp/zl"
+vb init t1
+ZDOTDIR="$tmp/zl/sub" vb run t1 plan
+need "exit 0" test $? -eq 0
+for f in .zshrc .zshenv .zprofile .zlogin; do need "$f where the dangling link points" denies "Edit(/$tmp/zgone/sub/$f)"; done
+need "the full rule set" test "$(rules "$(cat "$WORKER_LOG.disallowed")")" = "$(rules "$want|$edits|$(write_rules "$tmp/zgone/sub")")"
 end
 
 reset; ticket t1
