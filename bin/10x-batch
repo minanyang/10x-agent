@@ -22,7 +22,8 @@
 // user accepted). S, S/batch and S/batch/<id> are made 0700, and a symlink at any of them is refused. init, run, drop,
 // approve, accept-green and loop first refuse an S equal to or inside the
 // main checkout, a worktree, a path the worker sandbox may write, or a sandbox.filesystem.allowWrite of the project's
-// or the user's .claude/settings.json or settings.local.json (`state dir <S> is inside <path>`).
+// or the user's .claude/settings.json or settings.local.json, or of the same two files in CLAUDE_CONFIG_DIR, when set,
+// resolved against the main checkout (`state dir <S> is inside <path>`).
 // The rest lives in the main checkout's .10x/_batch/: `board.md`, and per ticket <id>/: <nn>-<kind>.jsonl (the
 // worker's stream-json), <nn>-denials.tsv (`<tool>\t<command, file or tool>`), turn.md (every assistant text of the
 // latest run), reply.md (the next reply, moved to <nn>-reply.md once sent), <nn>-landed (the base and sha a close run
@@ -50,7 +51,9 @@
 // (auto mode unavailable), it is stopped and the turn runs again as a new run in the mode used before auto mode: a plan
 // session in default with Edit(.10x/<id>/**) allowed, implement and close in acceptEdits. Every run gets
 // --disallowedTools for the commands hooks/grant.js always asks for (10x-land issue/comment/advisory, 10x-batch
-// approve/init/accept-green, 10x-security set/remove/ticket), Edit of S and of the four settings files, and Edit of what
+// approve/init/accept-green, 10x-security set/remove/ticket), Edit of S and of the settings files (the main
+// checkout's .claude/, ~/.claude/ and, when set, $CLAUDE_CONFIG_DIR's settings.json and settings.local.json, each also
+// as a real path and its symlink target), and Edit of what
 // a process outside the sandbox runs (writeDeny(): the git common dir, every <worktree dir>/*/.git, the main checkout's
 // .envrc, the zsh files of $ZDOTDIR and $HOME/.zshenv, the bash, git, ssh and login-agent files of $HOME, the plugin
 // root, each as a real path and, when a symlink, its target too), and --settings right
@@ -149,7 +152,30 @@ const CLOSED = path.join(SB, 'versions.closed')
 const ROADMAP = path.join(TENX_DIR, 'roadmap.md')
 // What a worker's sandboxed Bash may write besides the working directory, and the settings that could widen it.
 const ALLOW_WRITE = [os.tmpdir(), ...['.npm', 'Library/pnpm', 'Library/Caches', '.cache', 'Library/Developer'].map((x) => path.join(HOME, x)), '/dev/stdout', '/dev/fd']
-const SETTINGS_FILES = [path.join(ROOT, '.claude'), path.join(HOME, '.claude')].flatMap((d) => [path.join(d, 'settings.json'), path.join(d, 'settings.local.json')])
+// With CLAUDE_CONFIG_DIR set (empty included), Claude Code reads user settings there, resolved against its cwd: a
+// worker's is ROOT.
+const configDir = process.env.CLAUDE_CONFIG_DIR
+const SETTINGS_FILES = [path.join(ROOT, '.claude'), path.join(HOME, '.claude'), ...(configDir === undefined ? [] : [path.resolve(ROOT, configDir)])]
+  .flatMap((d) => [path.join(d, 'settings.json'), path.join(d, 'settings.local.json')])
+// <p>'s real path; through a dangling symlink, at it or at an ancestor, the path the link names, as far as it resolves.
+function real(p) {
+  for (let hops = 0; hops < 40; hops++) {
+    try {
+      return canonical(p)
+    } catch {
+      // The deepest existing ancestor (or p itself) is a dangling link: follow it, keep the rest of the path.
+      const rest = []
+      let cur = p
+      while (!fs.lstatSync(cur, { throwIfNoEntry: false })) {
+        rest.unshift(path.basename(cur))
+        cur = path.dirname(cur)
+      }
+      if (!fs.lstatSync(cur).isSymbolicLink()) return p
+      p = path.join(path.resolve(path.dirname(cur), fs.readlinkSync(cur)), ...rest)
+    }
+  }
+  return p
+}
 // What a process outside the sandbox later runs — git, a shell, a login agent, this plugin's scripts — which a worker's
 // Write and Edit tools must not reach: real paths, plus the real path of any that is a symlink. zsh reads $HOME/.zshenv
 // before ZDOTDIR is set; a relative ZDOTDIR or XDG_CONFIG_HOME is ignored. `<worktree dir>/*/.git` covers the worktrees
@@ -157,24 +183,6 @@ const SETTINGS_FILES = [path.join(ROOT, '.claude'), path.join(HOME, '.claude')].
 // the link names, as far as it resolves.
 // Built by run() only.
 function writeDeny() {
-  const real = (p) => {
-    for (let hops = 0; hops < 40; hops++) {
-      try {
-        return canonical(p)
-      } catch {
-        // The deepest existing ancestor (or p itself) is a dangling link: follow it, keep the rest of the path.
-        const rest = []
-        let cur = p
-        while (!fs.lstatSync(cur, { throwIfNoEntry: false })) {
-          rest.unshift(path.basename(cur))
-          cur = path.dirname(cur)
-        }
-        if (!fs.lstatSync(cur).isSymbolicLink()) return p
-        p = path.join(path.resolve(path.dirname(cur), fs.readlinkSync(cur)), ...rest)
-      }
-    }
-    return p
-  }
   const abs = (v) => (v && path.isAbsolute(v) ? real(v) : null)
   const home = canonical(HOME)
   const zdot = abs(process.env.ZDOTDIR) || home
@@ -1036,7 +1044,7 @@ async function run(argv) {
     .flatMap((c) => [`Bash(${c}:*)`, `Bash(${c} *)`])
     // The sandbox wraps only Bash: Write and Edit would otherwise reach the records, settings that widen the sandbox,
     // and files a process outside the sandbox runs.
-    .concat([`${S}/**`, ...SETTINGS_FILES, ...writeDeny()].map((p) => `Edit(/${p})`))
+    .concat([`${S}/**`, ...new Set(SETTINGS_FILES.flatMap((f) => [f, real(f)])), ...writeDeny()].map((p) => `Edit(/${p})`))
   // Today's mode for the session kind, used only when auto mode is unavailable.
   const fallback = sessionKind === 'plan' ? ['default', '--allowedTools', `Edit(.10x/${id}/**)`] : ['acceptEdits']
   const live = { child: null, signalled: false }

@@ -118,7 +118,7 @@ STUB
 chmod +x "$tmp/stub/gh" "$tmp/stub/worker"
 export PATH="$tmp/stub:$BIN:$PATH" STUB_LOG="$tmp/stub.log" WORKER_LOG="$tmp/worker.log" STUB_ISSUES="5 6 7 8 9"
 export TENX_BATCH_CLAUDE="$tmp/stub/worker"
-unset CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS TENX_BATCH_PLAN_DIR TENX_BATCH
+unset CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS TENX_BATCH_PLAN_DIR TENX_BATCH CLAUDE_CONFIG_DIR
 # The worker's write rules follow ZDOTDIR and XDG_CONFIG_HOME: the cases set them where they matter.
 unset ZDOTDIR XDG_CONFIG_HOME
 
@@ -703,8 +703,45 @@ need "the permission flags are unchanged" test "$(tr '\n' ',' <"$WORKER_LOG.perm
   "--permission-mode auto,--permission-mode default --allowedTools Edit(.10x/t1/**),--permission-mode auto,--permission-mode auto,--permission-mode acceptEdits,--permission-mode auto,"
 end
 
+begin "run: with CLAUDE_CONFIG_DIR set, every worker is also denied Edit of its two settings files"
+# <value>=<directory it resolves to>: absolute, empty (the main checkout) and relative (under the main checkout).
+for vd in "$tmp/cfg=$tmp/cfg" "=$root" "cfg=$root/cfg"; do
+  reset; ticket t1
+  export CLAUDE_CONFIG_DIR="${vd%%=*}"; d="${vd#*=}"
+  vb init t1
+  vb run t1 plan
+  need "exit 0 with CLAUDE_CONFIG_DIR='$CLAUDE_CONFIG_DIR'" test $? -eq 0
+  need "with CLAUDE_CONFIG_DIR='$CLAUDE_CONFIG_DIR', the rules gain $d's two settings files" \
+    test "$(rules "$(head -1 "$WORKER_LOG.disallowed")")" = \
+    "$(rules "$want|$edits|Edit(/$d/settings.json)|Edit(/$d/settings.local.json)|$(write_rules)")"
+done
+unset CLAUDE_CONFIG_DIR
+reset; ticket t1
+vb init t1
+vb run t1 plan
+need "exit 0 with CLAUDE_CONFIG_DIR unset" test $? -eq 0
+need "unset, the rules are unchanged" test "$(rules "$(head -1 "$WORKER_LOG.disallowed")")" = "$(rules "$want|$edits|$(write_rules)")"
+end
+
 # denies <rule> — the first run's --disallowedTools holds <rule> exactly.
 denies() { head -1 "$WORKER_LOG.disallowed" | tr '|' '\n' | grep -qxF -- "$1"; }
+
+reset; ticket t1
+begin "run: a symlinked or dangling settings path is denied where it points"
+# ~/.claude is a link to hreal, CLAUDE_CONFIG_DIR a link to cfgreal, whose settings.local.json is a dangling link.
+mkdir -p "$tmp/h" "$tmp/hreal" "$tmp/cfgreal"; ln -s "$tmp/hreal" "$tmp/h/.claude"
+ln -s "$tmp/cfgreal" "$tmp/cfglink"; ln -s "$tmp/gone/s.json" "$tmp/cfgreal/settings.local.json"
+HOME="$tmp/h" CLAUDE_CONFIG_DIR="$tmp/cfglink" vb init t1
+HOME="$tmp/h" CLAUDE_CONFIG_DIR="$tmp/cfglink" vb run t1 plan
+need "exit 0" test $? -eq 0
+for r in "$tmp/h/.claude/settings.json" "$tmp/hreal/settings.json" "$tmp/h/.claude/settings.local.json" \
+  "$tmp/hreal/settings.local.json" "$tmp/cfglink/settings.json" "$tmp/cfgreal/settings.json" \
+  "$tmp/cfglink/settings.local.json" "$tmp/gone/s.json"; do
+  need "denies $r" denies "Edit(/$r)"
+done
+need "each rule once" test -z "$(head -1 "$WORKER_LOG.disallowed" | tr '|' '\n' | sort | uniq -d)"
+rm -rf "${tmp:?}/h" "${tmp:?}/hreal" "${tmp:?}/cfgreal" "${tmp:?}/cfglink"
+end
 
 reset; ticket t1
 echo '{"close":"local","worktreeDir":"wt"}' >.claude/10x.json
@@ -1554,6 +1591,22 @@ XDG_STATE_HOME="$root/xs" vb status
 need "status runs without the check" not has "state dir"
 rm -f .claude/settings.json .claude/settings.local.json; rm -rf "${tmp:?}/home"
 git worktree remove --force "$tmp/wt"; git branch -qD wtb
+end
+
+reset; ticket t1
+begin "records: refuses a state dir inside an allowWrite of the CLAUDE_CONFIG_DIR settings files"
+allow "$tmp/cfg/settings.json" "$tmp/a5"; allow "$tmp/cfg/settings.local.json" "$tmp/a6"
+for n in 5 6; do CLAUDE_CONFIG_DIR="$tmp/cfg" refused "$tmp/a$n/xs" "$tmp/a$n"; done
+allow "$root/settings.json" "$tmp/a7"
+CLAUDE_CONFIG_DIR="" refused "$tmp/a7/xs" "$tmp/a7"
+rm -f "$root/settings.json"; rm -rf "${tmp:?}/cfg"
+end
+
+reset; ticket t1
+begin "records: with CLAUDE_CONFIG_DIR set, an allowWrite in ~/.claude/settings.json still refuses"
+allow "$tmp/home/.claude/settings.json" "$tmp/a3"
+CLAUDE_CONFIG_DIR="$tmp/cfg" refused "$tmp/a3/xs" "$tmp/a3" "$tmp/home"
+rm -rf "${tmp:?}/home"
 end
 
 reset; ticket t1 t2 t3
