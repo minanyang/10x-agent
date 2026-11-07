@@ -9,7 +9,10 @@ fail=0
 ok()  { echo "ok    $1"; }
 bad() { echo "FAIL  $1"; fail=1; }
 
-tmp=$(mktemp -d)
+tmp=$(cd "$(mktemp -d)" && pwd -P)
+# The conductor's temp dir and the state dir both lie under $tmp, outside each other and outside the repository.
+mkdir "$tmp/t"
+export TMPDIR="$tmp/t" XDG_STATE_HOME="$tmp/state"
 sleepers=()
 bgs=()
 cleanup() {
@@ -43,13 +46,14 @@ esac
 exit 0
 STUB
 # The worker: logs <flag> TAB <session> TAB <cwd> TAB <prompt after --> (and its background-task ceiling, its
-# permission flags, its --disallowedTools rules joined by | and its TENX_BATCH_PLAN_DIR) and prints
+# permission flags, its --disallowedTools rules joined by | , its --settings value, whether that flag came right after
+# --verbose, and its TENX_BATCH_PLAN_DIR) and prints
 # $WORKER_OUT (else one text turn whose init reports the mode it was started in, after a SessionStart hook event as a
 # real worker's log has), then waits $WORKER_SLEEP seconds as the same process (exit 143 on SIGTERM), or exits
 # $WORKER_EXIT. Started in auto mode with $WORKER_MODE set, its init reports $WORKER_MODE instead and it waits for SIGTERM.
 cat >"$tmp/stub/worker" <<'STUB'
 #!/bin/bash
-prompt="" flag="" session="" mode="" perm=() deny=() in=""
+prompt="" flag="" session="" mode="" perm=() deny=() in="" settings=unset right=no
 hook='{"type":"system","subtype":"hook_started","hook_event":"SessionStart"}'
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -58,6 +62,8 @@ while [ $# -gt 0 ]; do
     --permission-mode) mode="$2"; perm+=("$1" "$2"); in=perm; shift 2 ;;
     --allowedTools) perm+=("$1"); in=perm; shift ;;
     --disallowedTools) in=deny; shift ;;
+    --verbose) [ "${2-}" = --settings ] && right=yes; in=""; shift ;;
+    --settings) settings="$2"; in=""; shift 2 ;;
     -*) in=""; shift ;;
     *) case "$in" in perm) perm+=("$1") ;; deny) deny+=("$1") ;; esac; shift ;;
   esac
@@ -66,6 +72,8 @@ printf '%s\t%s\t%s\t%s\n' "$flag" "$session" "$PWD" "${prompt//$'\n'/ }" >>"$WOR
 printf '%s\n' "${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS-unset}" >>"$WORKER_LOG.ceiling"
 printf '%s\n' "${perm[*]}" >>"$WORKER_LOG.perm"
 (IFS='|'; printf '%s\n' "${deny[*]}") >>"$WORKER_LOG.disallowed"
+printf '%s\n' "$settings" >>"$WORKER_LOG.settings"
+printf '%s\n' "$right" >>"$WORKER_LOG.afterverbose"
 printf '%s\n' "${TENX_BATCH_PLAN_DIR-unset}" >>"$WORKER_LOG.plandir"
 printf '%s\n' "${TENX_BATCH-unset}" >>"$WORKER_LOG.env"
 # With $WORKER_SCRIPT=flow the worker also does what a real one would, then prints its usual turn: /10x:work writes a
@@ -124,6 +132,23 @@ git remote set-url origin git@github.com:acme/batch.git
 mkdir -p .claude
 root="$(pwd -P)"
 B=.10x/_batch
+# state_dir — S as AC2 defines it: <base>/10x/<first 16 hex of sha256 of realpath(git common dir)>, canonical.
+state_dir() {
+  node -e '
+    const fs = require("fs"), os = require("os"), path = require("path")
+    const { execFileSync } = require("child_process"), { createHash } = require("crypto")
+    const common = fs.realpathSync(execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim())
+    const h = createHash("sha256").update(common).digest("hex").slice(0, 16)
+    const x = process.env.XDG_STATE_HOME
+    const base = x && path.isAbsolute(x) ? x : path.join(os.homedir(), ".local", "state")
+    let cur = path.join(base, "10x", h)
+    const rest = []
+    while (!fs.lstatSync(cur, { throwIfNoEntry: false })) { rest.unshift(path.basename(cur)); cur = path.dirname(cur) }
+    console.log(path.join(fs.realpathSync(cur), ...rest))
+  '
+}
+S="$(state_dir)"
+SB="$S/batch"
 
 # ---------------------------------------------------------------- helpers
 
@@ -131,8 +156,9 @@ reset() {
   local p
   for p in ${sleepers[@]+"${sleepers[@]}"} ${bgs[@]+"${bgs[@]}"}; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
   sleepers=(); bgs=()
-  rm -rf .10x .worktrees .git/10x-batch
+  rm -rf .10x .worktrees .git/10x-batch "$XDG_STATE_HOME"
   : >"$WORKER_LOG"; : >"$WORKER_LOG.perm"; : >"$WORKER_LOG.disallowed"; : >"$WORKER_LOG.plandir"; : >"$STUB_LOG"
+  : >"$WORKER_LOG.settings"; : >"$WORKER_LOG.afterverbose"
   : >"$WORKER_LOG.env"; : >"$WORKER_LOG.sessions"
   echo '{"close":"local"}' >.claude/10x.json
 }
@@ -150,8 +176,8 @@ lp() {
 }
 printed() { [ "$(cat "$tmp/loop.out")" = "$1" ] || { echo "        printed: $(cat "$tmp/loop.out") (want $1)"; false; }; }
 finished() { [ "$LRC" -ne 124 ]; }
-# snap — every file under .10x and .git with its checksum.
-snap() { find .10x .git -type f -print0 | sort -z | xargs -0 cksum; }
+# snap — every file under .10x, .git and the state dir with its checksum.
+snap() { find .10x .git "$XDG_STATE_HOME" -type f -print0 2>/dev/null | sort -z | xargs -0 cksum; }
 # fetched <n> — an `issue view <n>` call that is not the author lookup.
 fetched() { grep "^issue view $1 " "$STUB_LOG" | grep -v -- '--json author' | grep -q .; }
 # The fixed reply of auto mode, byte for byte.
@@ -194,8 +220,8 @@ plan_md() {
 }
 # row <id> <kind> <session_kind> <exit | open:<pid>> — a run record written by hand.
 row() {
-  local f="$B/$1/runs.tsv" n
-  mkdir -p "$B/$1"
+  local f="$SB/$1/runs.tsv" n
+  mkdir -p "$SB/$1"
   [ -f "$f" ] || printf 'n\tkind\tsession\tsession_kind\tstart\tend\texit\tpid\n' >"$f"
   n=$(($(wc -l <"$f")))
   if [[ $4 == open:* ]]; then printf '%s\t%s\ts-%s-%s\t%s\t1\t\t\t%s\n' "$n" "$2" "$1" "$n" "$3" "${4#open:}" >>"$f"
@@ -217,12 +243,12 @@ run_bg() {
   WORKER_SLEEP=300 10x-batch run "$1" "$2" >"$tmp/bg.out" 2>&1 &
   BG=$!; bgs+=("$BG")
   for _ in $(seq 1 100); do
-    awk -F'\t' 'NR > 1 && $6 == "" && $8 != "" { f = 1 } END { exit !f }' "$B/$1/runs.tsv" 2>/dev/null && return 0
+    awk -F'\t' 'NR > 1 && $6 == "" && $8 != "" { f = 1 } END { exit !f }' "$SB/$1/runs.tsv" 2>/dev/null && return 0
     sleep 0.1
   done
   return 1
 }
-field() { awk -F'\t' -v n="$2" -v c="$3" 'NR == n + 1 { print $c }' "$B/$1/runs.tsv"; } # <id> <run n> <column>
+field() { awk -F'\t' -v n="$2" -v c="$3" 'NR == n + 1 { print $c }' "$SB/$1/runs.tsv"; } # <id> <run n> <column>
 # roadmap <row>... — a .10x/roadmap.md holding <row>s and the three sections.
 roadmap() {
   mkdir -p .10x
@@ -257,7 +283,7 @@ mkdir -p .10x/gh-5 && echo "kept" >.10x/gh-5/ticket.md
 begin "init: gh ids, a number, a search and an existing id resolve"
 STUB_SEARCH='[{"number":9},{"number":5}]' vb init gh-5 6 '#7' https://github.com/acme/batch/issues/8 t1 gh-5 --search "label:batch"
 need "exit 0" test $? -eq 0
-need "tickets in intake order, deduplicated" test "$(tr '\n' ' ' <"$B/tickets")" = "gh-5 gh-6 gh-7 gh-8 t1 gh-9 "
+need "tickets in intake order, deduplicated" test "$(tr '\n' ' ' <"$SB/tickets")" = "gh-5 gh-6 gh-7 gh-8 t1 gh-9 "
 need "an existing ticket.md is fetched again" grep -qx '# Issue 5' .10x/gh-5/ticket.md
 need "gh-5 is fetched" fetched 5
 need "the others are fetched" grep -qx '# Issue 9' .10x/gh-9/ticket.md
@@ -271,13 +297,13 @@ end
 reset; ticket t1 v3
 roadmap '| v1 | first `t1`; second `gh-5`; use `md-check.js` | base | Planned |' '| v3 | x `t1` | y | Planned |'
 begin "init: a roadmap version resolves to its row's ticket ids"
-need "a ticket id wins over a version of that name" eval 'exits 0 init v3 && test "$(cat "$B/tickets")" = v3 && test ! -e "$B/versions"'
+need "a ticket id wins over a version of that name" eval 'exits 0 init v3 && test "$(cat "$SB/tickets")" = v3 && test ! -e "$SB/versions"'
 vb drop v3
 need "exit 0" exits 0 init v1 t1
-need "its ids, deduplicated with the other arguments" test "$(tr '\n' ' ' <"$B/tickets")" = "t1 gh-5 "
+need "its ids, deduplicated with the other arguments" test "$(tr '\n' ' ' <"$SB/tickets")" = "t1 gh-5 "
 need "gh-5 is fetched like any argument" grep -qx '# Issue 5' .10x/gh-5/ticket.md
-need "the version is recorded" test "$(cat "$B/versions")" = v1
-need "no closed ids" test ! -e "$B/versions.closed"
+need "the version is recorded" test "$(cat "$SB/versions")" = v1
+need "no closed ids" test ! -e "$SB/versions.closed"
 need "an unknown name is still no ticket" eval 'exits 2 init v9 && has "10x-batch: no ticket: v9 (no .10x/v9/ticket.md)"'
 end
 
@@ -297,8 +323,8 @@ roadmap '| v1 | a `gh-5`; b `gh-6`; c `gh-7` | base | Planned |'
 begin "init: a version leaves out its closed issues and counts them as landed"
 STUB_CLOSED="6 7" vb init v1
 need "exit 0" test $? -eq 0
-need "only the open issue is batched" test "$(cat "$B/tickets")" = gh-5
-need "the closed ones are recorded" test "$(tr '\n' ' ' <"$B/versions.closed")" = "gh-6 gh-7 "
+need "only the open issue is batched" test "$(cat "$SB/tickets")" = gh-5
+need "the closed ones are recorded" test "$(tr '\n' ' ' <"$SB/versions.closed")" = "gh-6 gh-7 "
 need "their state was asked of origin's repo" grep -qxF 'issue view 6 --repo github.com/acme/batch --json state' "$STUB_LOG"
 need "a closed issue is not fetched" test ! -e .10x/gh-6
 need "not done while gh-5 is open" eval 'vb status && not has "roadmap: " && grep -qF "| Planned |" .10x/roadmap.md'
@@ -312,8 +338,8 @@ printf 'landed on main at abc1234\n' >.10x/t1/landed
 mkdir -p .10x/gh-5 && printf 'landed on main at abc1234\n' >.10x/gh-5/landed
 begin "init: a version leaves out its landed tickets and counts them as landed"
 need "exit 0" exits 0 init v1
-need "only the open ticket is queued" test "$(cat "$B/tickets")" = t2
-need "the landed ones are recorded" test "$(tr '\n' ' ' <"$B/versions.closed")" = "t1 gh-5 "
+need "only the open ticket is queued" test "$(cat "$SB/tickets")" = t2
+need "the landed ones are recorded" test "$(tr '\n' ' ' <"$SB/versions.closed")" = "t1 gh-5 "
 need "no issue view for the landed gh ticket" not grep -q '^issue view 5 ' "$STUB_LOG"
 need "not done while t2 is open" eval 'not has "roadmap: " && grep -qF "| Planned |" .10x/roadmap.md'
 end
@@ -334,15 +360,15 @@ roadmap '| v1 | a `t1`; b `t2` | base | Planned |'
 printf 'landed on main at abc1234\n' >.10x/t1/landed
 begin "init: a landed ticket named directly is queued again"
 need "init t1 exits 0" exits 0 init t1
-need "t1 is queued" test "$(cat "$B/tickets")" = t1
+need "t1 is queued" test "$(cat "$SB/tickets")" = t1
 vb drop t1
 need "init t1 v1 exits 0" exits 0 init t1 v1
-need "t1 and t2 are queued" test "$(tr '\n' ' ' <"$B/tickets")" = "t1 t2 "
-need "t1 is not counted as landed" not grep -qx t1 "$B/versions.closed"
+need "t1 and t2 are queued" test "$(tr '\n' ' ' <"$SB/tickets")" = "t1 t2 "
+need "t1 is not counted as landed" not grep -qx t1 "$SB/versions.closed"
 vb drop t1; vb drop t2
 need "init v1 t1 exits 0" exits 0 init v1 t1
-need "t1 is queued whatever the order" test "$(tr '\n' ' ' <"$B/tickets")" = "t2 t1 "
-need "t1 is still not counted as landed" not grep -qx t1 "$B/versions.closed"
+need "t1 is queued whatever the order" test "$(tr '\n' ' ' <"$SB/tickets")" = "t2 t1 "
+need "t1 is still not counted as landed" not grep -qx t1 "$SB/versions.closed"
 end
 
 reset; ticket t1 t2
@@ -377,24 +403,24 @@ end
 reset; ticket t1
 begin "init: --auto records auto, without it default, and the board shows the mode"
 need "init --auto exits 0" exits 0 init --auto t1
-need "mode holds auto" test "$(cat "$B/mode")" = auto
-need "the file is the word and a newline" test "$(wc -c <"$B/mode" | tr -d ' ')" = 5
+need "mode holds auto" test "$(cat "$SB/mode")" = auto
+need "the file is the word and a newline" test "$(wc -c <"$SB/mode" | tr -d ' ')" = 5
 need "board line 1" test "$(sed -n 1p "$B/board.md")" = "# Batch board"
 need "then a blank line" test -z "$(sed -n 2p "$B/board.md")"
 need "then mode: auto" test "$(sed -n 3p "$B/board.md")" = "mode: auto"
 need "then a blank line, then the table" eval 'test -z "$(sed -n 4p "$B/board.md")" && test "$(sed -n 5p "$B/board.md")" = "| # | Ticket | Phase | Session | Outcome | Evidence |"'
 need "status prints mode: auto" eval 'vb status && line "mode: auto"'
-need "a repeated --auto is the same flag" eval 'vb drop t1 && exits 0 init --auto --auto t1 && test "$(cat "$B/mode")" = auto'
+need "a repeated --auto is the same flag" eval 'vb drop t1 && exits 0 init --auto --auto t1 && test "$(cat "$SB/mode")" = auto'
 vb drop t1
 need "init without --auto exits 0" exits 0 init t1
-need "mode holds default" test "$(cat "$B/mode")" = default
+need "mode holds default" test "$(cat "$SB/mode")" = default
 need "status prints mode: default" eval 'vb status && line "mode: default"'
 need "the board says default" test "$(sed -n 3p "$B/board.md")" = "mode: default"
 vb drop t1
-need "--search takes --auto as its query" eval 'STUB_SEARCH="[{\"number\":5}]" exits 0 init --search --auto && test "$(cat "$B/mode")" = default && test "$(cat "$B/tickets")" = gh-5'
-echo "junk" >"$B/mode"
+need "--search takes --auto as its query" eval 'STUB_SEARCH="[{\"number\":5}]" exits 0 init --search --auto && test "$(cat "$SB/mode")" = default && test "$(cat "$SB/tickets")" = gh-5'
+echo "junk" >"$SB/mode"
 need "anything but auto reads as default" eval 'vb status && line "mode: default"'
-rm -f "$B/mode"
+rm -f "$SB/mode"
 need "a batch with no mode file is default" eval 'vb status && line "mode: default"'
 end
 
@@ -442,8 +468,8 @@ for m in default auto; do
   rm -rf "$B" .10x/gh-5 .10x/gh-6
   vb init ${fl[@]+"${fl[@]}"} gh-5 t1 gh-6
   need "$m: exit 0" test $? -eq 0
-  need "$m: all three are batched" test "$(tr '\n' ' ' <"$B/tickets")" = "gh-5 t1 gh-6 "
-  need "$m: the mode is recorded" test "$(cat "$B/mode")" = "$m"
+  need "$m: all three are batched" test "$(tr '\n' ' ' <"$SB/tickets")" = "gh-5 t1 gh-6 "
+  need "$m: the mode is recorded" test "$(cat "$SB/mode")" = "$m"
 done
 rm -rf "$B"; : >"$STUB_LOG"
 need "ticket files alone call no gh" eval 'exits 0 init --auto t1 && test ! -s "$STUB_LOG"'
@@ -486,7 +512,7 @@ begin "board: an auto-approved ticket shows auto-approved with its hash"
 vb init --auto t1 t2 t3
 approved t1 a; approved t2 b
 h="$(sed 's/^Status:.*$/Status:/' .10x/t1/plan.md | shasum -a 256 | cut -d' ' -f1)"
-printf '%s\n' "$h" >"$B/t1/auto-approved"
+printf '%s\n' "$h" >"$SB/t1/auto-approved"
 vb status
 need "the approved row reads auto-approved (sha256 <12 hex>)" grep -qxF "| 1 | t1 | approved | $(field t1 1 3) | — | auto-approved (sha256 ${h:0:12}) |" "$B/board.md"
 need "a ticket you approved shows none" not grep -q "| t2 |.*auto-approved" "$B/board.md"
@@ -495,11 +521,11 @@ row t1 implement implement 0; evidence t1 "- AC1 — met: x"; mkdir -p .worktree
 row t1 close close 0; rmdir .worktrees/t1
 vb status
 need "a landed row keeps it, first" grep -qxF "| 1 | t1 | landed | $(field t1 3 3) | landed | auto-approved (sha256 ${h:0:12}); landed on main at $(git rev-parse --short main) |" "$B/board.md"
-touch "$B/t1/dropped"
+touch "$SB/t1/dropped"
 vb status
 need "a dropped ticket shows none" grep -qxF "| 1 | t1 | dropped | $(field t1 3 3) | dropped | dropped by the user |" "$B/board.md"
 row t3 plan plan 0; plan_md t3 draft c; echo "q" >"$B/t3/turn.md"
-printf '%s\n' "0123456789abcdef0123456789abcdef" >"$B/t3/auto-approved"
+printf '%s\n' "0123456789abcdef0123456789abcdef" >"$SB/t3/auto-approved"
 vb status
 need "it shows under Needs the human too" grep -qxF -- "- t3 — waiting, plan approvable: auto-approved (sha256 0123456789ab); .10x/_batch/t3/turn.md" "$B/board.md"
 end
@@ -518,7 +544,7 @@ TENX_BATCH_PLAN_DIR=/elsewhere vb run t1 close
 need "five runs" test "$(wc -l <"$WORKER_LOG.perm" | tr -d ' ')" = 5
 need "each in auto mode with no other permission flag" test "$(sort -u "$WORKER_LOG.perm")" = "--permission-mode auto"
 need "no --allowedTools" not grep -qF -- --allowedTools "$WORKER_LOG.perm"
-need "no fallback" eval 'test -z "$(find "$B/t1" -name "*-fallback")" && test "$(wc -l <"$B/t1/runs.tsv" | tr -d " ")" = 6'
+need "no fallback" eval 'test -z "$(find "$B/t1" -name "*-fallback")" && test "$(wc -l <"$SB/t1/runs.tsv" | tr -d " ")" = 6'
 need "the plan and plan-reply runs get the ticket dir, implement and close no variable" \
   test "$(tr '\n' ' ' <"$WORKER_LOG.plandir")" = "$root/.10x/t1 $root/.10x/t1 unset unset unset "
 end
@@ -545,7 +571,7 @@ for k in plan reply implement close; do
   need "$k: names the issue and its author" line "10x-batch: not your issue: gh-5 (author other)"
 done
 need "no worker started" test ! -s "$WORKER_LOG"
-need "no run recorded" test ! -e "$B/gh-5/runs.tsv"
+need "no run recorded" test ! -e "$SB/gh-5/runs.tsv"
 STUB_AUTHORS="5:other" lp 30
 need "loop finished" finished
 need "loop reports it failed with the line as evidence" \
@@ -608,6 +634,9 @@ for c in "10x-land issue" "10x-land comment" "10x-land advisory" "10x-batch appr
   "10x-security set" "10x-security remove" "10x-security ticket"; do
   want+="${want:+|}Bash($c:*)|Bash($c *)"
 done
+edits="Edit(/$S/**)|Edit(/$root/.claude/settings.json)|Edit(/$root/.claude/settings.local.json)|Edit(/$HOME/.claude/settings.json)|Edit(/$HOME/.claude/settings.local.json)"
+# rules <lines> — each line's rules sorted, the lines made unique: the order of the rules within a run is not the case's concern.
+rules() { local l; while IFS= read -r l; do printf '%s\n' "$l" | tr '|' '\n' | sort | tr '\n' ' '; echo; done <<<"$1" | sort -u; }
 vb init t1 t2
 WORKER_MODE=default vb run t1 plan
 echo "go" >"$B/t1/reply.md"; vb run t1 reply
@@ -616,7 +645,7 @@ WORKER_MODE=default vb run t1 implement
 evidence t1 "- AC1 — met: x"; mkdir -p .worktrees/t1
 vb run t1 close
 need "six runs: plan and its fallback, reply, implement and its fallback, close" test "$(wc -l <"$WORKER_LOG.disallowed" | tr -d ' ')" = 6
-need "each run gets every rule" test "$(sort -u "$WORKER_LOG.disallowed")" = "$want"
+need "each run gets every rule, and the five Edit rules on the state dir and the settings files" test "$(rules "$(cat "$WORKER_LOG.disallowed")")" = "$(rules "$want|$edits")"
 need "the permission flags are unchanged" test "$(tr '\n' ',' <"$WORKER_LOG.perm")" = \
   "--permission-mode auto,--permission-mode default --allowedTools Edit(.10x/t1/**),--permission-mode auto,--permission-mode auto,--permission-mode acceptEdits,--permission-mode auto,"
 end
@@ -689,10 +718,10 @@ s1="$(field t1 1 3)"
 need "resumes t1's session from the main checkout with t1's reply" test "$(tail -n 1 "$WORKER_LOG")" = "$(printf -- '--resume\t%s\t%s\tanswer for t1 ' "$s1" "$root")"
 need "the reply is moved to 02-reply.md" eval 'test ! -e "$B/t1/reply.md" && test "$(cat "$B/t1/02-reply.md")" = "answer for t1"'
 need "t2's reply stays" test "$(cat "$B/t2/reply.md")" = "answer for t2"
-need "the record: reply, same session, session kind plan, exit 0" test "$(cut -f1-4,7 "$B/t1/runs.tsv" | sed -n 3p)" = "$(printf '2\treply\t%s\tplan\t0' "$s1")"
-need "the header" test "$(head -n 1 "$B/t1/runs.tsv")" = "$(printf 'n\tkind\tsession\tsession_kind\tstart\tend\texit\tpid')"
+need "the record: reply, same session, session kind plan, exit 0" test "$(cut -f1-4,7 "$SB/t1/runs.tsv" | sed -n 3p)" = "$(printf '2\treply\t%s\tplan\t0' "$s1")"
+need "the header" test "$(head -n 1 "$SB/t1/runs.tsv")" = "$(printf 'n\tkind\tsession\tsession_kind\tstart\tend\texit\tpid')"
 need "a plan run starts a new session" test "$(sed -n 1p "$WORKER_LOG" | cut -f1,4)" = "$(printf -- '--session-id\t/10x:work t1')"
-sed -i.bak "s/$s1/--dangerously-skip-permissions/" "$B/t1/runs.tsv"; rm "$B/t1/runs.tsv.bak"
+sed -i.bak "s/$s1/--dangerously-skip-permissions/" "$SB/t1/runs.tsv"; rm "$SB/t1/runs.tsv.bak"
 echo "again" >"$B/t1/reply.md"
 need "a session that is not a uuid is refused" exits 2 run t1 reply
 need "names it" has "its latest session '--dangerously-skip-permissions' is not a session id"
@@ -753,6 +782,7 @@ need "recorded as an implement run" test "$(field t1 2 2)/$(field t1 2 4)" = imp
 need "t2 still planning" phase_is t2 planning
 end
 
+if ps -o command= -p $$ >/dev/null 2>&1; then
 reset; ticket t1 t2
 begin "drop: stops the running worker, marks dropped, never scheduled again"
 vb init t1 t2
@@ -763,24 +793,27 @@ need "drop exits 0" exits 0 drop t1
 wait "$BG"
 need "the worker is stopped" not kill -0 "$wpid" 2>/dev/null
 need "its run is recorded as killed" test "$(field t1 2 7)" = 143
-need "the marker" test -f "$B/t1/dropped"
+need "the marker" test -f "$SB/t1/dropped"
 need "the row is dropped" phase_is t1 dropped
 need "t1 is never scheduled" acts_are "plan t2"
 sleeper; row t2 plan plan "open:$SLEEPER"
 need "drop of a run whose pid is not its worker" exits 0 drop t2
 need "leaves that process alone" kill -0 "$SLEEPER"
-kill "$SLEEPER"; wait "$SLEEPER" 2>/dev/null; rm "$B/t2/runs.tsv" "$B/t2/dropped"
+kill "$SLEEPER"; wait "$SLEEPER" 2>/dev/null; rm "$SB/t2/runs.tsv" "$SB/t2/dropped"
 need "run plan refused" exits 2 run t1 plan
 need "run implement refused" exits 2 run t1 implement
 need "drop of a queued ticket" exits 0 drop t2
 need "nothing left to schedule" acts_are "done"
 need "a settled batch is archived by the next init" exits 0 init t2
-need "into _batch.<stamp>" eval 'ls -d .10x/_batch.2* >/dev/null 2>&1 && test "$(cat "$B/tickets")" = t2'
+need "into _batch.<stamp>" eval 'ls -d .10x/_batch.2* >/dev/null 2>&1 && test "$(cat "$SB/tickets")" = t2'
 approved t2 a
 need "t2 implements in the background" run_bg t2 implement
 need "init refuses an unsettled batch" exits 2 init t1
 need "naming its tickets" has "has unsettled tickets: t2 (implementing)"
 end
+else
+  echo "skip: drop — ps is not permitted here"
+fi
 
 reset; ticket t1 t2
 begin "approve: records the plan's hash under the git dir, and approved needs a matching record"
@@ -790,7 +823,7 @@ need "a ticket with no approvable plan is refused" exits 2 approve t2
 need "names why" has "approve t2 refused: t2 is waiting and its plan.md is not a draft that passes 10x-plan-check"
 need "approve exits 0" exits 0 approve t1
 need "it names the plan it approved, with its hash" grep -qE '^plan: \.10x/t1/plan\.md sha256 [0-9a-f]{12}$' "$tmp/out"
-need "the record is under the git dir, outside .10x" test -s .git/10x-batch/t1.approved
+need "the record is in the state dir, outside .10x and the git dir" test -s "$S/t1.approved"
 need "it writes the approve reply" grep -qF 'Approved. Set `Status: approved` in plan.md and stop' "$B/t1/reply.md"
 plan_md t1 approved a
 need "approved once the worker marks it" phase_is t1 approved
@@ -803,7 +836,7 @@ need "neither implements" acts_are "done"
 need "a ticket batched again" exits 0 init t1
 row t1 plan plan 0
 plan_md t1 approved a
-need "needs a new approval for the plan approved before" eval 'test ! -e .git/10x-batch/t1.approved && phase_is t1 failed'
+need "needs a new approval for the plan approved before" eval 'test ! -e $S/t1.approved && phase_is t1 failed'
 end
 
 # ---------------------------------------------------------------- schedule
@@ -1029,7 +1062,7 @@ need "queued" phase_is t1 queued
 sleeper; row t1 plan plan "open:$SLEEPER"
 need "planning while the worker lives" phase_is t1 planning
 kill "$SLEEPER"; wait "$SLEEPER" 2>/dev/null
-rm "$B/t1/runs.tsv"; row t1 plan plan 0
+rm "$SB/t1/runs.tsv"; row t1 plan plan 0
 need "waiting with no plan" phase_is t1 waiting
 plan_md t1 draft
 need "waiting with a draft" phase_is t1 waiting
@@ -1055,7 +1088,7 @@ need "landed once it is gone" phase_is t1 landed
 need "landed on the base at its sha" grep -qF "| landed | landed on main at $(git rev-parse --short main) |" "$B/board.md"
 echo "landed on main at abc1234" >"$B/t1/03-landed"
 need "where its close run left it, not the base's tip" eval 'phase_is t1 landed && grep -qF "| landed | landed on main at abc1234 |" "$B/board.md"'
-touch "$B/t1/dropped"
+touch "$SB/t1/dropped"
 need "dropped" phase_is t1 dropped
 end
 
@@ -1081,9 +1114,9 @@ WORKER_SCRIPT=flow lp 90
 need "loop finished" finished
 need "t1 landed" phase_is t1 landed
 h="$(sed 's/^Status:.*$/Status:/' .10x/t1/plan.md | shasum -a 256 | cut -d' ' -f1)"
-need "the approval record matches the plan's hash" test "$(cat .git/10x-batch/t1.approved)" = "$h"
-need "auto-approved holds the hash" test "$(cat "$B/t1/auto-approved")" = "$h"
-need "plan, approve reply, implement and close, in one loop run" test "$(sed 1d "$B/t1/runs.tsv" | cut -f2 | tr '\n' ' ')" = "plan reply implement close "
+need "the approval record matches the plan's hash" test "$(cat "$S/t1.approved")" = "$h"
+need "auto-approved holds the hash" test "$(cat "$SB/t1/auto-approved")" = "$h"
+need "plan, approve reply, implement and close, in one loop run" test "$(sed 1d "$SB/t1/runs.tsv" | cut -f2 | tr '\n' ' ')" = "plan reply implement close "
 need "the reply was the approve reply" eval 'grep -qF "Approved. Set \`Status: approved\` in plan.md" "$B/t1/02-reply.md"'
 need "the board says how it was approved" grep -qF "auto-approved (sha256 ${h:0:12})" "$B/board.md"
 end
@@ -1097,8 +1130,8 @@ WORKER_SCRIPT=flow lp 90
 need "loop finished" finished
 need "both are approve items, with their turn as evidence" \
   printed '{"items":[{"id":"t1","need":"approve","evidence":".10x/_batch/t1/turn.md"},{"id":"t2","need":"approve","evidence":".10x/_batch/t2/turn.md"}]}'
-need "no approval record" test ! -e .git/10x-batch/t1.approved -a ! -e .git/10x-batch/t2.approved
-need "no auto-approved" test ! -e "$B/t1/auto-approved" -a ! -e "$B/t2/auto-approved"
+need "no approval record" test ! -e "$S/t1.approved" -a ! -e "$S/t2.approved"
+need "no auto-approved" test ! -e "$SB/t1/auto-approved" -a ! -e "$SB/t2/auto-approved"
 need "no reply" test ! -e "$B/t1/reply.md" -a ! -e "$B/t2/reply.md"
 need "both wait on their plan" eval 'phase_is t1 waiting && phase_is t2 waiting'
 end
@@ -1110,11 +1143,11 @@ STUB_COMMENTERS="5:me 5:other 6:me 6:ME" STUB_COMMENTS_FAIL="7" WORKER_SCRIPT=fl
 need "loop finished" finished
 need "gh-5 (a stranger's comment) and gh-7 (comments unknown) are approve items" \
   printed '{"items":[{"id":"gh-5","need":"approve","evidence":".10x/_batch/gh-5/turn.md"},{"id":"gh-7","need":"approve","evidence":".10x/_batch/gh-7/turn.md"}]}'
-need "no approval record for them" test ! -e .git/10x-batch/gh-5.approved -a ! -e .git/10x-batch/gh-7.approved
-need "no auto-approved for them" test ! -e "$B/gh-5/auto-approved" -a ! -e "$B/gh-7/auto-approved"
+need "no approval record for them" test ! -e "$S/gh-5.approved" -a ! -e "$S/gh-7.approved"
+need "no auto-approved for them" test ! -e "$SB/gh-5/auto-approved" -a ! -e "$SB/gh-7/auto-approved"
 need "both wait on their plan" eval 'phase_is gh-5 waiting && phase_is gh-7 waiting'
 need "gh-6, commented on only by its author in any case, was auto-approved and landed" \
-  eval 'test -s "$B/gh-6/auto-approved" && phase_is gh-6 landed'
+  eval 'test -s "$SB/gh-6/auto-approved" && phase_is gh-6 landed'
 end
 
 reset
@@ -1125,8 +1158,8 @@ WORKER_SCRIPT=flow lp 90
 need "loop finished" finished
 need "gh-8 is an approve item" \
   printed '{"items":[{"id":"gh-8","need":"approve","evidence":".10x/_batch/gh-8/turn.md"}]}'
-need "no approval record" test ! -e .git/10x-batch/gh-8.approved
-need "no auto-approved" test ! -e "$B/gh-8/auto-approved"
+need "no approval record" test ! -e "$S/gh-8.approved"
+need "no auto-approved" test ! -e "$SB/gh-8/auto-approved"
 end
 
 reset
@@ -1139,8 +1172,8 @@ WORKER_SCRIPT=flow lp 90
 need "loop finished" finished
 need "gh-9 is an approve item" \
   printed '{"items":[{"id":"gh-9","need":"approve","evidence":".10x/_batch/gh-9/turn.md"}]}'
-need "no approval record" test ! -e .git/10x-batch/gh-9.approved
-need "no auto-approved" test ! -e "$B/gh-9/auto-approved"
+need "no approval record" test ! -e "$S/gh-9.approved"
+need "no auto-approved" test ! -e "$SB/gh-9/auto-approved"
 end
 
 reset
@@ -1151,20 +1184,20 @@ STUB_COMMENTERS="5:other" vb init --auto gh-5
 need "exit 0" test $? -eq 0
 need "the left-over text is gone" eval '! grep -qx injected .10x/gh-5/ticket.md'
 need "ticket.md is the fresh fetch" grep -qF '**other** (2026-01-01):' .10x/gh-5/ticket.md
-need "the record is the fresh fetch's authors" test "$(cat .git/10x-batch/gh-5.commenters)" = other
+need "the record is the fresh fetch's authors" test "$(cat "$S/gh-5.commenters")" = other
 end
 
 reset
 begin "loop: a missing commenters record holds the plan"
 vb init --auto gh-5
-need "init wrote a record" test -e .git/10x-batch/gh-5.commenters
-rm .git/10x-batch/gh-5.commenters
+need "init wrote a record" test -e "$S/gh-5.commenters"
+rm "$S/gh-5.commenters"
 WORKER_SCRIPT=flow lp 90
 need "loop finished" finished
 need "gh-5 is an approve item" \
   printed '{"items":[{"id":"gh-5","need":"approve","evidence":".10x/_batch/gh-5/turn.md"}]}'
-need "no approval record" test ! -e .git/10x-batch/gh-5.approved
-need "no auto-approved" test ! -e "$B/gh-5/auto-approved"
+need "no approval record" test ! -e "$S/gh-5.approved"
+need "no auto-approved" test ! -e "$SB/gh-5/auto-approved"
 end
 
 reset; echo '{"close":"pr-merge"}' >.claude/10x.json; ticket t1
@@ -1206,7 +1239,7 @@ need "loop finished" finished
 need "the first waiting ticket is an answer item" \
   printed '{"items":[{"id":"t1","need":"answer","evidence":".10x/_batch/t1/turn.md"}]}'
 need "no reply.md" test ! -e "$B/t1/reply.md"
-need "no reply was sent" test "$(wc -l <"$B/t1/runs.tsv" | tr -d ' ')" = 2
+need "no reply was sent" test "$(wc -l <"$SB/t1/runs.tsv" | tr -d ' ')" = 2
 reset; ticket t1
 vb init t1
 WORKER_SCRIPT=flow lp 60
@@ -1214,8 +1247,8 @@ need "loop finished again" finished
 need "an approvable plan is an approve item" \
   printed '{"items":[{"id":"t1","need":"approve","evidence":".10x/_batch/t1/turn.md"}]}'
 need "no reply.md for it" test ! -e "$B/t1/reply.md"
-need "no approval record" test ! -e .git/10x-batch/t1.approved
-need "no auto-approved" test ! -e "$B/t1/auto-approved"
+need "no approval record" test ! -e "$S/t1.approved"
+need "no auto-approved" test ! -e "$SB/t1/auto-approved"
 end
 
 reset; ticket t1
@@ -1227,11 +1260,11 @@ for m in default auto; do
   WORKER_OUT="$tmp/question.jsonl" lp 90
   need "$m: first loop finished" finished
   need "$m: it stops on an answer item" has '"id":"t1","need":"answer"'
-  runs_before="$(wc -l <"$B/t1/runs.tsv" | tr -d ' ')"
+  runs_before="$(wc -l <"$SB/t1/runs.tsv" | tr -d ' ')"
   printf 'Use --fast.' >"$B/t1/reply.md"
   WORKER_OUT="$tmp/question.jsonl" lp 90
   need "$m: second loop finished" finished
-  need "$m: one more run" test "$(wc -l <"$B/t1/runs.tsv" | tr -d ' ')" = $((runs_before + 1))
+  need "$m: one more run" test "$(wc -l <"$SB/t1/runs.tsv" | tr -d ' ')" = $((runs_before + 1))
   last="$(printf '%02d' "$runs_before")"
   need "$m: the reply landed in <nn>-reply.md byte for byte" eval "printf 'Use --fast.' | cmp -s - \"$B/t1/$last-reply.md\""
   need "$m: it was sent to the worker" test "$(tail -n 1 "$WORKER_LOG" | cut -f1,4)" = "$(printf -- '--resume\tUse --fast.')"
@@ -1282,7 +1315,7 @@ begin "loop: a fourth question stop or a comment.md is an answer item"
 vb init --auto t1
 WORKER_OUT="$tmp/question.jsonl" lp 90
 need "loop finished" finished
-need "three fixed replies and a fourth stop make four runs" test "$(wc -l <"$B/t1/runs.tsv" | tr -d ' ')" = 5
+need "three fixed replies and a fourth stop make four runs" test "$(wc -l <"$SB/t1/runs.tsv" | tr -d ' ')" = 5
 need "the fourth stop is an answer item" printed '{"items":[{"id":"t1","need":"answer","evidence":".10x/_batch/t1/turn.md"}]}'
 need "no reply.md for it" test ! -e "$B/t1/reply.md"
 need "no fourth fixed reply" test ! -e "$B/t1/05-reply.md"
@@ -1292,7 +1325,187 @@ vb init --auto t1
 WORKER_OUT="$tmp/question.jsonl" lp 60
 need "loop finished with a comment.md" finished
 need "a comment.md ticket is an answer item" printed '{"items":[{"id":"t1","need":"answer","evidence":".10x/_batch/t1/turn.md"}]}'
-need "no fixed reply is written or sent" eval 'test ! -e "$B/t1/reply.md" && test "$(wc -l <"$B/t1/runs.tsv" | tr -d " ")" = 2'
+need "no fixed reply is written or sent" eval 'test ! -e "$B/t1/reply.md" && test "$(wc -l <"$SB/t1/runs.tsv" | tr -d " ")" = 2'
+end
+
+# ---------------------------------------------------------------- the state dir
+
+# mode_of <path> — the permission string of a directory, as `ls -ld` prints it.
+mode_of() { find "$1" -maxdepth 0 -type d -perm 0700 | grep -q . && echo drwx------ || echo "not 0700: $1"; }
+
+reset; ticket t1
+begin "records: approve, init and loop keep .approved and .commenters in the state dir and ignore the old location"
+vb init gh-5 t1
+need "init writes gh-5.commenters in the state dir" test -e "$S/gh-5.commenters"
+need "S and S/batch are 0700" eval '[ "$(mode_of "$S")" = drwx------ ] && [ "$(mode_of "$SB")" = drwx------ ]'
+vb run t1 plan
+need "S/batch/<id> is 0700" test "$(mode_of "$SB/t1")" = drwx------
+row t1 plan plan 0; plan_md t1 draft a
+need "approve exits 0" exits 0 approve t1
+need "approve writes t1.approved in the state dir" test -s "$S/t1.approved"
+need "nothing under <git common dir>/10x-batch" test ! -e .git/10x-batch
+plan_md t1 approved a
+need "approved with the record in the state dir" phase_is t1 approved
+mkdir -p .git/10x-batch; cp "$S/t1.approved" .git/10x-batch/t1.approved; rm "$S/t1.approved"
+need "a copy at the old location does not approve" phase_is t1 failed
+reset; ticket t1
+vb init --auto gh-5
+mkdir -p .git/10x-batch; cp "$S/gh-5.commenters" .git/10x-batch/gh-5.commenters; rm "$S/gh-5.commenters"
+WORKER_SCRIPT=flow lp 90
+need "loop finished" finished
+need "a commenters record at the old location does not release the plan" \
+  printed '{"items":[{"id":"gh-5","need":"approve","evidence":".10x/_batch/gh-5/turn.md"}]}'
+reset; ticket t1
+vb init --auto t1
+WORKER_SCRIPT=flow lp 90
+need "loop finished again" finished
+need "loop writes t1.approved in the state dir" test -s "$S/t1.approved"
+need "and nothing at the old location" test ! -e .git/10x-batch
+reset; ticket t1
+mkdir -p "$S" "$tmp/elsewhere"; ln -s "$tmp/elsewhere" "$SB"
+need "a symlink at S/batch is refused" exits 2 init t1
+need "naming it" has "$SB is a symlink"
+rm "$SB"; vb init t1
+rm -rf "$SB/t1"; ln -s "$tmp/elsewhere" "$SB/t1"
+need "a symlink at S/batch/<id> is refused" exits 2 run t1 plan
+need "naming it" has "$SB/t1 is a symlink"
+end
+
+# allow <settings file> <path> — a settings file whose sandbox.filesystem.allowWrite is [<path>].
+allow() { mkdir -p "$(dirname "$1")"; printf '{"sandbox":{"filesystem":{"allowWrite":["%s"]}}}\n' "$2" >"$1"; }
+# refused <XDG_STATE_HOME> <inside> [<HOME>] — the five commands exit 2 with the state dir naming <inside>, and create nothing.
+refused() {
+  local c want rc
+  want="10x-batch: state dir $(XDG_STATE_HOME=$1 state_dir) is inside $2"
+  for c in "init t1" "run t1 plan" "drop t1" "approve t1" "loop"; do
+    # shellcheck disable=SC2086  # the words of $c are the arguments
+    HOME="${3:-$HOME}" XDG_STATE_HOME="$1" vb $c; rc=$?
+    need "$c: exit 2 for $1" test "$rc" = 2
+    need "$c: names the state dir and what it is inside" line "$want"
+  done
+  need "nothing created under $1" test ! -e "$1"
+}
+
+reset; ticket t1
+git worktree add -q "$tmp/wt" -b wtb
+begin "records: refuses a state dir inside the checkout, a worktree, a sandbox-writable path or a settings allowWrite"
+refused "$root/xs" "$root"
+refused "$tmp/wt/xs" "$tmp/wt"
+refused "$TMPDIR/xs" "$TMPDIR"
+refused "$tmp/home/.npm/xs" "$tmp/home/.npm" "$tmp/home"
+allow .claude/settings.json "$tmp/a1"; allow .claude/settings.local.json "$tmp/a2"
+allow "$tmp/home/.claude/settings.json" "$tmp/a3"; allow "$tmp/home/.claude/settings.local.json" "$tmp/a4"
+for n in 1 2 3 4; do refused "$tmp/a$n/xs" "$tmp/a$n" "$tmp/home"; done
+XDG_STATE_HOME="$root/xs" vb status
+need "status runs without the check" not has "state dir"
+rm -f .claude/settings.json .claude/settings.local.json; rm -rf "${tmp:?}/home"
+git worktree remove --force "$tmp/wt"; git branch -qD wtb
+end
+
+reset; ticket t1 t2 t3
+roadmap '| v1 | a `t1`; b `t2`; c `t3` | base | Planned |'
+printf 'landed on main at abc1234\n' >.10x/t3/landed
+begin "records: tickets, mode, versions, runs.tsv, auto-approved and dropped live in the state dir and copies at the old paths are ignored"
+vb init v1
+for f in tickets mode versions versions.closed; do
+  need "$f is in S/batch" test -s "$SB/$f"
+  need "$f is not under .10x/_batch" test ! -e "$B/$f"
+done
+vb run t1 plan
+need "runs.tsv is in S/batch/<id>" test -s "$SB/t1/runs.tsv"
+need "runs.tsv is not under .10x/_batch" test ! -e "$B/t1/runs.tsv"
+vb drop t2
+need "dropped is in S/batch/<id>" test -f "$SB/t2/dropped"
+need "dropped is not under .10x/_batch" test ! -e "$B/t2/dropped"
+rm "$SB/t2/dropped"
+mkdir -p "$B/t2"; touch "$B/t2/dropped"
+printf 'n\tkind\tsession\tsession_kind\tstart\tend\texit\tpid\n1\timplement\ts-t2-1\timplement\t1\t2\t0\t1\n' >"$B/t2/runs.tsv"
+need "a dropped marker and a runs.tsv at the old path are ignored" phase_is t2 queued
+printf 't1\n' >"$B/tickets"
+need "a tickets file at the old path is ignored" acts_are "plan t2,answer t1"
+printf 'auto\n' >"$B/mode"
+need "a mode file at the old path is ignored" eval 'vb status && line "mode: default"'
+approved t1 a
+printf '%s\n' 0123456789abcdef0123456789abcdef >"$B/t1/auto-approved"
+vb status
+need "an auto-approved file at the old path is ignored" not grep -qF "auto-approved" "$B/board.md"
+printf '%s\n' 0123456789abcdef0123456789abcdef >"$SB/t1/auto-approved"
+vb status
+need "an auto-approved file in the state dir shows" grep -qF "auto-approved (sha256 0123456789ab)" "$B/board.md"
+end
+
+reset; ticket t1 t2
+begin "init: archives the state dir's batch with the board's stamp and refuses a batch from before the state dir"
+vb init t1; vb drop t1
+need "init of a new batch exits 0" exits 0 init t2
+arch="$(ls -d .10x/_batch.2* 2>/dev/null)"
+stamp="${arch#.10x/_batch.}"
+need "one archive of .10x/_batch" test "$(printf '%s\n' "$arch" | wc -l | tr -d ' ')" = 1
+need "the state dir's batch is archived under the same stamp" test "$(cat "$S/batch.$stamp/tickets")" = t1
+need "the new batch is t2 in the state dir" test "$(cat "$SB/tickets")" = t2
+reset; ticket t1
+mkdir -p "$B"; echo t1 >"$B/tickets"
+need "a batch from before the state dir is refused" exits 2 init t1
+need "naming what to do" line "10x-batch: .10x/_batch is a batch from before the state dir; finish it with the previous version, or move it away"
+need "nothing archived" eval 'test -z "$(ls -d .10x/_batch.2* 2>/dev/null)" && test "$(cat "$B/tickets")" = t1'
+need "nothing written to the state dir" test ! -e "$SB/tickets"
+end
+
+reset; ticket t1 t2
+begin "run: plan, reply, implement, close and fallback runs carry the sandbox settings and deny Edit on the state dir and settings files"
+want="$(node -e '
+  const os = require("os"), path = require("path")
+  const h = (x) => path.join(os.homedir(), x)
+  console.log(JSON.stringify({ sandbox: { enabled: true, allowUnsandboxedCommands: false, failIfUnavailable: true, enableWeakerNetworkIsolation: true,
+    filesystem: { allowWrite: [os.tmpdir(), h(".npm"), h("Library/pnpm"), h("Library/Caches"), h(".cache"), h("Library/Developer"), "/dev/stdout", "/dev/fd"] },
+    network: { allowedDomains: ["*"], allowLocalBinding: true } } }))
+')"
+vb init t1 t2
+WORKER_MODE=default vb run t1 plan
+echo "go" >"$B/t1/reply.md"; vb run t1 reply
+approve_plan t1 a
+WORKER_MODE=default vb run t1 implement
+evidence t1 "- AC1 — met: x"; mkdir -p .worktrees/t1
+vb run t1 close
+need "six runs, the two fallbacks among them" test "$(wc -l <"$WORKER_LOG.settings" | tr -d ' ')" = 6
+need "every run has the same --settings, byte for byte" test "$(sort -u "$WORKER_LOG.settings")" = "$want"
+need "no run lacks the flag" not grep -qx unset "$WORKER_LOG.settings"
+need "the flag comes right after --verbose in every run" test "$(sort -u "$WORKER_LOG.afterverbose")" = yes
+need "the tmp dir is the conductor's" grep -qF -- "\"allowWrite\":[\"$TMPDIR\"," "$WORKER_LOG.settings"
+end
+
+reset; ticket t1
+printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"errors":["Sandbox required but unavailable"],"startup_failure_reason":"sandbox_required_unavailable"}' >"$tmp/sandbox.jsonl"
+printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"startup_failure_reason":"sandbox_required_unavailable_x"}' >"$tmp/other-reason.jsonl"
+begin "run: a worker whose sandbox is unavailable fails its ticket once, with no fallback, in loop too"
+for m in default auto; do
+  fl=(); [ "$m" = auto ] && fl=(--auto)
+  reset; ticket t1
+  vb init ${fl[@]+"${fl[@]}"} t1
+  WORKER_OUT="$tmp/sandbox.jsonl" WORKER_EXIT=1 vb run t1 plan
+  need "$m: 01-sandbox holds unavailable" test "$(cat "$B/t1/01-sandbox")" = unavailable
+  need "$m: one run, no retry" test "$(wc -l <"$WORKER_LOG" | tr -d ' ')/$(wc -l <"$SB/t1/runs.tsv" | tr -d ' ')" = 1/2
+  need "$m: no fallback" test -z "$(find "$B/t1" -name '*-fallback')"
+  need "$m: the row is failed with sandbox unavailable" grep -qF "| 1 | t1 | failed | $(field t1 1 3) | failed | sandbox unavailable |" "$B/board.md"
+  need "$m: under Needs the human" grep -qxF -- "- t1 — failed: sandbox unavailable" "$B/board.md"
+  need "$m: not as an exit" not grep -qF "exited 1" "$B/board.md"
+  reset; ticket t1
+  vb init ${fl[@]+"${fl[@]}"} t1
+  WORKER_MODE=default WORKER_OUT="$tmp/sandbox.jsonl" WORKER_EXIT=1 vb run t1 plan
+  need "$m: a fallback run is checked the same way: 02-sandbox" test "$(cat "$B/t1/02-sandbox" 2>/dev/null)" = unavailable
+  need "$m: two runs and no third" test "$(wc -l <"$SB/t1/runs.tsv" | tr -d ' ')" = 3
+  need "$m: failed with sandbox unavailable" grep -qF "| t1 | failed | $(field t1 2 3) | failed | sandbox unavailable |" "$B/board.md"
+  reset; ticket t1
+  vb init ${fl[@]+"${fl[@]}"} t1
+  WORKER_OUT="$tmp/sandbox.jsonl" WORKER_EXIT=1 lp 60
+  need "$m: loop finished" finished
+  need "$m: loop reports it as a failed item" printed '{"items":[{"id":"t1","need":"failed","evidence":"sandbox unavailable"}]}'
+  need "$m: loop started the worker once" test "$(wc -l <"$WORKER_LOG" | tr -d ' ')" = 1
+done
+reset; ticket t1
+vb init t1
+WORKER_OUT="$tmp/other-reason.jsonl" WORKER_EXIT=1 vb run t1 plan
+need "another startup_failure_reason is an ordinary exit" eval 'test ! -e "$B/t1/01-sandbox" && grep -qF "run 01 (plan) exited 1" "$B/board.md"'
 end
 
 [ "$fail" -eq 0 ] && echo "batch: all cases pass"

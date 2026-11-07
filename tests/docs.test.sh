@@ -4,6 +4,8 @@
 # README.md must document /10x:roadmap — a commands-fence line naming /10x:batch <version>, and a Skills table row.
 # docs/loop.md, docs/scripts.md, docs/configuration.md and both READMEs must name `tdd` and the relock, and loop.md and
 # scripts.md `--lock`.
+# docs/loop.md must name the batch sandbox's `sandbox unavailable` refusal, `allowUnsandboxedCommands` and
+# `--disable-sandbox`, and docs/scripts.md `sandbox unavailable`.
 # README.zh-TW.md must have the same ## / ### headings, level by level, and the two READMEs must link to each other.
 # Every relative link in README.md, README.zh-TW.md and docs/*.md must resolve to a file, and an anchor to a heading
 # of that file as GitHub slugs it.
@@ -202,6 +204,17 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   for (const w of ["a layer, not a boundary", "env -u TENX_BATCH", "`gh` directly"])
     if (loop === null || !loop.includes(w)) missing.push(`docs/loop.md: ${w}`)
   if (loop !== null && loop.includes("matches the command as typed")) missing.push('docs/loop.md: still says "matches the command as typed"')
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
+// gh-12 AC7 — the batch sandbox, its settings, its refusal and the state dir.
+{
+  const name = "docs describe the batch sandbox, its settings, its refusal and the state dir"
+  const loop = read("docs/loop.md"), scripts = read("docs/scripts.md")
+  const missing = []
+  for (const w of ["sandbox unavailable", "allowUnsandboxedCommands", "--disable-sandbox"])
+    if (loop === null || !loop.includes(w)) missing.push(`docs/loop.md: ${w}`)
+  if (scripts === null || !scripts.includes("sandbox unavailable")) missing.push("docs/scripts.md: sandbox unavailable")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 

@@ -18,6 +18,8 @@ E2E_SETTINGS='{"permissions":{"allow":["Bash(git -C * add *)","Bash(git -C * com
 CLAUDE_BIN="${TENX_E2E_CLAUDE:-claude}"
 case "$CLAUDE_BIN" in */*) ;; *) CLAUDE_BIN="$(type -P "$CLAUDE_BIN" || true)" ;; esac
 ORIG_PATH="$PATH"
+# The state dir of every flow's repository (10x-batch's S) lies under here, one directory per flow, removed when the flow ends.
+E2E_STATE_ROOT="$HOME/.local/state/10x-e2e"
 
 e2e_prereqs() {
   local v
@@ -63,7 +65,8 @@ renv() {
   env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GH_HOST -u GH_REPO -u E2E_GH_QUIET -u TENX_BATCH \
     "PATH=$E2E_PATH" "GH_CONFIG_DIR=$RUN/ghconfig" "GIT_CONFIG_GLOBAL=$RUN/gitconfig" \
     "GIT_SSH_COMMAND=$(printf '%q' "$E2E_DIR/bin/ssh")" "E2E_ORIGIN=$ORIGIN" "E2E_GH_DIR=$GHD" \
-    "TENX_WAIT_INTERVAL=1" "GIT_TERMINAL_PROMPT=0" "TENX_BATCH_CLAUDE=$RUN/claude-worker" "$@"
+    "TENX_WAIT_INTERVAL=1" "GIT_TERMINAL_PROMPT=0" "TENX_BATCH_CLAUDE=$RUN/claude-worker" \
+    "XDG_STATE_HOME=$E2E_STATE_ROOT/${FLOW:-none}" "$@"
 }
 inrepo() { (cd "$REPO" && renv "$@"); }
 rgit() { renv git -C "$REPO" "$@"; }
@@ -105,9 +108,19 @@ new_run() {
   jq -n --arg close "$mode" --argjson par "$par" \
     '{base: "main", gates: ["node --test"], close: $close} + (if $par > 0 then {batch: {parallel: $par}} else {} end)' >"$REPO/.claude/10x.json"
   # The worker: the flags of turn(), before 10x-batch's -p, output format, permission mode, session and
-  # `-- <prompt>`.
-  printf '#!/bin/bash\nexec %q --model sonnet --plugin-dir %q --setting-sources project --settings %q "$@"\n' \
-    "$CLAUDE_BIN" "$PLUGIN" "$E2E_SETTINGS" >"$RUN/claude-worker"
+  # `-- <prompt>`. Claude Code keeps only the last --settings, so the one 10x-batch passes (the sandbox) is merged
+  # into E2E_SETTINGS (jq `$e2e * $given`), or E2E_SETTINGS goes alone when there is none.
+  {
+    printf '#!/bin/bash\nE2E=%q\nCLAUDE=%q\nPLUGIN=%q\n' "$E2E_SETTINGS" "$CLAUDE_BIN" "$PLUGIN"
+    cat <<'WRAP'
+args=(); given=""
+while [ $# -gt 0 ]; do
+  case "$1" in --settings) given="$2"; shift 2 ;; *) args+=("$1"); shift ;; esac
+done
+if [ -n "$given" ]; then s="$(jq -cn --argjson e "$E2E" --argjson g "$given" '$e * $g')"; else s="$E2E"; fi
+exec "$CLAUDE" --model sonnet --plugin-dir "$PLUGIN" --setting-sources project --settings "$s" "${args[@]}"
+WRAP
+  } >"$RUN/claude-worker"
   chmod +x "$RUN/claude-worker"
   renv git -C "$REPO" init -q --initial-branch=main
   rgit add -A
@@ -569,15 +582,30 @@ not_match() { ! [[ "$1" =~ $2 ]]; } # <string> <ERE>
 
 # ---------------------------------------------------------------- batch: run records
 
+# batch_S — the state dir S of the current run's repository, as 10x-batch computes it: <XDG_STATE_HOME>/10x/<first 16 hex
+# of the sha256 of the realpath of the git common dir>, canonical (deepest existing ancestor through realpath).
+# shellcheck disable=SC2016  # JavaScript, not shell
+batch_S() {
+  (cd "$REPO" && renv node -e '
+const fs = require("fs"), path = require("path")
+const { execFileSync } = require("child_process"), { createHash } = require("crypto")
+const common = fs.realpathSync(execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim())
+let cur = path.join(process.env.XDG_STATE_HOME, "10x", createHash("sha256").update(common).digest("hex").slice(0, 16))
+const rest = []
+while (!fs.lstatSync(cur, { throwIfNoEntry: false })) { rest.unshift(path.basename(cur)); cur = path.dirname(cur) }
+console.log(path.join(fs.realpathSync(cur), ...rest))
+')
+}
 # batch_ids — the batch's ticket ids in board order.
-batch_ids() { if [ -f "$REPO/.10x/_batch/tickets" ]; then cat "$REPO/.10x/_batch/tickets"; fi; }
+batch_ids() { local f; f="$(batch_S)/batch/tickets"; if [ -f "$f" ]; then cat "$f"; fi; }
 # batch_runs [<id>] — the rows of runs.tsv (header dropped) as tab-separated
 # `<id> <n> <kind> <session> <session_kind> <start> <end> <exit> <pid>`, for one ticket or all in board order; an
 # empty field (a run still open) is `-`.
 batch_runs() {
-  local id f
+  local id f sd
+  sd="$(batch_S)"
   for id in ${1:-$(batch_ids)}; do
-    f="$REPO/.10x/_batch/$id/runs.tsv"
+    f="$sd/batch/$id/runs.tsv"
     [ -f "$f" ] || continue
     tail -n +2 "$f" | awk -F'\t' -v id="$id" 'BEGIN { OFS = "\t" } { for (i = 1; i <= NF; i++) if ($i == "") $i = "-"; print id, $0 }'
   done

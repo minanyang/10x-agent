@@ -81,5 +81,45 @@ for tool in Edit Write NotebookEdit; do
   check "$T: $tool, a dir sharing the prefix" deny "$(plan "$tool" "$repo/.10x/t10/plan.md")"
 done
 
+# The record `10x-batch approve` writes lies in the state dir S (AC2), which is not under .10x/<id>/. A plan session's
+# Write to it is denied; the case first locates the record where approve really puts it, so it fails until it is in S.
+T="denies a plan session's Write to the batch state dir"
+frepo="$tmp/frepo"
+mkdir -p "$frepo/.claude" "$frepo/.10x/t1" "$tmp/stub" "$tmp/t"
+cat >"$tmp/stub/worker" <<'STUB'
+#!/bin/bash
+echo '{"type":"result","result":"done"}'
+STUB
+chmod +x "$tmp/stub/worker"
+echo '{"close":"local"}' >"$frepo/.claude/10x.json"
+echo '# t1' >"$frepo/.10x/t1/ticket.md"
+git -c init.defaultBranch=main init -q "$frepo"
+git -C "$frepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$frepo" remote add origin git@github.com:acme/batch.git
+export XDG_STATE_HOME="$tmp/state" TMPDIR="$tmp/t"
+unset TENX_BATCH
+S="$(cd "$frepo" && node -e '
+  const fs = require("fs"), os = require("os"), path = require("path")
+  const { execFileSync } = require("child_process"), { createHash } = require("crypto")
+  const common = fs.realpathSync(execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim())
+  const h = createHash("sha256").update(common).digest("hex").slice(0, 16)
+  const x = process.env.XDG_STATE_HOME
+  const base = x && path.isAbsolute(x) ? x : path.join(os.homedir(), ".local", "state")
+  let cur = path.join(base, "10x", h)
+  const rest = []
+  while (!fs.lstatSync(cur, { throwIfNoEntry: false })) { rest.unshift(path.basename(cur)); cur = path.dirname(cur) }
+  console.log(path.join(fs.realpathSync(cur), ...rest))
+')"
+batch() { (cd "$frepo" && PATH="$ROOT/bin:$PATH" TENX_BATCH_CLAUDE="$tmp/stub/worker" 10x-batch "$@") >"$tmp/batch.out" 2>&1; }
+batch init t1 && batch run t1 plan
+# shellcheck disable=SC2016  # backticks are literal Markdown
+printf '# t1\n\nStatus: draft\n\n## Acceptance criteria\n- AC1 — the change works\n\n## Approach\nOne change.\n\n## Files\n- `a` — changed\n\n## Readers\n- `thing` — `grep -rn thing`\n  - no hits\n\n## Overlap\n- none\n\n## Tests\n| AC | Test file | Case |\n|---|---|---|\n| AC1 | `tests/x.sh` | `works` |\n' >"$frepo/.10x/t1/plan.md"
+batch approve t1
+if [ -s "$S/t1.approved" ]; then
+  check "$T" deny "$(plan Write "$S/t1.approved")"
+else
+  echo "FAIL  $T (10x-batch approve wrote no t1.approved under the state dir $S: $(tr '\n' ' ' <"$tmp/batch.out"))"; fail=1
+fi
+
 [ "$fail" -eq 0 ] && echo "plan-boundary: all cases pass"
 exit "$fail"

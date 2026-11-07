@@ -12,14 +12,21 @@
 // With TENX_BATCH set (every worker has it), init, run, drop, approve and loop refuse before reading anything, so a
 // worker cannot drive its own batch; status still runs.
 //
-// State lives in the main checkout's .10x/_batch/: `tickets` (one id per line, board order), `mode` (`auto` or
-// `default`; anything else, or no file, is default), `board.md`, and per
-// ticket <id>/: runs.tsv (`n kind session session_kind start end exit pid`, times in epoch ms, end and exit empty
-// while a run is open), <nn>-<kind>.jsonl (the worker's stream-json), <nn>-denials.tsv (`<tool>\t<command or tool>`),
-// turn.md (every assistant text of the latest run), reply.md (the next reply, moved to <nn>-reply.md once sent),
-// <nn>-landed (the base and sha a close run left), <nn>-fallback (the mode a run started in when auto mode was
-// unavailable), `auto-approved` (the plan hash `loop` approved), run.err (the stderr of loop's latest run) and
-// `dropped`. A phase is never stored: every command derives it from these files and .10x/<id>/.
+// The records a decision is made from live in the state dir S, out of every worker's reach: S is
+// <base>/10x/<first 16 hex of the sha256 of the realpath of the git common dir>, canonical, where <base> is
+// $XDG_STATE_HOME when it is absolute, else ~/.local/state. S/batch/ holds `tickets` (one id per line, board order),
+// `mode` (`auto` or `default`; anything else, or no file, is default), `versions` and `versions.closed`, and per ticket
+// <id>/: runs.tsv (`n kind session session_kind start end exit pid`, times in epoch ms, end and exit empty while a run
+// is open), `auto-approved` (the plan hash `loop` approved) and `dropped`. S, S/batch and S/batch/<id> are made 0700,
+// and a symlink at any of them is refused. init, run, drop, approve and loop first refuse an S equal to or inside the
+// main checkout, a worktree, a path the worker sandbox may write, or a sandbox.filesystem.allowWrite of the project's
+// or the user's .claude/settings.json or settings.local.json (`state dir <S> is inside <path>`).
+// The rest lives in the main checkout's .10x/_batch/: `board.md`, and per ticket <id>/: <nn>-<kind>.jsonl (the
+// worker's stream-json), <nn>-denials.tsv (`<tool>\t<command, file or tool>`), turn.md (every assistant text of the
+// latest run), reply.md (the next reply, moved to <nn>-reply.md once sent), <nn>-landed (the base and sha a close run
+// left), <nn>-fallback (the mode a run started in when auto mode was unavailable), <nn>-sandbox (`unavailable` when
+// the worker's sandbox was) and run.err (the stderr of loop's latest run). A phase is never stored: every command
+// derives it from these files and .10x/<id>/.
 //
 // `init` resolves every argument before writing anything (`<n>`, `#<n>`, `gh-<n>`, an issue URL of origin's repo,
 // `--search` once, or an id with .10x/<id>/ticket.md) and exits 2 naming each one that resolves to no ticket, and each
@@ -29,8 +36,11 @@
 // (scripts/roadmap.js): it resolves to the ticket ids of its row, each resolved as an argument, except an id with
 // .10x/<id>/landed (written by `10x-worktree rm` once the branch landed), whatever its ticket source, and a gh-<n> whose
 // issue is closed, which are left out; a row with no id exits 2. The version names go to `versions`, the landed and
-// closed ids to `versions.closed`, less any id also named directly, which is batched again. A previous batch is archived to .10x/_batch.<YYYYMMDD-HHMMSS>/ when every ticket of it is
-// settled, else refused; the approval records of the tickets it takes in are deleted.
+// closed ids to `versions.closed`, less any id also named directly, which is batched again. A previous batch (one with
+// S/batch/tickets) is refused while .10x/_batch/ exists and a ticket of it is unsettled; else .10x/_batch/ and S/batch/
+// are archived to .10x/_batch.<YYYYMMDD-HHMMSS>/ and S/batch.<YYYYMMDD-HHMMSS>/, one stamp free in both. A
+// .10x/_batch/tickets with no S/batch/tickets is a batch from before S, refused. The approval records of the tickets it
+// takes in are deleted.
 // `run` starts one worker turn and waits for it: ${TENX_BATCH_CLAUDE:-claude} -p … --output-format stream-json
 // --verbose --permission-mode auto, a plan session's worker with TENX_BATCH_PLAN_DIR set to .10x/<id> for
 // hooks/plan-boundary.js, a new --session-id for plan, implement and close, --resume of the ticket's latest
@@ -38,7 +48,10 @@
 // (auto mode unavailable), it is stopped and the turn runs again as a new run in the mode used before auto mode: a plan
 // session in default with Edit(.10x/<id>/**) allowed, implement and close in acceptEdits. Every run gets
 // --disallowedTools for the commands hooks/grant.js always asks for (10x-land issue/comment/advisory, 10x-batch
-// approve/init, 10x-security set/remove/ticket). It refuses a plan, implement or close that `status` does not list, a reply
+// approve/init, 10x-security set/remove/ticket) and Edit of S and of the four settings files, and --settings right
+// after --verbose: Claude Code's sandbox, required (a worker whose sandbox is unavailable writes <nn>-sandbox and its
+// ticket fails with `sandbox unavailable`, never run again), its writes kept to the temp dir, the package-manager and
+// toolchain caches, /dev/stdout and /dev/fd. It refuses a plan, implement or close that `status` does not list, a reply
 // to a planning session while a plan-session run that started before the ticket's latest run ended is open, and a
 // reply whose first line starts with `/`, and a gh-<n> ticket whose issue is no longer the user's. Every worker gets
 // TENX_BATCH=1. SIGTERM and SIGINT are forwarded to the worker. It prints
@@ -48,9 +61,9 @@
 // recorded version whose ids are all landed or closed to `Done <YYYY-MM-DD>` (local date) in .10x/roadmap.md,
 // changing nothing else, once, and print `roadmap: <version> Done <date>` when they do.
 // `approve` records the user's approval of a draft plan that passes 10x-plan-check: the sha256 of plan.md with its
-// Status line blanked, in <git common dir>/10x-batch/<id>.approved, printing the plan's path and short hash, out of reach of a plan session's file
-// tools (they may write only under .10x/<id>/); its Bash is auto mode's call, and a worker of an approved ticket, which
-// can run commands, could write it too. A plan session's ticket is `approved`
+// Status line blanked, in S/<id>.approved, printing the plan's path and short hash, out of reach of every worker: its
+// Bash runs in the sandbox, which cannot write S, and its Edit and Write tools are denied S. A plan session's ticket is
+// `approved`
 // only when plan.md says so and that record matches it. It then writes the approve reply to reply.md.
 // `loop` drives the batch until a human is needed: each pass writes the board, starts every plan, implement and close
 // action and every reply whose reply.md exists as a detached `run`, and in auto mode approves a draft that passes
@@ -111,22 +124,46 @@ const WT_DIR = path.join(ROOT, typeof config.worktreeDir === 'string' && config.
 const PARALLEL = parallel()
 const TENX_DIR = path.join(ROOT, '.10x')
 const BATCH = path.join(TENX_DIR, '_batch')
-const TICKETS = path.join(BATCH, 'tickets')
-const MODE = path.join(BATCH, 'mode')
+const HOME = os.homedir()
+const xdg = process.env.XDG_STATE_HOME
+const S = canonical(path.join(xdg && path.isAbsolute(xdg) ? xdg : path.join(HOME, '.local', 'state'), '10x', createHash('sha256').update(fs.realpathSync(common)).digest('hex').slice(0, 16)))
+const SB = path.join(S, 'batch')
+const TICKETS = path.join(SB, 'tickets')
+const MODE = path.join(SB, 'mode')
 const BOARD = path.join(BATCH, 'board.md')
-const VERSIONS = path.join(BATCH, 'versions')
-const CLOSED = path.join(BATCH, 'versions.closed')
+const VERSIONS = path.join(SB, 'versions')
+const CLOSED = path.join(SB, 'versions.closed')
 const ROADMAP = path.join(TENX_DIR, 'roadmap.md')
-for (const p of [TENX_DIR, BATCH]) if (fs.lstatSync(p, { throwIfNoEntry: false })?.isSymbolicLink()) die(`${p} is a symlink`)
+// What a worker's sandboxed Bash may write besides the working directory, and the settings that could widen it.
+const ALLOW_WRITE = [os.tmpdir(), ...['.npm', 'Library/pnpm', 'Library/Caches', '.cache', 'Library/Developer'].map((x) => path.join(HOME, x)), '/dev/stdout', '/dev/fd']
+const SETTINGS_FILES = [path.join(ROOT, '.claude'), path.join(HOME, '.claude')].flatMap((d) => [path.join(d, 'settings.json'), path.join(d, 'settings.local.json')])
+const SANDBOX = JSON.stringify({
+  sandbox: {
+    enabled: true,
+    allowUnsandboxedCommands: false,
+    failIfUnavailable: true,
+    enableWeakerNetworkIsolation: true,
+    filesystem: { allowWrite: ALLOW_WRITE },
+    network: { allowedDomains: ['*'], allowLocalBinding: true },
+  },
+})
+if (['init', 'run', 'drop', 'approve', 'loop'].includes(process.argv[2])) checkStateDir()
+for (const p of [TENX_DIR, BATCH, S, SB]) if (fs.lstatSync(p, { throwIfNoEntry: false })?.isSymbolicLink()) die(`${p} is a symlink`)
 
 const tdir = (id) => path.join(TENX_DIR, id)
-const approval = (id) => path.join(common, '10x-batch', `${id}.approved`)
+const approval = (id) => path.join(S, `${id}.approved`)
 // The comment authors of a gh-<n> ticket.md as init saw it, kept beside the approval records, out of a worker's reach.
-const commenters = (id) => path.join(common, '10x-batch', `${id}.commenters`)
+const commenters = (id) => path.join(S, `${id}.commenters`)
+const mkd = (d) => fs.mkdirSync(d, { recursive: true, mode: 0o700 })
 // What the user approved: plan.md with its Status line blanked, so the worker's `Status: approved` keeps the hash.
 const planHash = (text) => createHash('sha256').update(text.replace(/^Status:.*$/m, 'Status:')).digest('hex')
 const bdir = (id) => {
   const d = path.join(BATCH, id)
+  if (fs.lstatSync(d, { throwIfNoEntry: false })?.isSymbolicLink()) die(`${d} is a symlink`)
+  return d
+}
+const sdir = (id) => {
+  const d = path.join(SB, id)
   if (fs.lstatSync(d, { throwIfNoEntry: false })?.isSymbolicLink()) die(`${d} is a symlink`)
   return d
 }
@@ -139,6 +176,41 @@ function readOr(f) {
     return fs.readFileSync(f, 'utf8')
   } catch {
     return null
+  }
+}
+
+// The deepest existing ancestor of <p> through realpath, the rest appended, as in hooks/plan-boundary.js.
+function canonical(p) {
+  const rest = []
+  let cur = p
+  while (!fs.lstatSync(cur, { throwIfNoEntry: false })) {
+    const up = path.dirname(cur)
+    if (up === cur) break
+    rest.unshift(path.basename(cur))
+    cur = up
+  }
+  return path.join(fs.realpathSync(cur), ...rest)
+}
+
+// Refuses an S a worker could write: inside the main checkout, a worktree, the sandbox's allowWrite, or an allowWrite
+// that a settings file merges into every worker's sandbox.
+function checkStateDir() {
+  const trees = (git(['worktree', 'list', '--porcelain']) || '').split('\n').filter((l) => l.startsWith('worktree ')).map((l) => l.slice(9))
+  const extra = []
+  for (const f of SETTINGS_FILES) {
+    let a
+    try {
+      a = JSON.parse(fs.readFileSync(f, 'utf8'))?.sandbox?.filesystem?.allowWrite
+    } catch {
+      continue
+    }
+    if (!Array.isArray(a)) continue
+    for (const p of a) if (typeof p === 'string' && p) extra.push(p === '~' || p.startsWith('~/') ? path.join(HOME, p.slice(1)) : path.resolve(ROOT, p))
+  }
+  for (const p of [ROOT, ...trees, ...ALLOW_WRITE, ...extra]) {
+    const c = canonical(p)
+    const r = path.relative(c, S)
+    if (r === '' || (r !== '..' && !r.startsWith(`..${path.sep}`) && !path.isAbsolute(r))) die(`state dir ${S} is inside ${c}`)
   }
 }
 
@@ -248,24 +320,29 @@ function init(argv) {
   }
   // A ticket named directly is batched again, never also counted as landed.
   for (let k = closed.length - 1; k >= 0; k--) if (ids.includes(closed[k])) closed.splice(k, 1)
-  if (fs.existsSync(BATCH)) {
-    if (fs.existsSync(TICKETS)) {
-      const open = deriveAll(readIds()).filter((r) => !SETTLED.has(r.phase))
-      if (open.length) die(`the batch in ${rel(BATCH)} has unsettled tickets: ${open.map((r) => `${r.id} (${r.phase})`).join(', ')}`)
-    }
-    archive()
+  // Its workers may still be running, and only the previous version knows where its records are.
+  if (fs.existsSync(path.join(BATCH, 'tickets')) && !fs.existsSync(TICKETS))
+    die(`${rel(BATCH)} is a batch from before the state dir; finish it with the previous version, or move it away`)
+  if (fs.existsSync(BATCH) && fs.existsSync(TICKETS)) {
+    const open = deriveAll(readIds()).filter((r) => !SETTLED.has(r.phase))
+    if (open.length) die(`the batch in ${rel(BATCH)} has unsettled tickets: ${open.map((r) => `${r.id} (${r.phase})`).join(', ')}`)
   }
+  if (fs.existsSync(BATCH) || fs.existsSync(SB)) archive()
   // A ticket batched again needs a new approval.
   for (const id of ids) {
     fs.rmSync(approval(id), { force: true })
     fs.rmSync(commenters(id), { force: true })
     const logins = roadmap.GH.test(id) ? ticketCommenters(id) : null
     if (logins) {
-      fs.mkdirSync(path.dirname(commenters(id)), { recursive: true })
+      mkd(S)
       put(commenters(id), logins.map((l) => l + '\n').join(''))
     }
   }
-  fs.mkdirSync(BATCH, { recursive: true })
+  mkd(SB)
+  for (const id of ids) {
+    fs.mkdirSync(bdir(id), { recursive: true })
+    mkd(sdir(id))
+  }
   put(MODE, `${auto ? 'auto' : 'default'}\n`)
   put(TICKETS, ids.join('\n') + '\n')
   if (versions.length) put(VERSIONS, versions.join('\n') + '\n')
@@ -449,9 +526,9 @@ const today = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-$
 function archive() {
   const d = new Date()
   const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
-  let to = `${BATCH}.${stamp}`
-  for (let k = 2; fs.existsSync(to); k++) to = `${BATCH}.${stamp}-${k}`
-  fs.renameSync(BATCH, to)
+  let s = stamp
+  for (let k = 2; fs.existsSync(`${BATCH}.${s}`) || fs.existsSync(`${SB}.${s}`); k++) s = `${stamp}-${k}`
+  for (const d of [BATCH, SB]) if (fs.existsSync(d)) fs.renameSync(d, `${d}.${s}`)
 }
 
 // ---------------------------------------------------------------- records and phases
@@ -468,7 +545,7 @@ function readIds() {
 }
 
 function runs(id) {
-  const text = readOr(path.join(bdir(id), 'runs.tsv'))
+  const text = readOr(path.join(sdir(id), 'runs.tsv'))
   if (text === null) return []
   return text
     .split('\n')
@@ -481,7 +558,7 @@ function runs(id) {
 }
 
 function writeRuns(id, rows) {
-  put(path.join(bdir(id), 'runs.tsv'), [HEADER, ...rows.map((r) => HEADER.map((h) => r[h]))].map((c) => c.join('\t') + '\n').join(''))
+  put(path.join(sdir(id), 'runs.tsv'), [HEADER, ...rows.map((r) => HEADER.map((h) => r[h]))].map((c) => c.join('\t') + '\n').join(''))
 }
 
 function alive(pid) {
@@ -551,12 +628,12 @@ function deriveAll(ids) {
   }
   // `loop` approved the plan, not the user: shown first in every phase but dropped.
   for (const r of rows) {
-    const hash = r.phase === 'dropped' ? '' : (readOr(path.join(bdir(r.id), 'auto-approved')) || '').trim()
+    const hash = r.phase === 'dropped' ? '' : (readOr(path.join(sdir(r.id), 'auto-approved')) || '').trim()
     if (hash) r.evidence = [`auto-approved (sha256 ${hash.slice(0, 12)})`, r.evidence].filter(Boolean).join('; ')
   }
-  // The latest run fell back from auto mode: the mode it ran in.
+  // The latest run fell back from auto mode: the mode it ran in, unless it never started for want of its sandbox.
   for (const r of rows) {
-    const mode = r.last ? (readOr(path.join(bdir(r.id), `${pad(r.last.n)}-fallback`)) || '').trim() : ''
+    const mode = r.last && !r.sandbox ? (readOr(path.join(bdir(r.id), `${pad(r.last.n)}-fallback`)) || '').trim() : ''
     if (mode) r.evidence = [r.evidence, `auto mode unavailable: ran in ${mode}`].filter(Boolean).join('; ')
   }
   return rows
@@ -577,7 +654,7 @@ function derive(id) {
   }
   const set = (phase, evidence = fs.existsSync(turn) ? rel(turn) : '') =>
     Object.assign(row, { phase, evidence: row.denied ? [evidence, row.denied].filter(Boolean).join('; ') : evidence })
-  if (fs.existsSync(path.join(bdir(id), 'dropped'))) return set('dropped', 'dropped by the user')
+  if (fs.existsSync(path.join(sdir(id), 'dropped'))) return set('dropped', 'dropped by the user')
   if (!last) return set('queued', '')
   const open = isOpen(last)
   if (open && alive(last.pid)) return set(RUNNING[last.session_kind] || 'planning')
@@ -585,6 +662,10 @@ function derive(id) {
   const tag = `run ${pad(last.n)} (${last.kind})`
   const denied = (readOr(path.join(bdir(id), `${pad(last.n)}-denials.tsv`)) || '').split('\n').filter(Boolean)
   if (denied.length) row.denied = `${tag} denied: ${denied.map((d) => d.split('\t').pop()).join('; ')}`
+  if ((readOr(path.join(bdir(id), `${pad(last.n)}-sandbox`)) || '').trim() === 'unavailable') {
+    row.sandbox = true
+    return set('failed', 'sandbox unavailable')
+  }
   if (exit !== '0') return set('failed', exit === '?' ? `${tag} ended without an exit code` : `${tag} exited ${exit}`)
 
   if (last.session_kind === 'plan') {
@@ -812,7 +893,7 @@ function status() {
 
 function ticketRows(id) {
   const ids = readIds()
-  if (!ids.includes(id)) die(`${id} is not in this batch (${rel(TICKETS)})`)
+  if (!ids.includes(id)) die(`${id} is not in this batch (${TICKETS})`)
   const rows = deriveAll(ids)
   return { ids, rows, i: ids.indexOf(id) }
 }
@@ -852,6 +933,7 @@ async function run(argv) {
   }
 
   fs.mkdirSync(bdir(id), { recursive: true })
+  mkd(sdir(id))
   const turn = path.join(bdir(id), 'turn.md')
   const bin = process.env.TENX_BATCH_CLAUDE || 'claude'
   // Every worker starts in auto mode. A plan session's writes are kept under .10x/<id>/ by hooks/plan-boundary.js, which
@@ -875,7 +957,10 @@ async function run(argv) {
     '10x-security set',
     '10x-security remove',
     '10x-security ticket',
-  ].flatMap((c) => [`Bash(${c}:*)`, `Bash(${c} *)`])
+  ]
+    .flatMap((c) => [`Bash(${c}:*)`, `Bash(${c} *)`])
+    // The sandbox wraps only Bash: Write and Edit would otherwise reach the records, and settings that widen the sandbox.
+    .concat([`${S}/**`, ...SETTINGS_FILES].map((p) => `Edit(/${p})`))
   // Today's mode for the session kind, used only when auto mode is unavailable.
   const fallback = sessionKind === 'plan' ? ['default', '--allowedTools', `Edit(.10x/${id}/**)`] : ['acceptEdits']
   const live = { child: null, signalled: false }
@@ -897,7 +982,7 @@ async function run(argv) {
     const log = path.join(bdir(id), `${nn}-${kind}.jsonl`)
     put(turn, '')
     const out = fs.openSync(log, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW)
-    const child = spawn(bin, ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', ...mode, '--disallowedTools', ...denied, flag, sess, '--', prompt], {
+    const child = spawn(bin, ['-p', '--output-format', 'stream-json', '--verbose', '--settings', SANDBOX, '--permission-mode', ...mode, '--disallowedTools', ...denied, flag, sess, '--', prompt], {
       cwd: ROOT,
       stdio: ['ignore', out, 'inherit'],
       env,
@@ -933,9 +1018,10 @@ async function run(argv) {
     }
 
     const code = await exited
-    const { texts, denials } = readLog(log)
+    const { texts, denials, sandbox } = readLog(log)
     put(turn, texts.length ? texts.join('\n\n') + '\n' : '')
     put(path.join(bdir(id), `${nn}-denials.tsv`), denials.map((d) => d + '\n').join(''))
+    if (sandbox) put(path.join(bdir(id), `${nn}-sandbox`), 'unavailable\n')
     const now = runs(id).map((x) => (x.n === row.n ? { ...x, end: String(Date.now()), exit: String(code ?? 127) } : x))
     writeRuns(id, now)
     // Where it landed, read now: the base moves on as later tickets land.
@@ -946,7 +1032,8 @@ async function run(argv) {
   let res = await once(['auto'], session)
   // The turn again in today's mode, unless the ticket was dropped or this process stopped meanwhile. A rerun is never
   // checked for its own init; plan, implement and close start a new session, a reply resumes the same one.
-  if (res.unavailable && !live.signalled && !fs.existsSync(path.join(bdir(id), 'dropped')))
+  // A worker whose sandbox is unavailable writes no init event, so it is never rerun.
+  if (res.unavailable && !live.signalled && !fs.existsSync(path.join(sdir(id), 'dropped')))
     res = await once(fallback, kind === 'reply' ? session : randomUUID())
   const after = deriveAll(ids)
   writeBoard(after)
@@ -974,10 +1061,12 @@ function initMode(file) {
   return undefined
 }
 
-// Every top-level assistant text block of a stream-json log, in order, and its permission denials.
+// Every top-level assistant text block of a stream-json log, in order, its permission denials, and whether Claude Code
+// refused to start without its sandbox.
 function readLog(file) {
   const texts = []
   const denied = new Map()
+  let sandbox = false
   for (const l of (readOr(file) || '').split('\n')) {
     if (!l.trim()) continue
     let ev
@@ -990,21 +1079,22 @@ function readLog(file) {
       for (const c of ev.message.content) if (c.type === 'text' && typeof c.text === 'string' && c.text.trim()) texts.push(c.text.trim())
     } else if (ev.type === 'result') {
       for (const d of ev.permission_denials || []) denied.set(d.tool_use_id, d)
+      if (ev.startup_failure_reason === 'sandbox_required_unavailable') sandbox = true
     }
   }
   const denials = [...denied.values()].map((d) => {
     const tool = flat(d.tool_name || 'unknown')
-    return `${tool}\t${flat((d.tool_input && d.tool_input.command) || tool)}`
+    return `${tool}\t${flat((d.tool_input && (d.tool_input.command || d.tool_input.file_path)) || tool)}`
   })
-  return { texts, denials }
+  return { texts, denials, sandbox }
 }
 
 function drop(argv) {
   if (argv.length !== 1) die(USAGE)
   const [id] = argv
   const { ids } = ticketRows(id)
-  fs.mkdirSync(bdir(id), { recursive: true })
-  put(path.join(bdir(id), 'dropped'), `${new Date().toISOString()}\n`)
+  mkd(sdir(id))
+  put(path.join(sdir(id), 'dropped'), `${new Date().toISOString()}\n`)
   const last = runs(id).at(-1)
   if (last && isOpen(last) && ours(last)) {
     try {
@@ -1027,7 +1117,7 @@ function approve(argv) {
 
 // The approval record of ticket <id>'s plan.md and the approve reply; returns the hash.
 function recordApproval(id) {
-  fs.mkdirSync(path.dirname(approval(id)), { recursive: true })
+  mkd(S)
   const hash = planHash(fs.readFileSync(path.join(tdir(id), 'plan.md'), 'utf8'))
   put(approval(id), hash + '\n')
   fs.mkdirSync(bdir(id), { recursive: true })
@@ -1113,7 +1203,11 @@ async function loop(argv) {
       if (!fs.existsSync(replyFile) && auto && r.last.session_kind === 'plan' && !heldBack(id) && !held.has(id)) {
         if (r.approvable) {
           if (roadmap.GH.test(id) && strangerComments(id.slice(3))) held.add(id)
-          else put(path.join(bdir(id), 'auto-approved'), recordApproval(id) + '\n')
+          else {
+            const hash = recordApproval(id)
+            mkd(sdir(id))
+            put(path.join(sdir(id), 'auto-approved'), hash + '\n')
+          }
         } else if (fixedSent(id) < FIXED_MAX) put(replyFile, FIXED_REPLY)
       }
       if (fs.existsSync(replyFile)) started = (await start(id, 'reply')) || started

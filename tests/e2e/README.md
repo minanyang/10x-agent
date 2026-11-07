@@ -8,11 +8,11 @@ calls of the stream-json log (tool name, Bash command, `subagent_type`, `run_in_
 ## Run
 
 ```bash
-bash tests/e2e/run.sh              # all 42 scenarios
+bash tests/e2e/run.sh              # all 43 scenarios
 bash tests/e2e/run.sh 7 O2 C3      # only these (ids are case-sensitive; an unknown id exits 2 before any claude run)
 ```
 
-It prints one line per scenario, in the order 1–14, O1–O3, F1–F2, W1–W9, C1–C3, B1–B6, R1–R5, then `total <seconds>s`:
+It prints one line per scenario, in the order 1–14, O1–O3, F1–F2, W1–W9, C1–C3, B1–B7, R1–R5, then `total <seconds>s`:
 
 ```
 pass  7  41s
@@ -53,7 +53,13 @@ model has to find out by itself because no command prints the answer:
   workers `10x-batch` starts are `$RUN/claude-worker`, named by `TENX_BATCH_CLAUDE`: the same `claude` with the flags
   of the other flows. The conductor is answered with `go with your recommendations; approve every plan that can be
   approved` (at most 8 turns) until `10x-batch status` says `done`. Its scenarios read the conductor's tool log and the
-  workers' `.10x/_batch/<id>/runs.tsv`; B3 checks the files rule against the plans the run produced.
+  workers' `runs.tsv` in the state dir (`$XDG_STATE_HOME/10x/<hash>/batch/<id>/runs.tsv`, which each flow points at
+  `~/.local/state/10x-e2e/<flow>` and removes afterwards); B3 checks the files rule against the plans the run produced.
+- **The forge flow** (`batch-forge`, B7) has no conductor: the harness runs `10x-batch init gh-5` and a plan run, writes
+  fixed bytes to the approval and commenters records, then one reply run asks the sandboxed worker to try a Bash write
+  to each record in the state dir and a Write to the `.approved` path. B7 checks that each record that existed is
+  byte-identical, that each that did not still does not exist, that the Write shows in the run's `<nn>-denials.tsv`,
+  and that `hooks/plan-boundary.js` denies a plan session's Write under the state dir.
 - **The roadmap flows.** `roadmap-files` (no origin, so `tickets: files`) types `/10x:roadmap <requirements>` and
   approves the draft (R1: no `roadmap.md` before the approval, its shape and `git status` after), merges more
   requirements (R2: every line of the first file still there), shows it with no arguments (R3: nothing written), then
