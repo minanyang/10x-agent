@@ -124,7 +124,7 @@ git -c init.defaultBranch=main init -q --bare "$tmp/origin.git"
 git -c init.defaultBranch=main init -q "$tmp/repo"
 cd "$tmp/repo" || exit 2
 git config user.email t@t; git config user.name t
-echo base >README.md; mkdir sub; echo x >sub/x.txt
+echo base >README.md; mkdir sub; echo x >sub/x.txt; echo 'export const b = 1' >sub/base.test.mjs
 git add -A && git commit -qm init
 git remote add origin "$tmp/origin.git" && git push -q -u origin main
 # origin's repo is read from its URL; nothing in these cases fetches or pushes.
@@ -683,7 +683,8 @@ end
 begin "accept-green: refuses a file the branch does not change as a test"
 rm -f "$SB/t1/accepted-green.md"
 need "a non-test file: exit 2" exits 2 accept-green t1 src/impl.mjs "r"
-need "a test file the branch does not change: exit 2" exits 2 accept-green t1 README.md "r"
+need "a non-test file at the base: exit 2" exits 2 accept-green t1 README.md "r"
+need "a test file the branch does not change: exit 2" exits 2 accept-green t1 sub/base.test.mjs "r"
 need "a file that does not exist: exit 2" exits 2 accept-green t1 src/none.test.mjs "r"
 need "no record" test ! -e "$SB/t1/accepted-green.md"
 end
