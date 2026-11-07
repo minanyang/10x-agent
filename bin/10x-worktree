@@ -20,8 +20,11 @@
 # develop if origin has it, else origin's default branch), at <worktreeDir>/<id>, then runs
 # the config's `setup` command inside it (default: install dependencies when a lockfile is
 # present). Re-running `add` for an existing ticket reports the worktree and leaves it alone. Either way it
-# prints `ticket dir:` and `base:` as `init` does, before its `created:` or `exists:` line.
-# `rm` removes the worktree and deletes its branch only if the branch is merged
+# prints `ticket dir:` and `base:` as `init` does, before its `created:` or `exists:` line. When it creates
+# the branch it writes the full sha it cut it at to .10x/<id>/start (attaching an existing branch removes
+# that file instead; a symlinked .10x/<id> or start file is reported and left alone).
+# `rm` removes the worktree. A branch still at its recorded start, a commit already on the base, has no
+# commits of its own: it is deleted and no landed record is written. Otherwise it deletes the branch only if the branch is merged
 # (`git branch -d`); an unmerged branch is kept and reported. Once it deletes the branch it writes
 # .10x/<id>/landed, one line `landed on <base> at <short sha>` (the text of 10x-batch's <nn>-landed), which
 # `10x-batch init <version>` reads as landed; a symlinked .10x/<id> or landed file is reported and left alone.
@@ -100,14 +103,25 @@ case "$cmd" in
     ! base_diverged || die "$(base_branch) and origin/$(base_branch) have diverged — reconcile the local base first"
     start="$(base_ref)"
     ticket_lines "$id"
+    dir="$(task_dir "$id")"
     if git -C "$ROOT" show-ref --verify --quiet "refs/heads/$branch"; then
       git -C "$ROOT" worktree add --quiet "$path" "$branch"
+      created=0
     else
       # --no-track: starting from origin/<base> would otherwise make the base the branch's upstream,
       # so a bare pull/push would hit the base and `branch -d` would judge "merged" against it.
       git -C "$ROOT" worktree add --quiet --no-track -b "$branch" "$path" "$start"
+      created=1
     fi
     say "created: $path on $branch from $start ($(git -C "$path" rev-parse --short HEAD))"
+    # The commit the branch was cut at, which `rm` compares against; an attached branch gets none.
+    if [ -L "$dir" ] || [ -L "$dir/start" ]; then
+      [ "$created" = 0 ] || { [ -L "$dir" ] && p="$dir" || p="$dir/start"; say "start not recorded: $(shown "$p") is a symlink"; }
+    elif [ "$created" = 1 ]; then
+      git -C "$path" rev-parse HEAD >"$dir/start"
+    else
+      rm -f "$dir/start"
+    fi
     if [ "$setup" = 1 ]; then
       setup_cmd="$(cfg setup)"
       if [ -z "$setup_cmd" ] && [ -f "$path/package.json" ]; then
@@ -150,8 +164,19 @@ case "$cmd" in
     [ $# -eq 1 ] || die "usage: 10x-worktree rm <id>"
     path="$(wt_path "$id")"
     branch="$(git -C "$path" rev-parse --abbrev-ref HEAD)"
+    tip="$(git -C "$path" rev-parse HEAD)"
+    dir="$(task_dir "$id")"
+    recorded=""
+    if [ ! -L "$dir" ] && [ ! -L "$dir/start" ] && [ -f "$dir/start" ]; then recorded="$(cat "$dir/start")"; fi
     git -C "$ROOT" worktree remove "$path" || die "worktree has uncommitted changes; commit or discard them yourself"
     say "removed: $path"
+    # The record is agent-writable: deleting with -D also requires the tip to be on the base, so nothing is lost.
+    if [ "$recorded" = "$tip" ] && git -C "$ROOT" merge-base --is-ancestor "$tip" "$(base_ref)" 2>/dev/null; then
+      # Still where add cut it: nothing of its own landed, so no record for 10x-batch init to skip.
+      git -C "$ROOT" branch -D "$branch" >/dev/null
+      say "deleted branch $branch (no commits of its own); no landed record"
+      exit 0
+    fi
     if git -C "$ROOT" branch -d "$branch" >/dev/null 2>&1; then
       say "deleted branch $branch (merged)"
     elif landed "$branch"; then
@@ -167,7 +192,6 @@ case "$cmd" in
     if [ "$(cfg close pr)" = local ] || ! git -C "$ROOT" show-ref --verify --quiet "$ref"; then ref="refs/heads/$b"; fi
     if sha="$(git -C "$ROOT" rev-parse --short "$ref" 2>/dev/null)"; then line="landed on $b at $sha"; else line="landed (worktree removed)"; fi
     ensure_excluded
-    dir="$(task_dir "$id")"
     if [ -L "$dir" ] || [ -L "$dir/landed" ]; then
       [ -L "$dir" ] && p="$dir" || p="$dir/landed"
       say "landed record not written: $(shown "$p") is a symlink"

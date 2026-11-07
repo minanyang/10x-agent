@@ -9,9 +9,9 @@ On the Bash tool's PATH while the plugin is enabled (not in a plain terminal). T
 `10x-worktree init|add|list|path|rm <id>|sync-base` — one worktree per ticket.
 
 - `init` first prints where tickets live, `tickets: github` or `tickets: files` (the `tickets` setting; any other value exits 2 before anything is created), then keeps `.10x/` out of git before anything is written there.
-- `init <id>` and `add` print `ticket dir: <path>` and `base: <branch> (<ref>)`, the lines the skills resolve `.10x/<id>/` paths and the base from.
+- `init <id>` and `add` print `ticket dir: <path>` and `base: <branch> (<ref>)`, the lines the skills resolve `.10x/<id>/` paths and the base from. When `add` creates the branch, it records the commit it cut it at in `.10x/<id>/start`.
 - Without an id, `init` prints what `/10x:open` drafts from: the drafts directory, each issue form (`form: <file> name: … labels: … title: … required: … fields: …`, values JSON, or `forms: none`), Markdown templates and the banned phrases.
-- `rm` deletes the branch only if git sees it merged. Once it deletes the branch it writes `.10x/<id>/landed`, one line `landed on <base> at <short sha>`, which `10x-batch init <version>` reads as landed; a symlinked `.10x/<id>` or `landed` is reported and left alone.
+- `rm` deletes a branch still at its recorded start (no commits of its own) and writes no landed record. Otherwise it deletes the branch only if git sees it merged. Once it deletes the branch it writes `.10x/<id>/landed`, one line `landed on <base> at <short sha>`, which `10x-batch init <version>` reads as landed; a symlinked `.10x/<id>` or `landed` is reported and left alone.
 - `sync-base` fast-forwards the main checkout's base after a merged PR when it is on the base and git allows the fast-forward (unrelated uncommitted changes are kept).
 
 ## 10x-land
