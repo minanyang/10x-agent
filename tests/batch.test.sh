@@ -654,7 +654,8 @@ edits="Edit(/$S/**)|Edit(/$root/.claude/settings.json)|Edit(/$root/.claude/setti
 rules() { local l; while IFS= read -r l; do printf '%s\n' "$l" | tr '|' '\n' | sort | tr '\n' ' '; echo; done <<<"$1" | sort -u; }
 # write_rules [<zdot>] [<worktree dir>] — the Edit rules on the files a process outside the sandbox runs, joined by |:
 # the git common dir, every worktree's .git file, .envrc, the zsh files of <zdot> (default the real home) and the
-# home's .zshenv, the bash, git, ssh and login-agent files of the real home, the plugin root, and the real path of
+# home's .zshenv, the bash, git, ssh and login-agent files of the real home, the plugin root, ~/.claude.json and
+# ~/.claude/plugins and hooks, and the real path of
 # each of them whose real path differs (a symlink at it or at any ancestor; a dangling link followed to what it names).
 # real_of <path> — <path> with its deepest existing ancestor resolved through realpath and the rest appended; a
 # dangling link, at <path> or at that ancestor, followed to what it names.
@@ -677,9 +678,11 @@ write_rules() {
   home="$(cd "$HOME" && pwd -P)"; plug="$(cd "$BIN/.." && pwd -P)"
   zdot="${1:-$home}"; wt="${2:-$root/.worktrees}"
   for p in "$root/.git/**" "$wt/*/.git" "$root/.envrc" "$zdot/.zshrc" "$zdot/.zshenv" "$zdot/.zprofile" "$zdot/.zlogin" \
-    "$home/.zshenv" "$home/.bashrc" "$home/.bash_profile" "$home/.bash_login" "$home/.profile" "$home/.gitconfig" \
+    "$zdot/.zshrc.zwc" "$zdot/.zshenv.zwc" "$zdot/.zprofile.zwc" "$zdot/.zlogin.zwc" "$zdot/.zlogout" "$zdot/.zlogout.zwc" \
+    "$home/.zshenv" "$home/.zshenv.zwc" "$home/.bashrc" "$home/.bash_profile" "$home/.bash_login" "$home/.bash_logout" \
+    "$home/.profile" "$home/.gitconfig" \
     "$home/.config/git/**" "$home/.ssh/config" "$home/Library/LaunchAgents/**" "$home/.config/systemd/user/**" \
-    "$home/.config/autostart/**" "$plug/**"; do
+    "$home/.config/autostart/**" "$plug/**" "$home/.claude.json" "$home/.claude/plugins/**" "$home/.claude/hooks/**"; do
     out+=("$p")
     [ "$p" = "$wt/*/.git" ] && continue
     r="$(real_of "${p%/\*\*}")"
@@ -713,7 +716,7 @@ for vd in "$tmp/cfg=$tmp/cfg" "=$root" "cfg=$root/cfg"; do
   need "exit 0 with CLAUDE_CONFIG_DIR='$CLAUDE_CONFIG_DIR'" test $? -eq 0
   need "with CLAUDE_CONFIG_DIR='$CLAUDE_CONFIG_DIR', the rules gain $d's two settings files" \
     test "$(rules "$(head -1 "$WORKER_LOG.disallowed")")" = \
-    "$(rules "$want|$edits|Edit(/$d/settings.json)|Edit(/$d/settings.local.json)|$(write_rules)")"
+    "$(rules "$want|$edits|Edit(/$d/settings.json)|Edit(/$d/settings.local.json)|Edit(/$d/.claude.json)|Edit(/$d/plugins/**)|Edit(/$d/hooks/**)|$(write_rules)")"
 done
 unset CLAUDE_CONFIG_DIR
 reset; ticket t1
@@ -761,7 +764,9 @@ home="$(cd "$HOME" && pwd -P)"
 vb init t1
 ZDOTDIR="$tmp/zdot" vb run t1 plan
 need "exit 0" test $? -eq 0
-for f in .zshrc .zshenv .zprofile .zlogin; do need "ZDOTDIR's $f" denies "Edit(/$tmp/zdot/$f)"; done
+for f in .zshrc .zshenv .zprofile .zlogin .zshrc.zwc .zshenv.zwc .zprofile.zwc .zlogin.zwc .zlogout .zlogout.zwc; do
+  need "ZDOTDIR's $f" denies "Edit(/$tmp/zdot/$f)"
+done
 need "the home's .zshenv, read before ZDOTDIR is set" denies "Edit(/$home/.zshenv)"
 need "not the home's .zshrc" not denies "Edit(/$home/.zshrc)"
 need "the full rule set" test "$(rules "$(cat "$WORKER_LOG.disallowed")")" = "$(rules "$want|$edits|$(write_rules "$tmp/zdot")")"
@@ -789,6 +794,168 @@ ZDOTDIR="$tmp/zl/sub" vb run t1 plan
 need "exit 0" test $? -eq 0
 for f in .zshrc .zshenv .zprofile .zlogin; do need "$f where the dangling link points" denies "Edit(/$tmp/zgone/sub/$f)"; done
 need "the full rule set" test "$(rules "$(cat "$WORKER_LOG.disallowed")")" = "$(rules "$want|$edits|$(write_rules "$tmp/zgone/sub")")"
+end
+
+# ---- the sandbox's denyWrite (gh-24)
+
+# six_runs <ticket worktree> — the six worker runs of t1: plan and its fallback, reply, implement and its fallback, close.
+six_runs() {
+  vb init t1 t2
+  WORKER_MODE=default vb run t1 plan
+  echo "go" >"$B/t1/reply.md"; vb run t1 reply
+  approve_plan t1 a
+  WORKER_MODE=default vb run t1 implement
+  evidence t1 "- AC1 — met: x"; mkdir -p "$1"
+  vb run t1 close
+}
+# deny_of <n> — the sandbox.filesystem.denyWrite of run <n>'s --settings, one per line, sorted; nothing when it has none.
+deny_of() {
+  sed -n "${1}p" "$WORKER_LOG.settings" | node -e '
+    const d = JSON.parse(require("fs").readFileSync(0, "utf8")).sandbox.filesystem.denyWrite
+    if (Array.isArray(d)) console.log(d.join("\n"))' 2>/dev/null | LC_ALL=C sort
+}
+# has_deny <n> <path> — run <n>'s denyWrite holds <path> exactly.
+has_deny() { deny_of "$1" | grep -qxF -- "$2"; }
+# sandbox_deny <zdot> <worktree dir> <config dir> — the denyWrite the plan's AC3 and AC4 give run t1 of this repository, sorted
+# and unique: the files a process outside the sandbox runs, each with its real path; the directories without /**; the
+# settings files; the git files git runs code from; each registered worktree's admin dir and .git file but not
+# <worktree dir>/t1's. <zdot> and <worktree dir> default as in write_rules; <config dir> is CLAUDE_CONFIG_DIR resolved
+# (none when empty).
+sandbox_deny() {
+  local home plug zdot wt cfg common p a g
+  home="$(cd "$HOME" && pwd -P)"; plug="$(cd "$BIN/.." && pwd -P)"
+  zdot="${1:-$home}"; wt="${2:-$root/.worktrees}"; cfg="${3-}"; common="$root/.git"
+  {
+    for p in "$root/.envrc" "$zdot/.zshrc" "$zdot/.zshenv" "$zdot/.zprofile" "$zdot/.zlogin" \
+      "$zdot/.zshrc.zwc" "$zdot/.zshenv.zwc" "$zdot/.zprofile.zwc" "$zdot/.zlogin.zwc" "$zdot/.zlogout" "$zdot/.zlogout.zwc" \
+      "$home/.zshenv" "$home/.zshenv.zwc" "$home/.bashrc" "$home/.bash_profile" "$home/.bash_login" "$home/.bash_logout" \
+      "$home/.profile" "$home/.gitconfig" "$home/.ssh/config" \
+      "$home/.config/git" "$home/Library/LaunchAgents" "$home/.config/systemd/user" "$home/.config/autostart" "$plug" \
+      "$home/.claude.json" "$home/.claude/plugins" "$home/.claude/hooks" \
+      "$root/.claude/settings.json" "$root/.claude/settings.local.json" "$home/.claude/settings.json" "$home/.claude/settings.local.json" \
+      "$common/config" "$common/config.worktree" "$common/hooks" "$common/info/attributes" "$common/commondir"; do
+      echo "$p"; real_of "$p"
+    done
+    if [ -n "$cfg" ]; then
+      for p in "$cfg/.claude.json" "$cfg/plugins" "$cfg/hooks" "$cfg/settings.json" "$cfg/settings.local.json"; do echo "$p"; real_of "$p"; done
+    fi
+    for a in "$common"/worktrees/*; do
+      [ -d "$a" ] || continue
+      g="$(cat "$a/gitdir")"
+      # A relative gitdir (worktree.useRelativePaths) is relative to the admin dir.
+      case $g in /*) ;; *) g="$(real_of "$a/$g")" ;; esac
+      [ "$g" = "$wt/t1/.git" ] && continue
+      for p in "$a" "$g"; do echo "$p"; real_of "$p"; done
+    done
+  } | LC_ALL=C sort -u
+}
+# same_deny <expected> — every one of the six runs' denyWrite is <expected>, with no entry twice and no glob; a failure shows the diff.
+same_deny() {
+  local n got
+  for n in 1 2 3 4 5 6; do
+    got="$(deny_of "$n")"
+    need "run $n: denyWrite is the expected list" test "$got" = "$1"
+    [ "$got" = "$1" ] || diff <(printf '%s\n' "$1") <(printf '%s\n' "$got") | sed 's/^/        /'
+    need "run $n: no entry twice" test -z "$(printf '%s\n' "$got" | uniq -d)"
+    need "run $n: no glob and not the whole git dir" test -z "$(printf '%s\n' "$got" | grep -E '[*]|^'"$root"'/[.]git$')"
+  done
+}
+
+reset; ticket t1 t2
+begin "run: every run's sandbox denies Bash what a process outside it runs"
+six_runs .worktrees/t1
+need "six runs" test "$(wc -l <"$WORKER_LOG.settings" | tr -d ' ')" = 6
+same_deny "$(sandbox_deny "" "" "")"
+need "the git config is denied" has_deny 1 "$root/.git/config"
+need "the git hooks dir is denied" has_deny 6 "$root/.git/hooks"
+need "info/attributes is denied" has_deny 4 "$root/.git/info/attributes"
+need "the main checkout's .envrc is denied" has_deny 3 "$root/.envrc"
+need "commondir, which redirects git to another config, is denied" has_deny 2 "$root/.git/commondir"
+end
+
+reset; ticket t1 t2
+echo '{"close":"local","worktreeDir":"wt"}' >.claude/10x.json
+# t1 is the ticket's own worktree; t2 another ticket's under worktreeDir; outside lies elsewhere; gone is prunable.
+git worktree add -q --detach "$root/wt/t1" HEAD; git worktree add -q --detach "$root/wt/t2" HEAD
+git worktree add -q --detach "$tmp/outside" HEAD; git worktree add -q --detach "$tmp/gone" HEAD; rm -rf "$tmp/gone"
+begin "run: the sandbox denies follow worktreeDir and spare the ticket's own worktree"
+six_runs wt/t1
+same_deny "$(sandbox_deny "" "$root/wt" "")"
+for n in 1 6; do
+  need "run $n: another ticket's .git file" has_deny "$n" "$root/wt/t2/.git"
+  need "run $n: its admin dir" has_deny "$n" "$root/.git/worktrees/t2"
+  need "run $n: a worktree outside worktreeDir" has_deny "$n" "$tmp/outside/.git"
+  need "run $n: and its admin dir" has_deny "$n" "$root/.git/worktrees/outside"
+  need "run $n: a prunable worktree's admin dir" has_deny "$n" "$root/.git/worktrees/gone"
+  need "run $n: not the ticket's own .git file" not has_deny "$n" "$root/wt/t1/.git"
+  need "run $n: not the ticket's own admin dir" not has_deny "$n" "$root/.git/worktrees/t1"
+  need "run $n: not the glob over worktreeDir" not has_deny "$n" "$root/wt/*/.git"
+done
+for w in t1 t2; do git worktree remove --force "$root/wt/$w"; done
+git worktree remove --force "$tmp/outside"; git worktree prune; rm -rf wt
+end
+
+reset; ticket t1 t2
+# Both worktrees' gitdir rewritten relative to their admin dirs, as git writes them under worktree.useRelativePaths.
+git worktree add -q --detach "$root/.worktrees/t1" HEAD; git worktree add -q --detach "$root/.worktrees/t2" HEAD
+for w in t1 t2; do printf '../../../.worktrees/%s/.git\n' "$w" >"$root/.git/worktrees/$w/gitdir"; done
+begin "run: the sandbox denies resolve a relative gitdir and still spare the ticket's own worktree"
+six_runs .worktrees/t1
+same_deny "$(sandbox_deny "" "" "")"
+for n in 1 6; do
+  need "run $n: another ticket's .git file, resolved" has_deny "$n" "$root/.worktrees/t2/.git"
+  need "run $n: its admin dir" has_deny "$n" "$root/.git/worktrees/t2"
+  need "run $n: not the ticket's own .git file" not has_deny "$n" "$root/.worktrees/t1/.git"
+  need "run $n: not the ticket's own admin dir" not has_deny "$n" "$root/.git/worktrees/t1"
+  need "run $n: no relative entry" test -z "$(deny_of "$n" | grep -v '^/')"
+done
+for w in t1 t2; do git worktree remove --force "$root/.worktrees/$w"; done
+git worktree prune
+end
+
+reset; ticket t1 t2
+begin "run: the sandbox's zsh denies follow ZDOTDIR"
+home="$(cd "$HOME" && pwd -P)"
+export ZDOTDIR="$tmp/zdot"
+six_runs .worktrees/t1
+unset ZDOTDIR
+same_deny "$(sandbox_deny "$tmp/zdot" "" "")"
+for f in .zshrc .zshenv .zprofile .zlogin .zshrc.zwc .zshenv.zwc .zprofile.zwc .zlogin.zwc .zlogout .zlogout.zwc; do
+  need "ZDOTDIR's $f" has_deny 1 "$tmp/zdot/$f"
+done
+need "the home's .zshenv" has_deny 1 "$home/.zshenv"
+need "not the home's .zshrc" not has_deny 1 "$home/.zshrc"
+end
+
+# edit_rule_n <n> <rule> — run <n>'s --disallowedTools holds <rule> exactly.
+edit_rule_n() { sed -n "${1}p" "$WORKER_LOG.disallowed" | tr '|' '\n' | grep -qxF -- "$2"; }
+
+reset; ticket t1 t2
+begin "run: every run keeps ~/.claude.json and ~/.claude/plugins from both Write and Bash"
+home="$(cd "$HOME" && pwd -P)"
+six_runs .worktrees/t1
+for n in 1 2 3 4 5 6; do
+  for r in "$home/.claude.json" "$home/.claude/plugins/**" "$home/.claude/hooks/**"; do need "run $n: Edit(/$r)" edit_rule_n "$n" "Edit(/$r)"; done
+  for r in "$home/.claude.json" "$home/.claude/plugins" "$home/.claude/hooks"; do need "run $n: denyWrite $r" has_deny "$n" "$r"; done
+done
+end
+
+begin "run: the sandbox denies the config dir's settings, plugins and hooks for every CLAUDE_CONFIG_DIR form"
+# <form>=<value>=<directory it resolves to>: unset, absolute, empty (the main checkout) and relative (under it).
+for vfd in "unset==" "absolute=$tmp/cfg=$tmp/cfg" "empty==$root" "relative=cfg=$root/cfg"; do
+  form="${vfd%%=*}"; rest="${vfd#*=}"; v="${rest%%=*}"; d="${rest#*=}"
+  reset; ticket t1 t2
+  if [ "$form" = unset ]; then unset CLAUDE_CONFIG_DIR; else export CLAUDE_CONFIG_DIR="$v"; fi
+  six_runs .worktrees/t1
+  unset CLAUDE_CONFIG_DIR
+  same_deny "$(sandbox_deny "" "" "$d")"
+  if [ -n "$d" ]; then
+    for n in 1 2 3 4 5 6; do
+      for r in "$d/.claude.json" "$d/plugins" "$d/hooks" "$d/settings.json" "$d/settings.local.json"; do need "$form, run $n: denyWrite $r" has_deny "$n" "$r"; done
+      for r in "$d/.claude.json" "$d/plugins/**" "$d/hooks/**"; do need "$form, run $n: Edit(/$r)" edit_rule_n "$n" "Edit(/$r)"; done
+    done
+  fi
+done
 end
 
 reset; ticket t1
@@ -1675,7 +1842,14 @@ WORKER_MODE=default vb run t1 implement
 evidence t1 "- AC1 — met: x"; mkdir -p .worktrees/t1
 vb run t1 close
 need "six runs, the two fallbacks among them" test "$(wc -l <"$WORKER_LOG.settings" | tr -d ' ')" = 6
-need "every run has the same --settings, byte for byte" test "$(sort -u "$WORKER_LOG.settings")" = "$want"
+# Each run's --settings is `want` plus filesystem.denyWrite, which follows allowWrite and is the ticket's own list.
+for n in 1 2 3 4 5 6; do
+  need "run $n: the --settings without denyWrite is the shared sandbox, byte for byte" test "$(sed -n "${n}p" "$WORKER_LOG.settings" | node -e '
+    const s = JSON.parse(require("fs").readFileSync(0, "utf8")); delete s.sandbox.filesystem.denyWrite; console.log(JSON.stringify(s))')" = "$want"
+  need "run $n: denyWrite follows allowWrite inside filesystem" test "$(sed -n "${n}p" "$WORKER_LOG.settings" | node -e '
+    console.log(Object.keys(JSON.parse(require("fs").readFileSync(0, "utf8")).sandbox.filesystem).join())')" = allowWrite,denyWrite
+  need "run $n: denyWrite is t1's list" test "$(deny_of "$n")" = "$(sandbox_deny "" "" "")"
+done
 need "no run lacks the flag" not grep -qx unset "$WORKER_LOG.settings"
 need "the flag comes right after --verbose in every run" test "$(sort -u "$WORKER_LOG.afterverbose")" = yes
 need "the tmp dir is the conductor's" grep -qF -- "\"allowWrite\":[\"$TMPDIR\"," "$WORKER_LOG.settings"
