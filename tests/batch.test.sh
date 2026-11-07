@@ -655,7 +655,19 @@ rules() { local l; while IFS= read -r l; do printf '%s\n' "$l" | tr '|' '\n' | s
 # write_rules [<zdot>] [<worktree dir>] — the Edit rules on the files a process outside the sandbox runs, joined by |:
 # the git common dir, every worktree's .git file, .envrc, the zsh files of <zdot> (default the real home) and the
 # home's .zshenv, the bash, git, ssh and login-agent files of the real home, the plugin root, and the real path of
-# each of them that is a symlink.
+# each of them whose real path differs (a symlink at it or at any ancestor; a dangling link followed to what it names).
+# real_of <path> — <path> with its deepest existing ancestor resolved through realpath and the rest appended.
+real_of() {
+  node -e '
+    const fs = require("fs"), path = require("path")
+    let p = process.argv[1]
+    for (let hops = 0; hops < 40; hops++) {
+      const rest = []; let cur = p
+      while (!fs.lstatSync(cur, { throwIfNoEntry: false })) { rest.unshift(path.basename(cur)); cur = path.dirname(cur) }
+      try { p = path.join(fs.realpathSync(cur), ...rest); break } catch { if (cur !== p) break; p = path.resolve(path.dirname(p), fs.readlinkSync(p)) }
+    }
+    console.log(p)' "$1"
+}
 write_rules() {
   local home plug zdot wt p r out=() seen="|"
   home="$(cd "$HOME" && pwd -P)"; plug="$(cd "$BIN/.." && pwd -P)"
@@ -665,10 +677,9 @@ write_rules() {
     "$home/.config/git/**" "$home/.ssh/config" "$home/Library/LaunchAgents/**" "$home/.config/systemd/user/**" \
     "$home/.config/autostart/**" "$plug/**"; do
     out+=("$p")
-    if [ -L "${p%/\*\*}" ]; then
-      r="$(node -e 'console.log(require("fs").realpathSync(process.argv[1]))' "${p%/\*\*}")"
-      [ "$p" = "${p%/\*\*}" ] && out+=("$r") || out+=("$r/**")
-    fi
+    [ "$p" = "$wt/*/.git" ] && continue
+    r="$(real_of "${p%/\*\*}")"
+    if [ "$r" != "${p%/\*\*}" ]; then [ "$p" = "${p%/\*\*}" ] && out+=("$r") || out+=("$r/**"); fi
   done
   for p in "${out[@]}"; do
     case "$seen" in *"|Edit(/$p)|"*) ;; *) seen+="Edit(/$p)|" ;; esac
@@ -713,6 +724,20 @@ for f in .zshrc .zshenv .zprofile .zlogin; do need "ZDOTDIR's $f" denies "Edit(/
 need "the home's .zshenv, read before ZDOTDIR is set" denies "Edit(/$home/.zshenv)"
 need "not the home's .zshrc" not denies "Edit(/$home/.zshrc)"
 need "the full rule set" test "$(rules "$(cat "$WORKER_LOG.disallowed")")" = "$(rules "$want|$edits|$(write_rules "$tmp/zdot")")"
+end
+
+reset; ticket t1
+begin 'run: a symlinked or dangling startup file is denied with its target'
+mkdir -p "$tmp/zd" "$tmp/zt"; echo x >"$tmp/zt/rc"
+ln -sf "$tmp/zt/rc" "$tmp/zd/.zshrc"; ln -sf "$tmp/zt/missing" "$tmp/zd/.zshenv"
+vb init t1
+ZDOTDIR="$tmp/zd" vb run t1 plan
+need "exit 0" test $? -eq 0
+need "the symlinked .zshrc" denies "Edit(/$tmp/zd/.zshrc)"
+need "and its target" denies "Edit(/$tmp/zt/rc)"
+need "the dangling .zshenv" denies "Edit(/$tmp/zd/.zshenv)"
+need "and the path its link names" denies "Edit(/$tmp/zt/missing)"
+need "the full rule set" test "$(rules "$(cat "$WORKER_LOG.disallowed")")" = "$(rules "$want|$edits|$(write_rules "$tmp/zd")")"
 end
 
 reset; ticket t1
