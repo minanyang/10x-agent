@@ -1103,7 +1103,7 @@ need "names PNPM_HOME" line "10x-batch: PNPM_HOME $HOME/.cache contains $home/.c
 need "no worker started" test ! -s "$WORKER_LOG"
 need "no run recorded" test ! -e "$SB/t1/runs.tsv"
 PATH="$P0:$HOME/Library/pnpm"
-need "~/Library/pnpm is not refused" exits 0 run t1 plan
+need "\$HOME/Library/pnpm is not refused" exits 0 run t1 plan
 reset; ticket t1
 PATH="$P0"; vb init t1
 PATH="$P0:$HOME/.cache"
