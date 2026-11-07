@@ -1457,7 +1457,7 @@ want="$(node -e '
   const os = require("os"), path = require("path")
   const h = (x) => path.join(os.homedir(), x)
   console.log(JSON.stringify({ sandbox: { enabled: true, allowUnsandboxedCommands: false, failIfUnavailable: true, enableWeakerNetworkIsolation: true,
-    filesystem: { allowWrite: [os.tmpdir(), h(".npm"), h("Library/pnpm"), h("Library/Caches"), h(".cache"), h("Library/Developer"), "/dev/stdout"] },
+    filesystem: { allowWrite: [os.tmpdir(), h(".npm"), h("Library/pnpm"), h("Library/Caches"), h(".cache"), h("Library/Developer"), "/dev/stdout", "/dev/fd"] },
     network: { allowedDomains: ["*"], allowLocalBinding: true } } }))
 ')"
 vb init t1 t2
