@@ -56,10 +56,13 @@
 // as a real path and its symlink target), and Edit of what
 // a process outside the sandbox runs (writeDeny(): the git common dir, every <worktree dir>/*/.git, the main checkout's
 // .envrc, the zsh files of $ZDOTDIR and $HOME/.zshenv, the bash, git, ssh and login-agent files of $HOME, the plugin
-// root, each as a real path and, when a symlink, its target too), and --settings right
+// root, ~/.claude.json, ~/.claude/plugins and ~/.claude/hooks and, when CLAUDE_CONFIG_DIR is set, its .claude.json,
+// plugins and hooks, each as a real path and, when a symlink, its target too), and --settings right
 // after --verbose: Claude Code's sandbox, required (a worker whose sandbox is unavailable writes <nn>-sandbox and its
 // ticket fails with `sandbox unavailable`, never run again), its writes kept to the temp dir, the package-manager and
-// toolchain caches, /dev/stdout and /dev/fd. It refuses a plan, implement or close that `status` does not list, a reply
+// toolchain caches, /dev/stdout and /dev/fd, and its denyWrite the same writeDeny() files plus the settings files,
+// except the git common dir, narrowed to config, config.worktree, hooks, info/attributes and the admin dir and .git
+// file of every worktree registered when the run starts but the ticket's own. It refuses a plan, implement or close that `status` does not list, a reply
 // to a planning session while a plan-session run that started before the ticket's latest run ended is open, and a
 // reply whose first line starts with `/`, and a gh-<n> ticket whose issue is no longer the user's. Every worker gets
 // TENX_BATCH=1. SIGTERM and SIGINT are forwarded to the worker. It prints
@@ -176,47 +179,71 @@ function real(p) {
   }
   return p
 }
-// What a process outside the sandbox later runs — git, a shell, a login agent, this plugin's scripts — which a worker's
-// Write and Edit tools must not reach: real paths, plus the real path of any that is a symlink. zsh reads $HOME/.zshenv
-// before ZDOTDIR is set; a relative ZDOTDIR or XDG_CONFIG_HOME is ignored. `<worktree dir>/*/.git` covers the worktrees
-// a run creates after it starts. A path through a dangling symlink, at it or at an ancestor, is denied with the path
-// the link names, as far as it resolves.
+// What a process outside the sandbox later runs — git, a shell, a login agent, Claude Code's own config and plugins,
+// this plugin's scripts — from one table, as `edit` (paths for the Write and Edit rules, a directory as `<dir>/**`) and
+// `sandbox` (the Bash sandbox's denyWrite, a directory as itself, no glob): real paths, plus the real path of any that
+// is a symlink. zsh reads $HOME/.zshenv before ZDOTDIR is set; a relative ZDOTDIR or XDG_CONFIG_HOME is ignored. A path
+// through a dangling symlink, at it or at an ancestor, is denied with the path the link names, as far as it resolves.
+// The git common dir differs between the two: Edit gets all of it and `<worktree dir>/*/.git`, which covers the
+// worktrees a run creates after it starts, since the Write tool never does git. The sandbox, where the worker's own git
+// runs, gets only the files git runs code from (config, config.worktree, hooks, info/attributes), plus the admin dir and
+// the .git file (its `gitdir`) of every worktree registered now, except ticket <id>'s own, <worktree dir>/<id>; and the
+// settings files, which run() denies Edit separately.
 // Built by run() only.
-function writeDeny() {
+function writeDeny(id) {
   const abs = (v) => (v && path.isAbsolute(v) ? real(v) : null)
   const home = canonical(HOME)
   const zdot = abs(process.env.ZDOTDIR) || home
   const xdgConfig = abs(process.env.XDG_CONFIG_HOME)
+  const gitDir = fs.realpathSync(common)
+  const claude = [home, ...(configDir === undefined ? [] : [path.resolve(ROOT, configDir)])]
   const files = [
     path.join(canonical(ROOT), '.envrc'),
     ...['.zshrc', '.zshenv', '.zprofile', '.zlogin'].map((f) => path.join(zdot, f)),
     ...['.zshenv', '.bashrc', '.bash_profile', '.bash_login', '.profile', '.gitconfig', '.ssh/config'].map((f) => path.join(home, f)),
+    ...claude.map((d) => path.join(d, '.claude.json')),
   ]
   const dirs = [
-    fs.realpathSync(common),
     path.join(home, '.config', 'git'),
     ...(xdgConfig ? [path.join(xdgConfig, 'git')] : []),
     ...['Library/LaunchAgents', '.config/systemd/user', '.config/autostart'].map((d) => path.join(home, d)),
     canonical(path.join(__dirname, '..')),
+    path.join(home, '.claude', 'plugins'),
+    path.join(home, '.claude', 'hooks'),
+    ...claude.slice(1).flatMap((d) => [path.join(d, 'plugins'), path.join(d, 'hooks')]),
   ]
-  return [
-    ...new Set([
-      ...files.flatMap((f) => [f, real(f)]),
-      ...dirs.flatMap((d) => [d, real(d)]).map((d) => `${d}/**`),
-      `${canonical(WT_DIR)}/*/.git`,
-    ]),
-  ]
+  const own = path.join(canonical(WT_DIR), id, '.git')
+  const trees = []
+  let entries = []
+  try {
+    entries = fs.readdirSync(path.join(gitDir, 'worktrees'), { withFileTypes: true }).filter((e) => e.isDirectory())
+  } catch {}
+  for (const e of entries) {
+    const admin = path.join(gitDir, 'worktrees', e.name)
+    const gitFile = readOr(path.join(admin, 'gitdir'))?.trim()
+    if (gitFile === own) continue
+    trees.push(admin, ...(gitFile ? [gitFile] : []))
+  }
+  const both = (ps) => ps.flatMap((p) => [p, real(p)])
+  return {
+    edit: [...new Set([...both(files), ...both([gitDir, ...dirs]).map((d) => `${d}/**`), `${canonical(WT_DIR)}/*/.git`])],
+    sandbox: [
+      ...new Set(both([...files, ...dirs, ...SETTINGS_FILES, ...['config', 'config.worktree', 'hooks', 'info/attributes'].map((f) => path.join(gitDir, f)), ...trees])),
+    ],
+  }
 }
-const SANDBOX = JSON.stringify({
-  sandbox: {
-    enabled: true,
-    allowUnsandboxedCommands: false,
-    failIfUnavailable: true,
-    enableWeakerNetworkIsolation: true,
-    filesystem: { allowWrite: ALLOW_WRITE },
-    network: { allowedDomains: ['*'], allowLocalBinding: true },
-  },
-})
+// Claude Code's sandbox for ticket <id>'s worker, required; denyWrite is writeDeny(id)'s, read when its run starts.
+const sandbox = (id) =>
+  JSON.stringify({
+    sandbox: {
+      enabled: true,
+      allowUnsandboxedCommands: false,
+      failIfUnavailable: true,
+      enableWeakerNetworkIsolation: true,
+      filesystem: { allowWrite: ALLOW_WRITE, denyWrite: writeDeny(id).sandbox },
+      network: { allowedDomains: ['*'], allowLocalBinding: true },
+    },
+  })
 if (['init', 'run', 'drop', 'approve', 'accept-green', 'loop'].includes(process.argv[2])) checkStateDir()
 for (const p of [TENX_DIR, BATCH, S, SB]) if (fs.lstatSync(p, { throwIfNoEntry: false })?.isSymbolicLink()) die(`${p} is a symlink`)
 
@@ -1044,7 +1071,9 @@ async function run(argv) {
     .flatMap((c) => [`Bash(${c}:*)`, `Bash(${c} *)`])
     // The sandbox wraps only Bash: Write and Edit would otherwise reach the records, settings that widen the sandbox,
     // and files a process outside the sandbox runs.
-    .concat([`${S}/**`, ...new Set(SETTINGS_FILES.flatMap((f) => [f, real(f)])), ...writeDeny()].map((p) => `Edit(/${p})`))
+    .concat([`${S}/**`, ...new Set(SETTINGS_FILES.flatMap((f) => [f, real(f)])), ...writeDeny(id).edit].map((p) => `Edit(/${p})`))
+  // Bash's side of the same table, with the worktrees registered now.
+  const settings = sandbox(id)
   // Today's mode for the session kind, used only when auto mode is unavailable.
   const fallback = sessionKind === 'plan' ? ['default', '--allowedTools', `Edit(.10x/${id}/**)`] : ['acceptEdits']
   const live = { child: null, signalled: false }
@@ -1066,7 +1095,7 @@ async function run(argv) {
     const log = path.join(bdir(id), `${nn}-${kind}.jsonl`)
     put(turn, '')
     const out = fs.openSync(log, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW)
-    const child = spawn(bin, ['-p', '--output-format', 'stream-json', '--verbose', '--settings', SANDBOX, '--permission-mode', ...mode, '--disallowedTools', ...denied, flag, sess, '--', prompt], {
+    const child = spawn(bin, ['-p', '--output-format', 'stream-json', '--verbose', '--settings', settings,'--permission-mode', ...mode, '--disallowedTools', ...denied, flag, sess, '--', prompt], {
       cwd: ROOT,
       stdio: ['ignore', out, 'inherit'],
       env,
