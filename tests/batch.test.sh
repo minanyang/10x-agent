@@ -827,7 +827,7 @@ sandbox_deny() {
       "$home/.config/git" "$home/Library/LaunchAgents" "$home/.config/systemd/user" "$home/.config/autostart" "$plug" \
       "$home/.claude.json" "$home/.claude/plugins" "$home/.claude/hooks" \
       "$root/.claude/settings.json" "$root/.claude/settings.local.json" "$home/.claude/settings.json" "$home/.claude/settings.local.json" \
-      "$common/config" "$common/config.worktree" "$common/hooks" "$common/info/attributes"; do
+      "$common/config" "$common/config.worktree" "$common/hooks" "$common/info/attributes" "$common/commondir"; do
       echo "$p"; real_of "$p"
     done
     if [ -n "$cfg" ]; then
@@ -836,6 +836,8 @@ sandbox_deny() {
     for a in "$common"/worktrees/*; do
       [ -d "$a" ] || continue
       g="$(cat "$a/gitdir")"
+      # A relative gitdir (worktree.useRelativePaths) is relative to the admin dir.
+      case $g in /*) ;; *) g="$(real_of "$a/$g")" ;; esac
       [ "$g" = "$wt/t1/.git" ] && continue
       for p in "$a" "$g"; do echo "$p"; real_of "$p"; done
     done
@@ -862,6 +864,7 @@ need "the git config is denied" has_deny 1 "$root/.git/config"
 need "the git hooks dir is denied" has_deny 6 "$root/.git/hooks"
 need "info/attributes is denied" has_deny 4 "$root/.git/info/attributes"
 need "the main checkout's .envrc is denied" has_deny 3 "$root/.envrc"
+need "commondir, which redirects git to another config, is denied" has_deny 2 "$root/.git/commondir"
 end
 
 reset; ticket t1 t2
@@ -884,6 +887,24 @@ for n in 1 6; do
 done
 for w in t1 t2; do git worktree remove --force "$root/wt/$w"; done
 git worktree remove --force "$tmp/outside"; git worktree prune; rm -rf wt
+end
+
+reset; ticket t1 t2
+# Both worktrees' gitdir rewritten relative to their admin dirs, as git writes them under worktree.useRelativePaths.
+git worktree add -q --detach "$root/.worktrees/t1" HEAD; git worktree add -q --detach "$root/.worktrees/t2" HEAD
+for w in t1 t2; do printf '../../../.worktrees/%s/.git\n' "$w" >"$root/.git/worktrees/$w/gitdir"; done
+begin "run: the sandbox denies resolve a relative gitdir and still spare the ticket's own worktree"
+six_runs .worktrees/t1
+same_deny "$(sandbox_deny "" "" "")"
+for n in 1 6; do
+  need "run $n: another ticket's .git file, resolved" has_deny "$n" "$root/.worktrees/t2/.git"
+  need "run $n: its admin dir" has_deny "$n" "$root/.git/worktrees/t2"
+  need "run $n: not the ticket's own .git file" not has_deny "$n" "$root/.worktrees/t1/.git"
+  need "run $n: not the ticket's own admin dir" not has_deny "$n" "$root/.git/worktrees/t1"
+  need "run $n: no relative entry" test -z "$(deny_of "$n" | grep -v '^/')"
+done
+for w in t1 t2; do git worktree remove --force "$root/.worktrees/$w"; done
+git worktree prune
 end
 
 reset; ticket t1 t2

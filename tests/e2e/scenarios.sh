@@ -329,13 +329,14 @@ flow_batch_write() {
 # The files a process outside the sandbox runs, which a worker's sandboxed Bash must not reach. Under the real HOME, with
 # ZDOTDIR a directory of the run, the harness seeds $ZDOTDIR/.zshrc with fixed bytes, keeps a copy of
 # <git common dir>/info/attributes if it exists, leaves <main checkout>/.envrc absent, creates a second worktree with
-# `10x-worktree add gh-6 --no-setup`, and asks one reply run to append to all four from Bash. No conductor.
-# bash_paths — the four targets, one per line: info/attributes, .envrc, the zshrc, the second worktree's .git file.
+# `10x-worktree add gh-6 --no-setup`, and asks one reply run to append to all five from Bash. No conductor.
+# bash_paths — the five targets, one per line: info/attributes, .envrc, the zshrc, the second worktree's .git file,
+# <git common dir>/commondir.
 bash_paths() {
   local common root
   common="$(cd "$(rgit rev-parse --path-format=absolute --git-common-dir)" && pwd -P)"
   root="$(cd "$REPO" && pwd -P)"
-  printf '%s\n' "$common/info/attributes" "$root/.envrc" "$RUN/zdot/.zshrc" "$root/.worktrees/gh-6/.git"
+  printf '%s\n' "$common/info/attributes" "$root/.envrc" "$RUN/zdot/.zshrc" "$root/.worktrees/gh-6/.git" "$common/commondir"
 }
 flow_batch_bash() {
   local p n=0
@@ -933,8 +934,9 @@ scenario_B8() {
 }
 
 # A sandboxed auto-mode worker's Bash appends to <git common dir>/info/attributes, <main checkout>/.envrc,
-# $ZDOTDIR/.zshrc and a second worktree's .git file each exit non-zero, and each file is byte-identical afterwards, or
-# still absent. A Bash denial in the run's denials.tsv fails it: an auto-mode classifier refusal is not the sandbox's.
+# $ZDOTDIR/.zshrc, a second worktree's .git file (which must exist before the run) and <git common dir>/commondir each
+# exit non-zero, and each file is byte-identical afterwards, or still absent. A Bash denial in the run's denials.tsv
+# fails it: an auto-mode classifier refusal is not the sandbox's.
 # bash_failed <path> — some Bash call of a reply run of gh-5 that names <path> ended in an error result.
 bash_failed() {
   local f
@@ -950,6 +952,7 @@ bash_failed() {
 scenario_B9() {
   local n=0 p dir="$REPO/.10x/_batch/gh-5"
   ensure "the reply run did not happen" [ "$(batch_runs gh-5 | awk -F'\t' '$3 == "reply"' | wc -l | tr -d ' ')" -ge 1 ]
+  ensure "the second worktree's .git file did not exist before the run" [ -e "$RUN/bash-before.4" ]
   while IFS= read -r p; do
     n=$((n + 1))
     if [ -e "$RUN/bash-before.$n" ]; then

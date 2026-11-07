@@ -69,9 +69,10 @@ model has to find out by itself because no command prints the answer:
 - **The bash flow** (`batch-bash`, B9) is the write flow's twin for the sandbox's Bash: under the real `HOME`, with
   `ZDOTDIR` a directory of the run, the harness runs `10x-batch init gh-5` and a plan run, seeds `$ZDOTDIR/.zshrc`,
   leaves `<main checkout>/.envrc` absent, creates a second worktree with `10x-worktree add gh-6 --no-setup`, then one
-  reply run asks the worker to append, from Bash, to `<git common dir>/info/attributes`, `.envrc`, `$ZDOTDIR/.zshrc`
-  and the second worktree's `.git` file. B9 checks that each append ended in an error, that each file is
-  byte-identical or still absent, and that the run's `<nn>-denials.tsv` holds no Bash denial for them: an auto-mode
+  reply run asks the worker to append, from Bash, to `<git common dir>/info/attributes`, `.envrc`, `$ZDOTDIR/.zshrc`,
+  the second worktree's `.git` file and `<git common dir>/commondir`. B9 checks that the second worktree existed before
+  the run, that each append ended in an error, that each file is byte-identical or still absent, and that the run's
+  `<nn>-denials.tsv` holds no Bash denial for them: an auto-mode
   classifier refusal is not the sandbox's. The repository lies under the temp dir, so this checks the carve-out from an
   `allowWrite` path. Like B7 and B8 it needs an unsandboxed shell.
 - **The roadmap flows.** `roadmap-files` (no origin, so `tickets: files`) types `/10x:roadmap <requirements>` and
