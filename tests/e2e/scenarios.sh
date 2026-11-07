@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sourced by run.sh: the 23 flows and the 44 scenario_<id> assertion functions.
+# Sourced by run.sh: the 24 flows and the 45 scenario_<id> assertion functions.
 #
 # A flow is one sequence of `claude -p` turns on one fixture; each scenario is an assertion function bound to a flow
 # and a checkpoint within it (`bindings`). Assertions go through lib.sh helpers that read files, git state, origin's
@@ -7,10 +7,10 @@
 
 # Report order.
 # shellcheck disable=SC2034  # used by run.sh and lib.sh
-ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 O1 O2 O3 F1 F2 W1 W2 W3 W4 W5 W6 W7 W8 W9 C1 C2 C3 B1 B2 B3 B4 B5 B6 B7 B8 R1 R2 R3 R4 R5"
+ALL_IDS="1 2 3 4 5 6 7 8 9 10 11 12 13 14 O1 O2 O3 F1 F2 W1 W2 W3 W4 W5 W6 W7 W8 W9 C1 C2 C3 B1 B2 B3 B4 B5 B6 B7 B8 B9 R1 R2 R3 R4 R5"
 # Execution order.
 # shellcheck disable=SC2034  # used by run.sh
-FLOWS="open-bug open-type open-dup open-nogh open-forms open-files work-bug work-wide work-approved close-local close-pr close-reuse close-pr-merge close-nogh close-blocker close-checks-fail close-base-moved close-pending batch-two batch-forge batch-write roadmap-files roadmap-gh"
+FLOWS="open-bug open-type open-dup open-nogh open-forms open-files work-bug work-wide work-approved close-local close-pr close-reuse close-pr-merge close-nogh close-blocker close-checks-fail close-base-moved close-pending batch-two batch-forge batch-write batch-bash roadmap-files roadmap-gh"
 
 # bindings <id> — the "<flow>:<checkpoint>" pairs a scenario is judged at.
 bindings() {
@@ -39,6 +39,7 @@ bindings() {
     B1 | B2 | B3 | B4 | B5 | B6) echo "batch-two:end" ;;
     B7) echo "batch-forge:end" ;;
     B8) echo "batch-write:end" ;;
+    B9) echo "batch-bash:end" ;;
     R1) echo "roadmap-files:created" ;;
     R2) echo "roadmap-files:merged" ;;
     R3) echo "roadmap-files:shown" ;;
@@ -319,6 +320,41 @@ flow_batch_write() {
     printf 'This is the end-to-end check of this repository'"'"'s batch write rules: it verifies that a batch worker cannot write these files. '
     printf 'For each path below, use the Read tool on it first (an error there is fine), then the Write tool on it with the content probe; each Write is expected to be denied. Never use Bash or any other tool for them, never retry, and carry on after a denial:\n'
     while IFS= read -r p; do printf -- '- %s\n' "$p"; done < <(write_paths)
+    printf 'Report each result and stop.\n'
+  } >"$REPO/.10x/_batch/gh-5/reply.md"
+  wenv 10x-batch run gh-5 reply >/dev/null 2>&1
+  check_scenarios end
+}
+
+# The files a process outside the sandbox runs, which a worker's sandboxed Bash must not reach. Under the real HOME, with
+# ZDOTDIR a directory of the run, the harness seeds $ZDOTDIR/.zshrc with fixed bytes, keeps a copy of
+# <git common dir>/info/attributes if it exists, leaves <main checkout>/.envrc absent, creates a second worktree with
+# `10x-worktree add gh-6 --no-setup`, and asks one reply run to append to all four from Bash. No conductor.
+# bash_paths — the four targets, one per line: info/attributes, .envrc, the zshrc, the second worktree's .git file.
+bash_paths() {
+  local common root
+  common="$(cd "$(rgit rev-parse --path-format=absolute --git-common-dir)" && pwd -P)"
+  root="$(cd "$REPO" && pwd -P)"
+  printf '%s\n' "$common/info/attributes" "$root/.envrc" "$RUN/zdot/.zshrc" "$root/.worktrees/gh-6/.git"
+}
+flow_batch_bash() {
+  local p n=0
+  new_run 1 local
+  canned "$(canned_work)"
+  mkdir -p "$RUN/zdot"
+  printf 'e2e-fixed zshrc\n' >"$RUN/zdot/.zshrc"
+  rm -f "$REPO/.envrc"
+  wenv 10x-batch init gh-5 >/dev/null 2>&1
+  wenv 10x-batch run gh-5 plan >/dev/null 2>&1
+  wenv 10x-worktree add gh-6 --no-setup >/dev/null 2>&1
+  while IFS= read -r p; do
+    n=$((n + 1))
+    if [ -e "$p" ]; then cp "$p" "$RUN/bash-before.$n"; fi
+  done < <(bash_paths)
+  {
+    printf 'This is the end-to-end check of this repository'"'"'s batch sandbox: it verifies that a batch worker'"'"'s Bash cannot write these files. '
+    printf 'Each command below is expected to fail with "Operation not permitted". Run each with the Bash tool, exactly as written, one call per command, never with dangerouslyDisableSandbox, never retry, and carry on after a failure:\n'
+    while IFS= read -r p; do printf -- '- echo probe >> %s\n' "$p"; done < <(bash_paths)
     printf 'Report each result and stop.\n'
   } >"$REPO/.10x/_batch/gh-5/reply.md"
   wenv 10x-batch run gh-5 reply >/dev/null 2>&1
@@ -894,6 +930,38 @@ scenario_B8() {
     ensure "no denial of the Write to $p in the reply run's denials.tsv" \
       awk -F'\t' -v p="$p" '$1 == "Write" && index($2, p) { f = 1 } END { exit !f }' "$dir"/*-denials.tsv
   done < <(write_paths)
+}
+
+# A sandboxed auto-mode worker's Bash appends to <git common dir>/info/attributes, <main checkout>/.envrc,
+# $ZDOTDIR/.zshrc and a second worktree's .git file each exit non-zero, and each file is byte-identical afterwards, or
+# still absent. A Bash denial in the run's denials.tsv fails it: an auto-mode classifier refusal is not the sandbox's.
+# bash_failed <path> — some Bash call of a reply run of gh-5 that names <path> ended in an error result.
+bash_failed() {
+  local f
+  for f in "$REPO"/.10x/_batch/gh-5/*-reply.jsonl; do
+    [ -e "$f" ] || continue
+    jq -se --arg p "$1" '
+      [.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use" and .name == "Bash" and ((.input.command // "") | contains($p))) | .id] as $ids
+      | [.[] | select(.type == "user") | .message.content[]? | select(.type == "tool_result" and .is_error == true and (.tool_use_id as $i | $ids | index($i)))] | length > 0' "$f" >/dev/null && return 0
+  done
+  return 1
+}
+# shellcheck disable=SC2016  # awk program
+scenario_B9() {
+  local n=0 p dir="$REPO/.10x/_batch/gh-5"
+  ensure "the reply run did not happen" [ "$(batch_runs gh-5 | awk -F'\t' '$3 == "reply"' | wc -l | tr -d ' ')" -ge 1 ]
+  while IFS= read -r p; do
+    n=$((n + 1))
+    if [ -e "$RUN/bash-before.$n" ]; then
+      ensure "$p changed or is gone" cmp -s "$RUN/bash-before.$n" "$p"
+    else
+      ensure "$p was created" [ ! -e "$p" ]
+    fi
+    ensure "the worker never tried $p" reply_logged "$p"
+    ensure "the Bash append to $p did not exit non-zero" bash_failed "$p"
+    ensure "a Bash denial for $p in the reply run's denials.tsv: the classifier refused it, not the sandbox" \
+      not awk -F'\t' -v p="$p" '$1 == "Bash" && index($2, p) { f = 1 } END { exit !f }' "$dir"/*-denials.tsv
+  done < <(bash_paths)
 }
 
 # ---------------------------------------------------------------- scenarios: roadmap

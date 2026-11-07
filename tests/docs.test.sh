@@ -229,6 +229,26 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
     : entry.includes("git common dir") ? ok(name) : bad(name, "the `10x-batch run` entry does not name the git common dir")
 }
 
+// gh-24 AC8 — the `10x-batch run` entry of docs/scripts.md names `denyWrite`.
+{
+  const name = "docs/scripts.md names denyWrite in the 10x-batch run entry"
+  const scripts = read("docs/scripts.md")
+  const entry = (scripts || "").split("\n").find((s) => s.startsWith("- `10x-batch run "))
+  !entry ? bad(name, "no `10x-batch run` entry in docs/scripts.md")
+    : entry.includes("denyWrite") ? ok(name) : bad(name, "the `10x-batch run` entry does not name denyWrite")
+}
+
+// gh-24 AC5, AC8 — docs/loop.md's `### The batch sandbox` section names `denyWrite`.
+{
+  const name = "docs/loop.md names denyWrite in the batch sandbox section"
+  const lines = (read("docs/loop.md") || "").split("\n")
+  const at = lines.findIndex((s) => s.trim() === "### The batch sandbox")
+  const next = lines.findIndex((s, k) => k > at && /^#{1,3}\s/.test(s))
+  const section = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
+  at < 0 ? bad(name, "no `### The batch sandbox` heading in docs/loop.md")
+    : section.includes("denyWrite") ? ok(name) : bad(name, "the batch sandbox section does not name denyWrite")
+}
+
 // gh-7 AC22 — the changelog and both READMEs name /10x:batch auto; neither README keeps the trust sentence.
 {
   const name = "README and CHANGELOG mention batch auto mode"
