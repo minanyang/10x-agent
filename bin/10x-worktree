@@ -23,8 +23,8 @@
 # prints `ticket dir:` and `base:` as `init` does, before its `created:` or `exists:` line. When it creates
 # the branch it writes the full sha it cut it at to .10x/<id>/start (attaching an existing branch removes
 # that file instead; a symlinked .10x/<id> or start file is reported and left alone).
-# `rm` removes the worktree. A branch still at its recorded start has no commits of its own: it is deleted
-# and no landed record is written. Otherwise it deletes the branch only if the branch is merged
+# `rm` removes the worktree. A branch still at its recorded start, a commit already on the base, has no
+# commits of its own: it is deleted and no landed record is written. Otherwise it deletes the branch only if the branch is merged
 # (`git branch -d`); an unmerged branch is kept and reported. Once it deletes the branch it writes
 # .10x/<id>/landed, one line `landed on <base> at <short sha>` (the text of 10x-batch's <nn>-landed), which
 # `10x-batch init <version>` reads as landed; a symlinked .10x/<id> or landed file is reported and left alone.
@@ -170,7 +170,8 @@ case "$cmd" in
     if [ ! -L "$dir" ] && [ ! -L "$dir/start" ] && [ -f "$dir/start" ]; then recorded="$(cat "$dir/start")"; fi
     git -C "$ROOT" worktree remove "$path" || die "worktree has uncommitted changes; commit or discard them yourself"
     say "removed: $path"
-    if [ "$recorded" = "$tip" ]; then
+    # The record is agent-writable: deleting with -D also requires the tip to be on the base, so nothing is lost.
+    if [ "$recorded" = "$tip" ] && git -C "$ROOT" merge-base --is-ancestor "$tip" "$(base_ref)" 2>/dev/null; then
       # Still where add cut it: nothing of its own landed, so no record for 10x-batch init to skip.
       git -C "$ROOT" branch -D "$branch" >/dev/null
       say "deleted branch $branch (no commits of its own); no landed record"
