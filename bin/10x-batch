@@ -153,7 +153,8 @@ const SETTINGS_FILES = [path.join(ROOT, '.claude'), path.join(HOME, '.claude')].
 // What a process outside the sandbox later runs — git, a shell, a login agent, this plugin's scripts — which a worker's
 // Write and Edit tools must not reach: real paths, plus the real path of any that is a symlink. zsh reads $HOME/.zshenv
 // before ZDOTDIR is set; a relative ZDOTDIR or XDG_CONFIG_HOME is ignored. `<worktree dir>/*/.git` covers the worktrees
-// a run creates after it starts. A dangling symlink is denied with the path its link names, as far as it resolves.
+// a run creates after it starts. A path through a dangling symlink, at it or at an ancestor, is denied with the path
+// the link names, as far as it resolves.
 // Built by run() only.
 function writeDeny() {
   const real = (p) => {
@@ -161,8 +162,15 @@ function writeDeny() {
       try {
         return canonical(p)
       } catch {
-        if (!fs.lstatSync(p, { throwIfNoEntry: false })?.isSymbolicLink()) return p
-        p = path.resolve(path.dirname(p), fs.readlinkSync(p))
+        // The deepest existing ancestor (or p itself) is a dangling link: follow it, keep the rest of the path.
+        const rest = []
+        let cur = p
+        while (!fs.lstatSync(cur, { throwIfNoEntry: false })) {
+          rest.unshift(path.basename(cur))
+          cur = path.dirname(cur)
+        }
+        if (!fs.lstatSync(cur).isSymbolicLink()) return p
+        p = path.join(path.resolve(path.dirname(cur), fs.readlinkSync(cur)), ...rest)
       }
     }
     return p
