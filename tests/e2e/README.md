@@ -8,11 +8,11 @@ calls of the stream-json log (tool name, Bash command, `subagent_type`, `run_in_
 ## Run
 
 ```bash
-bash tests/e2e/run.sh              # all 45 scenarios
+bash tests/e2e/run.sh              # all 46 scenarios
 bash tests/e2e/run.sh 7 O2 C3      # only these (ids are case-sensitive; an unknown id exits 2 before any claude run)
 ```
 
-It prints one line per scenario, in the order 1–14, O1–O3, F1–F2, W1–W9, C1–C3, B1–B9, R1–R5, then `total <seconds>s`:
+It prints one line per scenario, in the order 1–14, O1–O3, F1–F2, W1–W9, C1–C3, B1–B10, R1–R5, then `total <seconds>s`:
 
 ```
 pass  7  41s
@@ -66,7 +66,7 @@ model has to find out by itself because no command prints the answer:
   asks the worker to Write the repository's `<git common dir>/config`, that hook and `$ZDOTDIR/.zshrc`. B8 checks that
   each is byte-identical or still absent, that the run's log names each path, and that each Write shows in the run's
   `<nn>-denials.tsv`. No real home file is a target.
-- **The bash flow** (`batch-bash`, B9) is the write flow's twin for the sandbox's Bash: under the real `HOME`, with
+- **The bash flow** (`batch-bash`, B9 and B10) is the write flow's twin for the sandbox's Bash: under the real `HOME`, with
   `ZDOTDIR` a directory of the run, the harness runs `10x-batch init gh-5` and a plan run, seeds `$ZDOTDIR/.zshrc`,
   leaves `<main checkout>/.envrc` absent, creates a second worktree with `10x-worktree add gh-6 --no-setup`, then one
   reply run asks the worker to append, from Bash, to `<git common dir>/info/attributes`, `.envrc`, `$ZDOTDIR/.zshrc`,
@@ -74,7 +74,12 @@ model has to find out by itself because no command prints the answer:
   the run, that each append ended in an error, that each file is byte-identical or still absent, and that the run's
   `<nn>-denials.tsv` holds no Bash denial for them: an auto-mode
   classifier refusal is not the sandbox's. The repository lies under the temp dir, so this checks the carve-out from an
-  `allowWrite` path. Like B7 and B8 it needs an unsandboxed shell.
+  `allowWrite` path. Like B7 and B8 it needs an unsandboxed shell. The same reply run carries B10: before `init` the
+  harness creates `~/Library/pnpm/.10x-e2e-probe` with fixed bytes and appends `~/Library/pnpm` to the worker's
+  `PATH`, and the worker also writes a new file in `~/Library/pnpm`, appends to the probe and writes a new file in
+  `~/Library/pnpm/store`. B10 checks that each ended in an error, that the new files are absent and the probe
+  byte-identical, and that `<nn>-denials.tsv` holds no Bash denial for them. The harness then deletes the three
+  probes whatever the result, and `~/Library/pnpm` and its store if it created them.
 - **The roadmap flows.** `roadmap-files` (no origin, so `tickets: files`) types `/10x:roadmap <requirements>` and
   approves the draft (R1: no `roadmap.md` before the approval, its shape and `git status` after), merges more
   requirements (R2: every line of the first file still there), shows it with no arguments (R3: nothing written), then
