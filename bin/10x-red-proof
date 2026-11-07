@@ -29,8 +29,18 @@
 # The worktree must be clean. The tree is always restored on exit, and the ticket lock is
 # shared with 10x-verify. Agent memory (.claude/agent-memory/) is never checked, reverted
 # or restored: agents may write it while red-proof runs.
-# Exit: 0 every changed test file went red · 1 at least one stayed green · 2 could not run
-# (including: a changed test file does not pass at HEAD).
+# Exit: 0 every changed test file went red or was accepted · 1 at least one stayed green and is not accepted · 2 could
+# not run (including: a changed test file does not pass at HEAD, and a malformed accepted entry).
+#
+# Accepted GREEN: a changed test file the change legitimately leaves untested (a portability-only edit) may stay
+# green when the user accepted it — never the implementer alone, only on the user's explicit go. The record holds
+# `## Accepted <n>` entries with `- file:`, `- blob:` (the file's blob at HEAD) and `- reason:` lines (scripts/lib.sh
+# accepted_entries); the last entry for a file wins. It is .10x/<id>/accepted-green.md, written in an interactive
+# session on the user's go, or, when TENX_BATCH is set or <id> is in the current batch's S/batch/tickets, only
+# S/batch/<id>/accepted-green.md, which the conductor writes with `10x-batch accept-green` out of every worker's reach.
+# A file that stays green, is on the record and whose blob at HEAD is the recorded one prints `accepted <file>` and
+# its reason instead of `GREEN`. An entry without a file, a valid blob or a reason exits 2 before the tree is touched.
+# --lock ignores the record.
 #
 # --lock (refused when the main checkout's .claude/10x.json has "tdd": false, or a lock exists) runs on a branch
 # that holds only the tests half. It exits 2, naming what is wrong, when the branch changes no test file, a file that
@@ -96,7 +106,7 @@ while IFS= read -r -d '' status && IFS= read -r -d '' file; do
   fi
 done < <(git -C "$path" diff -z --name-status --no-renames "$base" HEAD -- . "$MEMORY_EXCLUDE")
 
-relocks=()
+relocks=(); accepted=""
 if [ -n "$lock" ]; then
   [ "$tdd" = on ] || die "tdd is false in $CONFIG: there is no tests half to lock"
   [ ! -f "$(lock_path "$path")" ] || die "$id is already locked; a change to a locked file goes through a relock"
@@ -175,6 +185,14 @@ else
       die "$id: locked file(s) changed since the lock: ${locked//$'\n'/ } — $why"
     fi
   fi
+  acc_src="$(accepted_source "$id")" || exit 2
+  acc_all="$(accepted_last "$acc_src")" || exit 2
+  while IFS=$'\x1f' read -r f b r; do
+    [ -n "$f" ] || continue
+    printf '%s\n' "${tests[@]:-}" | grep -qxF -- "$f" || continue
+    [ "$(git -C "$path" rev-parse -q --verify "HEAD:$f")" = "$b" ] || continue
+    accepted+="$f"$'\x1f'"$r"$'\n'
+  done <<<"$acc_all"
 fi
 
 if [ ${#tests[@]} -eq 0 ]; then
@@ -279,15 +297,16 @@ say ""
 
 [ -s "$json" ] || { tail -20 "$log" >&2; die "the runner produced no report — see $log"; }
 
-ADDED="$(printf '%s\n' "${added_tests[@]:-}")" NOCASE="$(printf '%s\n' "${no_case[@]:-}")" node - "$json" "$path" "${tests[@]}" <<'NODE'
+ADDED="$(printf '%s\n' "${added_tests[@]:-}")" NOCASE="$(printf '%s\n' "${no_case[@]:-}")" ACCEPTED="$accepted" node - "$json" "$path" "${tests[@]}" <<'NODE'
 const [, , jsonPath, root, ...expected] = process.argv
 const path = require('path')
 const added = new Set((process.env.ADDED || '').split('\n').filter(Boolean))
 const noCase = new Set((process.env.NOCASE || '').split('\n').filter(Boolean))
+const accepted = new Map((process.env.ACCEPTED || '').split('\n').filter(Boolean).map((l) => [l.slice(0, l.indexOf('\x1f')), l.slice(l.indexOf('\x1f') + 1)]))
 const report = JSON.parse(require('fs').readFileSync(jsonPath, 'utf8'))
 const byFile = new Map()
 for (const r of report.testResults || []) byFile.set(path.relative(root, r.name), r)
-let green = 0, note = 0
+let green = 0, note = 0, acc = 0
 for (const file of expected) {
   const r = byFile.get(file)
   if (!r) { console.log(`RED    ${file}\n         did not load at all without the change`); continue }
@@ -299,6 +318,11 @@ for (const file of expected) {
     if (noCase.has(file)) {
       note++
       console.log(`note   ${file}\n         modified without adding a test case — ${passed.length} test(s) still pass, as expected`)
+      continue
+    }
+    if (accepted.has(file)) {
+      acc++
+      console.log(`accepted ${file}\n         ${accepted.get(file)}`)
       continue
     }
     green++
@@ -314,7 +338,7 @@ for (const file of expected) {
   }
 }
 console.log()
-console.log(green ? `${green} changed test file(s) stayed GREEN without the change.` : `Every test file that adds a case went red without the change.${note ? ` (${note} fixture-only edit(s) noted.)` : ''}`)
+console.log(green ? `${green} changed test file(s) stayed GREEN without the change.` : `Every test file that adds a case went red without the change.${note ? ` (${note} fixture-only edit(s) noted.)` : ''}${acc ? ` (${acc} accepted by the user.)` : ''}`)
 process.exit(green ? 1 : 0)
 NODE
 rc=$?

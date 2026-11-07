@@ -740,6 +740,96 @@ entry 3 'b again' "$(git -C "$wtl" rev-parse HEAD)" >>.10x/TR/relock.md
 refuses "relock: a locked file changed before the relock commit is refused" 'src/b.test.mjs changed before relock 3' TR
 expect "rm TR" 0 10x-worktree rm TR
 
+# accepted-green: a GREEN file the user accepted at its blob, with a reason, no longer fails red-proof
+export XDG_STATE_HOME="$tmp/state"
+SG="$(node -e '
+  const fs = require("fs"), path = require("path"), { execFileSync } = require("child_process"), { createHash } = require("crypto")
+  const common = fs.realpathSync(execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim())
+  const h = createHash("sha256").update(common).digest("hex").slice(0, 16)
+  let cur = path.join(process.env.XDG_STATE_HOME, "10x", h); const rest = []
+  while (!fs.lstatSync(cur, { throwIfNoEntry: false })) { rest.unshift(path.basename(cur)); cur = path.dirname(cur) }
+  console.log(path.join(fs.realpathSync(cur), ...rest))')/batch"
+acc() { printf '## Accepted %s\n- file: %s\n- blob: %s\n- reason: %s\n\n' "$@"; } # <n> <file> <blob> <reason>
+noop_test() { printf '%s\n' "import { test } from 'node:test'" "test('noop', () => {})" ${1+"$1"} >"$wtl/src/noop.test.mjs"; }
+echo '{ "tdd": false }' >.claude/10x.json
+expect "worktree add AG" 0 10x-worktree add AG --no-setup
+wtl="$tmp/repo/.worktrees/AG"
+mkdir -p .10x/AG
+red_test src/cube.test.mjs; echo 'export const cube = (a) => a ** 3' >"$wtl/src/cube.mjs"; noop_test; commit_tl "feat: cube, and a test that stays green"
+nb="$(git -C "$wtl" rev-parse HEAD:src/noop.test.mjs)"
+acc 1 src/noop.test.mjs "$nb" 'changed only for portability' >.10x/AG/accepted-green.md
+10x-red-proof AG >"$tmp/out" 2>&1; rc=$?
+[ "$rc" = 0 ] && grep -qxF 'accepted src/noop.test.mjs' "$tmp/out" && grep -qxF '         changed only for portability' "$tmp/out" &&
+  ! grep -q '^GREEN ' "$tmp/out" && grep -q '^RED    src/cube.test.mjs' "$tmp/out" && [ -z "$(git -C "$wtl" status --porcelain)" ] &&
+  ok "accepted-green: an accepted GREEN file prints accepted with its reason and exits 0" || { bad "accepted-green: an accepted GREEN file prints accepted with its reason and exits 0 (exit $rc)"; cat "$tmp/out"; }
+# AC8: with TENX_BATCH only the state dir record counts
+TENX_BATCH=1 10x-red-proof AG >"$tmp/out" 2>&1; rc=$?
+mkdir -p "$SG/AG"; acc 1 src/noop.test.mjs "$nb" 'recorded by the conductor' >"$SG/AG/accepted-green.md"
+TENX_BATCH=1 10x-red-proof AG >"$tmp/out2" 2>&1; rc2=$?
+[ "$rc" = 1 ] && grep -q '^GREEN  src/noop.test.mjs' "$tmp/out" && ! grep -q '^accepted ' "$tmp/out" &&
+  [ "$rc2" = 0 ] && grep -qxF 'accepted src/noop.test.mjs' "$tmp/out2" && grep -qxF '         recorded by the conductor' "$tmp/out2" &&
+  ok "accepted-green: with TENX_BATCH only the state dir record counts" || { bad "accepted-green: with TENX_BATCH only the state dir record counts ($rc, $rc2)"; cat "$tmp/out" "$tmp/out2"; }
+# AC8: a ticket listed in the current batch ignores .10x/<id>/accepted-green.md without TENX_BATCH
+rm "$SG/AG/accepted-green.md"; printf 'AG\n' >"$SG/tickets"
+10x-red-proof AG >"$tmp/out" 2>&1; rc=$?
+acc 1 src/noop.test.mjs "$nb" 'recorded by the conductor' >"$SG/AG/accepted-green.md"
+10x-red-proof AG >"$tmp/out2" 2>&1; rc2=$?
+[ "$rc" = 1 ] && grep -q '^GREEN  src/noop.test.mjs' "$tmp/out" && [ "$rc2" = 0 ] && grep -qxF 'accepted src/noop.test.mjs' "$tmp/out2" &&
+  ok "accepted-green: a ticket in the current batch ignores accepted-green.md without TENX_BATCH" || { bad "accepted-green: a ticket in the current batch ignores accepted-green.md without TENX_BATCH ($rc, $rc2)"; cat "$tmp/out" "$tmp/out2"; }
+rm -r "$SG"
+# AC9: the packet lists what red-proof used
+expect "packet AG" 0 10x-review-packet AG
+ag="$(awk '/^## Accepted GREEN/ { on = 1; next } on && /^## / { exit } on && NF' .10x/AG/review-packet.md)"
+[ "$(grep -n '^## Accepted GREEN' .10x/AG/review-packet.md | cut -d: -f1)" -gt "$(grep -n '^## Relocks' .10x/AG/review-packet.md | cut -d: -f1)" ] &&
+  printf '%s\n' "$ag" | grep -qxF 'Written to .10x/AG/accepted-green.md on the user'"'"'s go:' &&
+  printf '%s\n' "$ag" | grep -qxF -- "- \`src/noop.test.mjs\` at \`$nb\` — changed only for portability" &&
+  ok "review-packet: Accepted GREEN lists the acceptances red-proof used" || { bad "review-packet: Accepted GREEN lists the acceptances red-proof used"; cat .10x/AG/review-packet.md; }
+# AC4: the blob changed
+noop_test '// edited'; commit_tl "test: edit the green test"
+10x-red-proof AG >"$tmp/out" 2>&1; rc=$?
+[ "$rc" = 1 ] && grep -q '^GREEN  src/noop.test.mjs' "$tmp/out" && ! grep -q '^accepted ' "$tmp/out" &&
+  ok "accepted-green: an accepted file whose blob changed is GREEN again" || { bad "accepted-green: an accepted file whose blob changed is GREEN again ($rc)"; cat "$tmp/out"; }
+10x-review-packet AG >"$tmp/out" 2>&1
+[ "$(awk '/^## Accepted GREEN/ { on = 1; next } on && /^## / { exit } on && NF' .10x/AG/review-packet.md)" = none ] &&
+  ok "review-packet: no acceptance lists none" || { bad "review-packet: no acceptance lists none"; cat "$tmp/out" .10x/AG/review-packet.md; }
+# AC5: an entry without a reason
+nb="$(git -C "$wtl" rev-parse HEAD:src/noop.test.mjs)"
+acc 1 src/noop.test.mjs "$nb" '' >.10x/AG/accepted-green.md
+refuses "accepted-green: an entry without a reason is refused" 'accepted entry 1 (src/noop.test.mjs)' AG
+expect "rm AG" 0 10x-worktree rm AG
+rm .10x/AG/accepted-green.md
+
+# accepted-green with a lock: approved relocks move the lock when the only GREEN is accepted, and not otherwise
+echo '{}' >.claude/10x.json
+expect "worktree add AH" 0 10x-worktree add AH --no-setup
+wtl="$tmp/repo/.worktrees/AH"; lockf="$(git -C "$wtl" rev-parse --absolute-git-dir)/10x-lock"
+mkdir -p .10x/AH
+printf '# AH — fixture\n\n## Tests\n| AC | Test file | Case |\n|---|---|---|\n| AC1 | `src/cube.test.mjs` | `cube` |\n' >.10x/AH/plan.md
+cube_test src/cube.test.mjs 28; commit_tl "test: cube"
+expect "red-proof --lock AH" 0 10x-red-proof AH --lock
+echo 'export const cube = (a) => a ** 3' >"$wtl/src/cube.mjs"; noop_test; commit_tl "feat: cube, and a test that stays green"
+cube_test src/cube.test.mjs 27; commit_tl "test: relock"
+rh="$(git -C "$wtl" rev-parse HEAD)"
+entry 1 'cube(3) is 27' "$rh" >.10x/AH/relock.md
+lock_before="$(cat "$lockf")"
+nb="$(git -C "$wtl" rev-parse HEAD:src/noop.test.mjs)"
+acc 1 src/noop.test.mjs "$nb" 'changed only for portability' >.10x/AH/accepted-green.md
+10x-red-proof AH >"$tmp/out" 2>&1; rc=$?
+[ "$rc" = 0 ] && grep -qxF 'accepted src/noop.test.mjs' "$tmp/out" && grep -qxF "relocked at $(git -C "$wtl" rev-parse --short "$rh")" "$tmp/out" &&
+  [ "$(grep '^lock ' "$lockf")" = "$(printf '%s\nlock %s' "$(grep '^lock ' <<<"$lock_before")" "$rh")" ] &&
+  ok "accepted-green: approved relocks move the lock when the only GREEN is accepted" || { bad "accepted-green: approved relocks move the lock when the only GREEN is accepted (exit $rc)"; cat "$tmp/out" "$lockf"; }
+# AC3: a GREEN file not on the list still fails, the lock stays
+printf '%s\n' "import { test } from 'node:test'" "test('other', () => {})" >"$wtl/src/other.test.mjs"; commit_tl "test: another green test"
+cube_test src/cube.test.mjs 27; echo '// relock 2' >>"$wtl/src/cube.test.mjs"; commit_tl "test: relock again"
+entry 2 'cube(3) is 27, again' "$(git -C "$wtl" rev-parse HEAD)" >>.10x/AH/relock.md
+lock_before="$(cat "$lockf")"
+10x-red-proof AH >"$tmp/out" 2>&1; rc=$?
+[ "$rc" = 1 ] && grep -q '^GREEN  src/other.test.mjs' "$tmp/out" && grep -qxF 'accepted src/noop.test.mjs' "$tmp/out" && ! grep -q '^relocked at ' "$tmp/out" &&
+  [ "$(cat "$lockf")" = "$lock_before" ] &&
+  ok "accepted-green: a GREEN file not on the list still fails and the lock stays" || { bad "accepted-green: a GREEN file not on the list still fails and the lock stays (exit $rc)"; cat "$tmp/out" "$lockf"; }
+expect "rm AH" 0 10x-worktree rm AH
+echo '{}' >.claude/10x.json
+
 # remove
 expect "rm keeps an unmerged branch" 0 10x-worktree rm T1
 grep -q 'kept branch feat/T1-mul' "$tmp/out" && ok "unmerged branch kept" || bad "unmerged branch kept"

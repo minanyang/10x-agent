@@ -246,6 +246,8 @@ check "$T: not init, which only the typed turn runs" nothing "$(bash_ s40 "10x-b
 node -e 'const f = process.argv[1], r = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const p of Object.values(r.skills.batch)) p.grants.push("10x-batch approve *", "10x-batch init *"); require("fs").writeFileSync(f, JSON.stringify(r))' "$CLAUDE_PLUGIN_DATA/sessions/s40.json"
 check "$T: not approve, even from a record an older SKILL.md wrote" nothing "$(bash_ s40 "10x-batch approve gh-5")"
 check "$T: nor init from such a record" nothing "$(bash_ s40 "10x-batch init gh-9")"
+node -e 'const f = process.argv[1], r = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const p of Object.values(r.skills.batch)) p.grants.push("10x-batch accept-green *"); require("fs").writeFileSync(f, JSON.stringify(r))' "$CLAUDE_PLUGIN_DATA/sessions/s40.json"
+check "$T: not accept-green, even from a record an older SKILL.md wrote" nothing "$(bash_ s40 "10x-batch accept-green gh-5 tests/a.test.sh why")"
 
 T="roadmap: 10x-land ticket is allowed for every slug, 10x-land issue still asks"
 check "$T: nothing before" nothing "$(bash_ s41 "10x-land ticket add-a-flag")"

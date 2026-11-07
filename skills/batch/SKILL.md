@@ -51,6 +51,7 @@ Write each ticket's reply to `.10x/_batch/<id>/reply.md`, then start `10x-batch 
 
 - answers: the user's words for that ticket, verbatim.
 - `approve`: run `10x-land comment <id>` first when `.10x/<id>/comment.md` exists (left to the user's permissions), then `10x-batch approve <id>`, which records the approval and writes the reply itself. It is not in this skill's `allowed-tools` on purpose: each approve asks the user's permission, naming the ticket, so text a worker wrote can never approve a plan. Only the user's `approve` for that ticket starts it.
+- accepting a `GREEN` file: when a worker's `asked` line asks to accept a `GREEN` test file and the user says yes for that file, run `10x-batch accept-green <id> <file> "<reason>"`, with the user's reason, then write "Accepted GREEN for <file>, recorded by the user. Run 10x-red-proof <id> again and go on." as the reply. It is not in this skill's `allowed-tools` on purpose: each acceptance asks the user's permission, and in a batch red-proof reads the record it writes in the state directory, not the worker's `.10x/<id>/accepted-green.md`.
 - `revise <notes>`: write "Revise the plan: <notes>". Show its next turn on its own, not in a round.
 - `drop`: run `10x-batch drop <id>`.
 
@@ -86,6 +87,6 @@ The final reply is the board; in auto mode, followed by each ticket's `## Auto d
 ## Never
 
 - Never run `/10x:work` or `/10x:close` yourself, and never edit anything but `.10x/_batch/<id>/reply.md`.
-- Never run `10x-batch approve` for a ticket the user did not approve in their own words.
+- Never run `10x-batch approve` for a ticket the user did not approve in their own words, nor `10x-batch accept-green` for a file the user did not accept in theirs.
 - Never use `CronCreate`, `ScheduleWakeup` or `/loop`; background runs wake you.
 - Never reply that something is unverified, unchecked or not yet confirmed: check it first. Only when a check is impossible, say so, naming what was tried and why it cannot be checked.
