@@ -51,7 +51,7 @@
 // approve/init, 10x-security set/remove/ticket) and Edit of S and of the four settings files, and --settings right
 // after --verbose: Claude Code's sandbox, required (a worker whose sandbox is unavailable writes <nn>-sandbox and its
 // ticket fails with `sandbox unavailable`, never run again), its writes kept to the temp dir, the package-manager and
-// toolchain caches and /dev/stdout. It refuses a plan, implement or close that `status` does not list, a reply
+// toolchain caches, /dev/stdout and /dev/fd. It refuses a plan, implement or close that `status` does not list, a reply
 // to a planning session while a plan-session run that started before the ticket's latest run ended is open, and a
 // reply whose first line starts with `/`, and a gh-<n> ticket whose issue is no longer the user's. Every worker gets
 // TENX_BATCH=1. SIGTERM and SIGINT are forwarded to the worker. It prints
@@ -135,7 +135,7 @@ const VERSIONS = path.join(SB, 'versions')
 const CLOSED = path.join(SB, 'versions.closed')
 const ROADMAP = path.join(TENX_DIR, 'roadmap.md')
 // What a worker's sandboxed Bash may write besides the working directory, and the settings that could widen it.
-const ALLOW_WRITE = [os.tmpdir(), ...['.npm', 'Library/pnpm', 'Library/Caches', '.cache', 'Library/Developer'].map((x) => path.join(HOME, x)), '/dev/stdout']
+const ALLOW_WRITE = [os.tmpdir(), ...['.npm', 'Library/pnpm', 'Library/Caches', '.cache', 'Library/Developer'].map((x) => path.join(HOME, x)), '/dev/stdout', '/dev/fd']
 const SETTINGS_FILES = [path.join(ROOT, '.claude'), path.join(HOME, '.claude')].flatMap((d) => [path.join(d, 'settings.json'), path.join(d, 'settings.local.json')])
 const SANDBOX = JSON.stringify({
   sandbox: {

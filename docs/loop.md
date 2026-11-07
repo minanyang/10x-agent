@@ -95,7 +95,7 @@ The settings, and why each is there:
 - `network.allowedDomains: ["*"]`: the network is open. An allow list does not protect the records, and a short one broke `pnpm install` (the registry was not on it).
 - `enableWeakerNetworkIsolation` (macOS): lets `gh` verify TLS through `trustd`; without it every `gh` call in a close fails.
 - `network.allowLocalBinding`: workers may listen on local ports, for tests that start a server.
-- `filesystem.allowWrite`: the conductor's temp directory (many gates `mktemp` there), `~/.npm`, `~/Library/pnpm`, `~/Library/Caches` and `~/.cache` (package managers), `~/Library/Developer` (SwiftPM) and `/dev/stdout`. None reaches the state directory; `10x-batch` refuses to run when a path of these, or of any `sandbox.filesystem.allowWrite` in your settings files, would.
+- `filesystem.allowWrite`: the conductor's temp directory (many gates `mktemp` there), `~/.npm`, `~/Library/pnpm`, `~/Library/Caches` and `~/.cache` (package managers), `~/Library/Developer` (SwiftPM), and `/dev/stdout` with `/dev/fd` (gates that write `/dev/stdout` or `/dev/stderr` by path; `/dev/stdout` resolves to `/dev/fd/1`, so it needs both, and a write there reaches only a descriptor the process already holds). None reaches the state directory; `10x-batch` refuses to run when a path of these, or of any `sandbox.filesystem.allowWrite` in your settings files, would.
 
 Limits:
 
