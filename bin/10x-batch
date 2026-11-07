@@ -203,7 +203,7 @@ function writeDeny(id) {
   const files = [
     path.join(canonical(ROOT), '.envrc'),
     // zsh runs a newer <file>.zwc instead of <file>, and .zlogout when a login shell exits.
-    ...['.zshrc', '.zshenv', '.zprofile', '.zlogin'].flatMap((f) => [f, `${f}.zwc`]).concat('.zlogout').map((f) => path.join(zdot, f)),
+    ...['.zshrc', '.zshenv', '.zprofile', '.zlogin', '.zlogout'].flatMap((f) => [f, `${f}.zwc`]).map((f) => path.join(zdot, f)),
     ...['.zshenv', '.zshenv.zwc', '.bashrc', '.bash_profile', '.bash_login', '.bash_logout', '.profile', '.gitconfig', '.ssh/config'].map((f) => path.join(home, f)),
     ...claude.map((d) => path.join(d, '.claude.json')),
   ]
