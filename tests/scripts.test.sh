@@ -820,7 +820,6 @@ acc 1 src/noop.test.mjs "$nb" 'changed only for portability' >.10x/AH/accepted-g
   ok "accepted-green: approved relocks move the lock when the only GREEN is accepted" || { bad "accepted-green: approved relocks move the lock when the only GREEN is accepted (exit $rc)"; cat "$tmp/out" "$lockf"; }
 # AC3: a GREEN file not on the list still fails, the lock stays
 printf '%s\n' "import { test } from 'node:test'" "test('other', () => {})" >"$wtl/src/other.test.mjs"; commit_tl "test: another green test"
-rh2="$(git -C "$wtl" rev-parse HEAD)"
 cube_test src/cube.test.mjs 27; echo '// relock 2' >>"$wtl/src/cube.test.mjs"; commit_tl "test: relock again"
 entry 2 'cube(3) is 27, again' "$(git -C "$wtl" rev-parse HEAD)" >>.10x/AH/relock.md
 lock_before="$(cat "$lockf")"
