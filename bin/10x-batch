@@ -7,18 +7,20 @@
 //   10x-batch status
 //   10x-batch drop <id>
 //   10x-batch approve <id>
+//   10x-batch accept-green <id> <file> "<reason>"
 //   10x-batch loop
 //
-// With TENX_BATCH set (every worker has it), init, run, drop, approve and loop refuse before reading anything, so a
-// worker cannot drive its own batch; status still runs.
+// With TENX_BATCH set (every worker has it), init, run, drop, approve, accept-green and loop refuse before reading
+// anything, so a worker cannot drive its own batch; status still runs.
 //
 // The records a decision is made from live in the state dir S, out of every worker's reach: S is
 // <base>/10x/<first 16 hex of the sha256 of the realpath of the git common dir>, canonical, where <base> is
 // $XDG_STATE_HOME when it is absolute, else ~/.local/state. S/batch/ holds `tickets` (one id per line, board order),
 // `mode` (`auto` or `default`; anything else, or no file, is default), `versions` and `versions.closed`, and per ticket
 // <id>/: runs.tsv (`n kind session session_kind start end exit pid`, times in epoch ms, end and exit empty while a run
-// is open), `auto-approved` (the plan hash `loop` approved) and `dropped`. S, S/batch and S/batch/<id> are made 0700,
-// and a symlink at any of them is refused. init, run, drop, approve and loop first refuse an S equal to or inside the
+// is open), `auto-approved` (the plan hash `loop` approved), `dropped` and `accepted-green.md` (the GREEN test files the
+// user accepted). S, S/batch and S/batch/<id> are made 0700, and a symlink at any of them is refused. init, run, drop,
+// approve, accept-green and loop first refuse an S equal to or inside the
 // main checkout, a worktree, a path the worker sandbox may write, or a sandbox.filesystem.allowWrite of the project's
 // or the user's .claude/settings.json or settings.local.json (`state dir <S> is inside <path>`).
 // The rest lives in the main checkout's .10x/_batch/: `board.md`, and per ticket <id>/: <nn>-<kind>.jsonl (the
@@ -48,7 +50,7 @@
 // (auto mode unavailable), it is stopped and the turn runs again as a new run in the mode used before auto mode: a plan
 // session in default with Edit(.10x/<id>/**) allowed, implement and close in acceptEdits. Every run gets
 // --disallowedTools for the commands hooks/grant.js always asks for (10x-land issue/comment/advisory, 10x-batch
-// approve/init, 10x-security set/remove/ticket) and Edit of S and of the four settings files, and --settings right
+// approve/init/accept-green, 10x-security set/remove/ticket) and Edit of S and of the four settings files, and --settings right
 // after --verbose: Claude Code's sandbox, required (a worker whose sandbox is unavailable writes <nn>-sandbox and its
 // ticket fails with `sandbox unavailable`, never run again), its writes kept to the temp dir, the package-manager and
 // toolchain caches, /dev/stdout and /dev/fd. It refuses a plan, implement or close that `status` does not list, a reply
@@ -65,6 +67,13 @@
 // Bash runs in the sandbox, which cannot write S, and its Edit and Write tools are denied S. A plan session's ticket is
 // `approved`
 // only when plan.md says so and that record matches it. It then writes the approve reply to reply.md.
+// `accept-green` records, on the user's go only, that a test file staying GREEN in 10x-red-proof is accepted: it
+// appends `## Accepted <n>` with the file, its blob at the ticket worktree's HEAD and the reason (newlines flattened) to
+// S/batch/<id>/accepted-green.md and prints `accepted: <id> <file> blob <12 hex>`. While the ticket is in the batch,
+// red-proof and the review packet read only that record, never .10x/<id>/accepted-green.md, which a worker could
+// write. It refuses a ticket not in the batch or dropped, one without a worktree, an empty reason, and a file that is
+// not a test file (redProof.tests, else red-proof's *.test|spec.* pattern) the branch adds or modifies against the
+// merge base with the base ref. No skill grants it, so each acceptance asks; it writes no reply.md.
 // `loop` drives the batch until a human is needed: each pass writes the board, starts every plan, implement and close
 // action and every reply whose reply.md exists as a detached `run`, and in auto mode approves a draft that passes
 // 10x-plan-check (writing `auto-approved`) or sends a planning question FIXED_REPLY (at most 3 times), unless
@@ -97,7 +106,8 @@ const KINDS = ['plan', 'reply', 'implement', 'close']
 const HEADER = ['n', 'kind', 'session', 'session_kind', 'start', 'end', 'exit', 'pid']
 const RUNNING = { plan: 'planning', implement: 'implementing', close: 'closing' }
 const SETTLED = new Set(['landed', 'pr-open', 'failed', 'held', 'dropped'])
-const USAGE = 'usage: 10x-batch init [--auto] <ticket>... [--search "<query>"] | run <id> plan|reply|implement|close | status | drop <id> | approve <id> | loop'
+const USAGE =
+  'usage: 10x-batch init [--auto] <ticket>... [--search "<query>"] | run <id> plan|reply|implement|close | status | drop <id> | approve <id> | accept-green <id> <file> "<reason>" | loop'
 const APPROVE_REPLY = 'Approved. Set `Status: approved` in plan.md and stop; the implementation runs in a new session.\n'
 const FIXED_REPLY =
   "Auto mode: no human answers this batch's questions. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, one line per question (its number, the choice and why), and go on.\n"
@@ -109,7 +119,7 @@ const die = (msg) => {
   process.exit(2)
 }
 
-if (process.env.TENX_BATCH && ['init', 'run', 'drop', 'approve', 'loop'].includes(process.argv[2])) die('refused inside a batch worker')
+if (process.env.TENX_BATCH && ['init', 'run', 'drop', 'approve', 'accept-green', 'loop'].includes(process.argv[2])) die('refused inside a batch worker')
 
 let common
 try {
@@ -147,7 +157,7 @@ const SANDBOX = JSON.stringify({
     network: { allowedDomains: ['*'], allowLocalBinding: true },
   },
 })
-if (['init', 'run', 'drop', 'approve', 'loop'].includes(process.argv[2])) checkStateDir()
+if (['init', 'run', 'drop', 'approve', 'accept-green', 'loop'].includes(process.argv[2])) checkStateDir()
 for (const p of [TENX_DIR, BATCH, S, SB]) if (fs.lstatSync(p, { throwIfNoEntry: false })?.isSymbolicLink()) die(`${p} is a symlink`)
 
 const tdir = (id) => path.join(TENX_DIR, id)
@@ -745,12 +755,24 @@ function relocks(id) {
   return entries.filter((e) => e.reason && /^approved\s*[—:-]/i.test(e.ruling || '')).map((e) => e.reason)
 }
 
+// The base branch name: config `base`, else develop if origin has it, else origin's default, else main.
+function baseBranch() {
+  if (typeof config.base === 'string' && config.base) return config.base
+  if (git(['show-ref', '--verify', '--quiet', 'refs/remotes/origin/develop']) !== null) return 'develop'
+  return (git(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']) || '').replace(/^origin\//, '') || 'main'
+}
+
+// The ref base_ref in scripts/lib.sh picks: origin/<base> when origin has it, unless `close: local` and the local base
+// contains it; else the local base.
+function baseRef() {
+  const b = baseBranch()
+  if (git(['show-ref', '--verify', '--quiet', `refs/remotes/origin/${b}`]) === null) return b
+  if (CLOSE === 'local' && git(['merge-base', '--is-ancestor', `refs/remotes/origin/${b}`, `refs/heads/${b}`]) !== null) return b
+  return `origin/${b}`
+}
+
 function landedOn() {
-  let base = typeof config.base === 'string' && config.base ? config.base : ''
-  if (!base) {
-    if (git(['show-ref', '--verify', '--quiet', 'refs/remotes/origin/develop']) !== null) base = 'develop'
-    else base = (git(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']) || '').replace(/^origin\//, '') || 'main'
-  }
+  const base = baseBranch()
   const remote = git(['show-ref', '--verify', '--quiet', `refs/remotes/origin/${base}`]) !== null
   const ref = remote && CLOSE !== 'local' ? `refs/remotes/origin/${base}` : `refs/heads/${base}`
   const sha = git(['rev-parse', '--short', ref])
@@ -954,6 +976,7 @@ async function run(argv) {
     '10x-land advisory',
     '10x-batch approve',
     '10x-batch init',
+    '10x-batch accept-green',
     '10x-security set',
     '10x-security remove',
     '10x-security ticket',
@@ -1125,6 +1148,50 @@ function recordApproval(id) {
   return hash
 }
 
+// The user's acceptance of a test file that stays GREEN in red-proof: an entry of S/batch/<id>/accepted-green.md, which
+// red-proof and the review packet read for a batch ticket instead of .10x/<id>/accepted-green.md.
+function acceptGreen(argv) {
+  if (argv.length !== 3) die(USAGE)
+  const [id, arg] = argv
+  if (!readIds().includes(id)) die(`${id} is not in this batch (${TICKETS})`)
+  if (fs.existsSync(path.join(sdir(id), 'dropped'))) die(`accept-green ${id} refused: ${id} is dropped`)
+  const reason = flat(argv[2]).trim()
+  if (!reason) die(`accept-green ${id} refused: the reason is empty`)
+  const file = arg.replace(/^\.\//, '')
+  if (!file || /[\x00-\x1f\x7f]/.test(file) || path.isAbsolute(file) || file.split('/').includes('..'))
+    die(`accept-green ${id} refused: '${flat(arg)}' is not a path relative to the worktree root`)
+  const wt = path.join(WT_DIR, id)
+  if (!fs.existsSync(path.join(wt, '.git'))) die(`accept-green ${id} refused: ${id} has no worktree at ${wt}`)
+  const wtGit = (a) => git(['-C', wt, ...a])
+  const ref = baseRef()
+  const mb = wtGit(['merge-base', ref, 'HEAD'])
+  if (!mb) die(`accept-green ${id} refused: no merge base with ${ref}`)
+  // The test files red-proof runs: redProof.tests when redProof.command is set (the worktree's config, else the main
+  // checkout's), else its JavaScript test-file pattern.
+  const cfgFile = [path.join(wt, '.claude', '10x.json'), path.join(ROOT, '.claude', '10x.json')].find((f) => fs.existsSync(f))
+  let rp
+  try {
+    rp = cfgFile ? JSON.parse(fs.readFileSync(cfgFile, 'utf8'))?.redProof : undefined
+  } catch (e) {
+    die(`cannot read ${cfgFile}: ${e.message}`)
+  }
+  const cmd = rp?.command == null ? '' : String(rp.command)
+  const globs = cmd ? (Array.isArray(rp.tests) ? rp.tests : rp.tests == null ? [] : [rp.tests]).map(String).filter(Boolean) : []
+  if (cmd && !globs.length) die('redProof.command is set but redProof.tests is missing (git pathspec globs naming the test files)')
+  const out = wtGit(['diff', '-z', '--name-only', '--no-renames', '--diff-filter=AMT', mb, 'HEAD', ...(cmd ? ['--', ...globs.map((g) => `:(glob)${g}`)] : [])])
+  if (out === null) die(`accept-green ${id} refused: cannot list the files the branch changes`)
+  const tests = out.split('\0').filter((f) => f && (cmd || /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/.test(f)))
+  if (!tests.includes(file)) die(`accept-green ${id} refused: ${flat(file)} is not a test file the branch adds or modifies`)
+  const blob = wtGit(['rev-parse', `HEAD:${file}`])
+  if (!blob) die(`accept-green ${id} refused: no blob for ${flat(file)} at HEAD`)
+  mkd(sdir(id))
+  const rec = path.join(sdir(id), 'accepted-green.md')
+  const old = (readOr(rec) || '').trimEnd()
+  const entry = `## Accepted ${(old.match(/^## Accepted/gm) || []).length + 1}\n- file: ${file}\n- blob: ${blob}\n- reason: ${reason}\n`
+  put(rec, old ? `${old}\n\n${entry}` : entry)
+  process.stdout.write(`accepted: ${id} ${file} blob ${blob.slice(0, 12)}\n`)
+}
+
 // ---------------------------------------------------------------- loop
 
 // A product question is the human's: the worker's comment for the issue, or its list of product questions.
@@ -1249,5 +1316,6 @@ else if (cmd === 'run') run(args)
 else if (cmd === 'status' && !args.length) status()
 else if (cmd === 'drop') drop(args)
 else if (cmd === 'approve') approve(args)
+else if (cmd === 'accept-green') acceptGreen(args)
 else if (cmd === 'loop') loop(args)
 else die(USAGE)

@@ -35,6 +35,13 @@
 # replaced> <its commit>` of the locked files, in a fence longer than any backtick run in it; then its reason and
 # ruling under `Written by the implementer, not verified:`.
 #
+# Both write an `## Accepted GREEN` section after it (`none` when empty): each acceptance 10x-red-proof would use — the
+# last entry for its file in the accepted-green record (scripts/lib.sh accepted_source: S/batch/<id>/accepted-green.md,
+# which only the conductor's `10x-batch accept-green` writes, inside a batch; else .10x/<id>/accepted-green.md, written
+# on the user's go), its file changed on the branch and its blob the file's at HEAD — as `` - `<file>` at `<blob>` —
+# <reason> ``. An acceptance is the user's call, never the implementer's. Both exit 2, before the gates and with no
+# review-head written, on an entry without a file, a valid blob or a reason.
+#
 # Both exit 2 before the gates when a file 10x-red-proof --lock locked differs at HEAD from the lock: a change to
 # a locked test is accepted only by 10x-red-proof, through a relock.
 #
@@ -59,6 +66,8 @@ dir="$(task_dir "$id")"
 mkdir -p "$dir"
 locked="$(lock_changed "$path")"
 [ -z "$locked" ] || die "locked file(s) changed since the lock: ${locked//$'\n'/ } — run 10x-red-proof $id (a relock is accepted there)"
+acc_src="$(accepted_source "$id")" || exit 2
+acc_all="$(accepted_last "$acc_src")" || exit 2
 
 pre_review() { # run the preReviewGates in the worktree; the first failure exits 1
   local n=0 c log
@@ -246,6 +255,19 @@ while IFS=$'\x1f' read -r n verdict commit reason ruling; do
 done < <(relock_entries "$dir/relock.md")
 relocks="${relocks%$'\n'}"
 
+accepted=""
+while IFS=$'\x1f' read -r f b r; do
+  [ -n "$f" ] || continue
+  ! git -C "$path" --literal-pathspecs diff --quiet "$mb" HEAD -- "$f" || continue
+  [ "$(git -C "$path" rev-parse -q --verify "HEAD:$f")" = "$b" ] || continue
+  accepted+="- \`$(shown "$f")\` at \`$b\` — $(shown "$r")"$'\n'
+done <<<"$acc_all"
+if [ -n "$accepted" ]; then
+  if [ "$acc_src" = "$dir/accepted-green.md" ]; then intro="Written to .10x/$id/accepted-green.md on the user's go:"
+  else intro="Recorded by the user, not by the implementer:"; fi
+  accepted="10x-red-proof prints these files \`accepted\`, not \`GREEN\`, when they stay green without the change; its output says whether they did."$'\n\n'"$intro"$'\n\n'"${accepted%$'\n'}"
+fi
+
 {
   if [ -n "$fixes" ]; then echo "# Review packet — $id, fix commits"; else echo "# Review packet — $id"; fi
   echo
@@ -263,6 +285,10 @@ relocks="${relocks%$'\n'}"
   echo "## Relocks"
   echo
   echo "${relocks:-none}"
+  echo
+  echo "## Accepted GREEN"
+  echo
+  echo "${accepted:-none}"
   echo
   echo "## Read these first, in one message"
   echo

@@ -288,3 +288,59 @@ relock_entries() {
     END { flush() }
   ' "$1"
 }
+
+# state_dir — bin/10x-batch's state dir S: <base>/10x/<first 16 hex of the sha256 of the realpath of the git common
+# dir>, <base> being $XDG_STATE_HOME when absolute, else ~/.local/state, canonical through its deepest existing ancestor.
+state_dir() {
+  # shellcheck disable=SC2016  # JavaScript, not shell
+  node -e '
+    const fs = require("fs"), os = require("os"), path = require("path"), { createHash } = require("crypto")
+    const x = process.env.XDG_STATE_HOME
+    let cur = path.join(x && path.isAbsolute(x) ? x : path.join(os.homedir(), ".local", "state"), "10x",
+      createHash("sha256").update(fs.realpathSync(process.argv[1])).digest("hex").slice(0, 16))
+    const rest = []
+    while (!fs.lstatSync(cur, { throwIfNoEntry: false }) && path.dirname(cur) !== cur) { rest.unshift(path.basename(cur)); cur = path.dirname(cur) }
+    console.log(path.join(fs.realpathSync(cur), ...rest))
+  ' "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)"
+}
+
+# accepted_source <id> — the record of the GREEN test files the user accepted: S/batch/<id>/accepted-green.md, written
+# only by `10x-batch accept-green`, when TENX_BATCH is set or <id> is a line of S/batch/tickets; else
+# .10x/<id>/accepted-green.md. A worker controls its own environment, so the batch's ticket list decides too.
+accepted_source() {
+  local sb
+  sb="$(state_dir)/batch" || die "could not work out the state dir"
+  if [ -n "${TENX_BATCH:-}" ] || { [ -f "$sb/tickets" ] && awk -v id="$1" '{ gsub(/^[ \t\r]+|[ \t\r]+$/, "") } $0 == id { f = 1 } END { exit !f }' "$sb/tickets"; }; then
+    printf '%s/%s/accepted-green.md\n' "$sb" "$1"
+  else
+    printf '%s/accepted-green.md\n' "$(task_dir "$1")"
+  fi
+}
+
+# accepted_entries <accepted-green.md> — one line per `## Accepted <n>` entry, fields split by \x1f: n, file (backticks
+# and a leading ./ removed), blob, reason.
+accepted_entries() {
+  [ -f "$1" ] || return 0
+  awk '
+    function flush() { if (on) print n "\037" file "\037" blob "\037" reason; on = 0 }
+    function value(s) { sub(/^-[ \t]*[a-z]+:[ \t]*/, "", s); sub(/[ \t]+$/, "", s); return s }
+    /^## / { flush() }
+    /^## Accepted/ { on = 1; n = $3 == "" ? "?" : $3; file = blob = reason = ""; next }
+    on && /^- file:/ { file = value($0); gsub(/^`+|`+$/, "", file); sub(/^\.\//, "", file) }
+    on && /^- blob:/ { blob = value($0) }
+    on && /^- reason:/ { reason = value($0) }
+    END { flush() }
+  ' "$1"
+}
+
+# accepted_last <accepted-green.md> — dies on the first entry without a file, a valid blob or a reason, superseded
+# ones included; else prints the last entry for each file, fields split by \x1f: file, blob, reason.
+accepted_last() {
+  local n f b r
+  while IFS=$'\x1f' read -r n f b r; do
+    [ -n "$f" ] || die "accepted entry $n ($(shown "$f")) in $1 has no file"
+    [[ "$b" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || die "accepted entry $n ($(shown "$f")) in $1 has no valid blob"
+    [ -n "$r" ] || die "accepted entry $n ($(shown "$f")) in $1 has no reason"
+  done < <(accepted_entries "$1")
+  accepted_entries "$1" | awk -F $'\x1f' '!($2 in last) { order[++k] = $2 } { last[$2] = $2 FS $3 FS $4 } END { for (i = 1; i <= k; i++) print last[order[i]] }'
+}
