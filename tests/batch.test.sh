@@ -643,7 +643,7 @@ end
 reset; ticket t1 t2
 begin "run: every worker is denied the commands that always ask"
 want=""
-for c in "10x-land issue" "10x-land comment" "10x-land advisory" "10x-batch approve" "10x-batch init" \
+for c in "10x-land issue" "10x-land comment" "10x-land advisory" "10x-batch approve" "10x-batch init" "10x-batch accept-green" \
   "10x-security set" "10x-security remove" "10x-security ticket"; do
   want+="${want:+|}Bash($c:*)|Bash($c *)"
 done
@@ -661,6 +661,55 @@ need "six runs: plan and its fallback, reply, implement and its fallback, close"
 need "each run gets every rule, and the five Edit rules on the state dir and the settings files" test "$(rules "$(cat "$WORKER_LOG.disallowed")")" = "$(rules "$want|$edits")"
 need "the permission flags are unchanged" test "$(tr '\n' ',' <"$WORKER_LOG.perm")" = \
   "--permission-mode auto,--permission-mode default --allowedTools Edit(.10x/t1/**),--permission-mode auto,--permission-mode auto,--permission-mode acceptEdits,--permission-mode auto,"
+end
+
+reset; ticket t1
+vb init t1
+git remote set-url origin "$tmp/origin.git"
+10x-worktree add t1 --no-setup >"$tmp/wt.out" 2>&1
+git remote set-url origin git@github.com:acme/batch.git
+wt1="$root/.worktrees/t1"
+mkdir -p "$wt1/src"
+echo 'export const a = 1' >"$wt1/src/a.test.mjs"; echo 'export const impl = 1' >"$wt1/src/impl.mjs"
+git -C "$wt1" add -A && git -C "$wt1" commit -qm "feat: a"
+begin "accept-green: records file, blob and reason under the state dir"
+vb accept-green t1 src/a.test.mjs "portability only
+no new behaviour"
+need "exit 0 and the accepted line" eval '[ "$(cat "$tmp/out")" = "accepted: t1 src/a.test.mjs blob $(git -C "$wt1" rev-parse HEAD:src/a.test.mjs | cut -c1-12)" ]'
+need "the record holds the entry, newlines flattened" test "$(cat "$SB/t1/accepted-green.md" 2>/dev/null)" = "$(printf '## Accepted 1\n- file: src/a.test.mjs\n- blob: %s\n- reason: portability only no new behaviour' "$(git -C "$wt1" rev-parse HEAD:src/a.test.mjs)")"
+need "nothing written under the ticket dir" test ! -e .10x/t1/accepted-green.md
+end
+
+begin "accept-green: refuses a file the branch does not change as a test"
+rm -f "$SB/t1/accepted-green.md"
+need "a non-test file: exit 2" exits 2 accept-green t1 src/impl.mjs "r"
+need "a test file the branch does not change: exit 2" exits 2 accept-green t1 README.md "r"
+need "a file that does not exist: exit 2" exits 2 accept-green t1 src/none.test.mjs "r"
+need "no record" test ! -e "$SB/t1/accepted-green.md"
+end
+
+begin "accept-green: refuses an empty reason"
+need "empty: exit 2" exits 2 accept-green t1 src/a.test.mjs ""
+need "blank: exit 2" exits 2 accept-green t1 src/a.test.mjs "  "
+need "no record" test ! -e "$SB/t1/accepted-green.md"
+end
+
+begin "accept-green: refuses a ticket not in the batch"
+need "exit 2" exits 2 accept-green t9 src/a.test.mjs "r"
+need "no record" test ! -e "$SB/t9/accepted-green.md"
+end
+
+begin "accept-green: refused inside a batch worker"
+before="$(snap)"
+TENX_BATCH=1 vb accept-green t1 src/a.test.mjs "r"
+need "exit 2" test $? -eq 2
+need "the refusal line" line "10x-batch: refused inside a batch worker"
+need "nothing changed" test "$(snap)" = "$before"
+end
+
+begin "accept-green is in every run's disallowed rules"
+vb run t1 plan
+need "both rules on the run" eval 'tr "|" "\n" <"$WORKER_LOG.disallowed" | grep -qxF "Bash(10x-batch accept-green:*)" && tr "|" "\n" <"$WORKER_LOG.disallowed" | grep -qxF "Bash(10x-batch accept-green *)"'
 end
 
 reset; ticket t1
