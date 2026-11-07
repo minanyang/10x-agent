@@ -167,7 +167,7 @@ const sdir = (id) => {
   if (fs.lstatSync(d, { throwIfNoEntry: false })?.isSymbolicLink()) die(`${d} is a symlink`)
   return d
 }
-const rel =(p) => path.relative(ROOT, p)
+const rel = (p) => path.relative(ROOT, p)
 const pad = (n) => String(n).padStart(2, '0')
 const flat = (s) => String(s).replace(/[\r\n]+/g, ' ')
 
@@ -558,7 +558,7 @@ function runs(id) {
 }
 
 function writeRuns(id, rows) {
-  put(path.join(sdir(id), 'runs.tsv'),[HEADER, ...rows.map((r) => HEADER.map((h) => r[h]))].map((c) => c.join('\t') + '\n').join(''))
+  put(path.join(sdir(id), 'runs.tsv'), [HEADER, ...rows.map((r) => HEADER.map((h) => r[h]))].map((c) => c.join('\t') + '\n').join(''))
 }
 
 function alive(pid) {
@@ -633,7 +633,7 @@ function deriveAll(ids) {
   }
   // The latest run fell back from auto mode: the mode it ran in, unless it never started for want of its sandbox.
   for (const r of rows) {
-    const mode = r.last && !r.sandbox ?(readOr(path.join(bdir(r.id), `${pad(r.last.n)}-fallback`)) || '').trim() : ''
+    const mode = r.last && !r.sandbox ? (readOr(path.join(bdir(r.id), `${pad(r.last.n)}-fallback`)) || '').trim() : ''
     if (mode) r.evidence = [r.evidence, `auto mode unavailable: ran in ${mode}`].filter(Boolean).join('; ')
   }
   return rows
