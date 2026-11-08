@@ -9,6 +9,10 @@ fail=0
 ok()  { echo "ok    $1"; }
 bad() { echo "FAIL  $1"; fail=1; }
 
+# Resolved once, here, through whatever shim the caller's PATH has: no case runs a shim (see the PATH pin below).
+NODE_DIR="$(dirname "$(node -p process.execPath)")"
+GIT_DIR_BIN="$(dirname "$(command -v git)")"
+
 tmp=$(cd "$(mktemp -d)" && pwd -P)
 # The conductor's temp dir and the state dir both lie under $tmp, outside each other and outside the repository.
 mkdir "$tmp/t"
@@ -116,7 +120,12 @@ fi
 exit "${WORKER_EXIT:-0}"
 STUB
 chmod +x "$tmp/stub/gh" "$tmp/stub/worker"
-export PATH="$tmp/stub:$BIN:$PATH" STUB_LOG="$tmp/stub.log" WORKER_LOG="$tmp/worker.log" STUB_ISSUES="5 6 7 8 9"
+# A version manager's shim must never run inside a case: mise's writes $XDG_STATE_HOME/mise, which the `records:`
+# cases require to stay empty, and it rewrites PATH entries. So PATH names only the stubs, bin/, the node and git
+# resolved above and the system directories, and the managers' activation variables are unset.
+export PATH="$tmp/stub:$BIN:$NODE_DIR:$GIT_DIR_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+unset ${!MISE_@} ${!__MISE_@} ASDF_DIR ASDF_DATA_DIR VOLTA_HOME NVM_DIR NVM_BIN FNM_DIR FNM_MULTISHELL_PATH
+export STUB_LOG="$tmp/stub.log" WORKER_LOG="$tmp/worker.log" STUB_ISSUES="5 6 7 8 9"
 export TENX_BATCH_CLAUDE="$tmp/stub/worker"
 unset CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS TENX_BATCH_PLAN_DIR TENX_BATCH CLAUDE_CONFIG_DIR
 # The worker's write rules follow ZDOTDIR, XDG_CONFIG_HOME, PNPM_HOME and COREPACK_HOME: the cases set them where they matter.
@@ -994,7 +1003,7 @@ allow_of() {
     console.log(JSON.parse(require("fs").readFileSync(0, "utf8")).sandbox.filesystem.allowWrite.join("\n"))' 2>/dev/null
 }
 # The PATH every gh-27 case starts from: the stubs, this repository's bin/, and what 10x-batch and the checks run.
-P0="$tmp/stub:$BIN:$(dirname "$(command -v node)"):$(dirname "$(command -v git)"):/usr/bin:/bin"
+P0="$tmp/stub:$BIN:$NODE_DIR:$GIT_DIR_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
 opath="$PATH"
 
 reset; ticket t1 t2

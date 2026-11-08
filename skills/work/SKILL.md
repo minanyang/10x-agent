@@ -45,7 +45,7 @@ Work out the id from the argument. This step only names the ticket: it never fet
 
 Once the id is known, run `10x-worktree init <id>` on every invocation, before anything reads or writes under `.10x/`: it creates `.10x/<id>/`, keeps `.10x/` out of git, and prints the `ticket dir:` and `base:` lines the rest of the skill resolves against.
 
-Then read `.10x/<id>/plan.md`, whatever the argument's form. If it has `Status: approved`, go to Step 2 — the ticket was planned in an earlier session, so nothing is fetched and nothing is asked. If it exists as a draft, run `10x-plan-check <id>` first; on exit 1, handle it as in Step 1's check and come back here once it exits 0. Then show the draft once — its path on one line, then the file verbatim as rendered markdown, never summarised again in the same reply — and `.10x/<id>/comment.md` the same way when there is one, and ask for approval or changes; on approval, continue as at the end of Step 1. Otherwise Step 1.
+Then go by `init`'s last line, `plan:`, whatever the argument's form. `plan: approved` — `.10x/<id>/plan.md` has `Status: approved` — go to Step 2: the ticket was planned in an earlier session, so nothing is fetched and nothing is asked. `plan: draft` — the plan exists as a draft — run `10x-plan-check <id>` first; on exit 1, handle it as in Step 1's check and come back here once it exits 0. Then show the draft once — its path on one line, then the file verbatim as rendered markdown, never summarised again in the same reply — and `.10x/<id>/comment.md` the same way when there is one, and ask for approval or changes; on approval, continue as at the end of Step 1. `plan: none` — Step 1.
 
 ## Step 1 — Plan, then stop
 

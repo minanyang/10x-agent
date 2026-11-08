@@ -94,7 +94,11 @@ model has to find out by itself because no command prints the answer:
 - **Fake `gh`** (`bin/gh`) answers from `canned.json` and `state.json`, logs every call's argv to `calls.log`, and
   squash-merges into the bare origin on `pr merge`. **Fake `ssh`** (`bin/ssh`) is `GIT_SSH_COMMAND`: it runs
   `git-upload-pack` / `git-receive-pack` on the bare origin for `git@github.com:test/fixture.git`.
-- **No real `gh`.** Every PATH directory holding a `gh` is replaced by a shadow directory of symlinks to its other
+- **A fixed PATH.** A run's PATH is not the caller's: after the fake `gh` and the plugin's `bin/` it holds only the
+  directories of the resolved `node`, `git` and `jq` (resolved once when `lib.sh` is sourced) and `/usr/bin`, `/bin`,
+  `/usr/sbin`, `/sbin`, so a version manager's shim directory on the caller's PATH never runs inside a run.
+  `claude` is resolved from the caller's PATH and run by its absolute path.
+- **No real `gh`.** Every directory of that PATH holding a `gh` is replaced by a shadow directory of symlinks to its other
   executables; the runner runs with an empty `GH_CONFIG_DIR` and without `GH_TOKEN`, `GITHUB_TOKEN`,
   `GH_ENTERPRISE_TOKEN`. A flow with the fake also fails when its tool log has more executed `gh <sub> <sub2>`
   commands than the fake's call log has entries.

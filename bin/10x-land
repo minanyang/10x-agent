@@ -68,7 +68,7 @@
 # `issue` (github.com only, and refused unless tickets is github) creates an issue from .10x/drafts/<slug>.md (title, Labels:, Type:, Form:, body);
 # every label must already exist in the repo. When the main checkout has issue forms (.github/ISSUE_TEMPLATE/*.yml
 # besides config.yml) the draft's `Form: <file>` must name one, and every required field's `### <label>` section must
-# have content; without forms the body needs a `## Acceptance criteria` section. Either way each checkbox criterion
+# have content, and the present field sections must follow the form's field order; without forms the body needs a `## Acceptance criteria` section. Either way each checkbox criterion
 # there needs `AC<n>` + a dash or colon, one per line, and no phrase of references/banned-phrases.txt may appear
 # outside code. Any refusal exits 2 before `gh issue create`. Once `gh issue create` succeeds the draft is deleted;
 # when it fails, the draft stays and the script exits with gh's code.
@@ -397,15 +397,21 @@ check_body() {
     let crit = null, critHead = -1 // [from, to) of the criteria section, and its heading line
     if (formPath) {
       const fields = parseForm(fs.readFileSync(formPath, "utf8")).filter((f) => f && f.type !== "markdown")
+      const present = [] // [heading index, label] of each field the draft has, in form order
       for (const f of fields) {
         const label = f.attributes && f.attributes.label
         if (typeof label !== "string") fail(formPath + ": a " + f.type + " field has no attributes.label")
         const k = head(3, label)
         const req = f.validations && String(f.validations.required) === "true"
         if (k < 0) { if (req) fail("required field \"" + label + "\": no \"### " + label + "\" section"); continue }
+        present.push([k, label])
         const [a, b] = section(k, 3)
         if (norm(label) === "acceptance criteria") { crit = [a, b]; critHead = k }
         if (req && content(a, b) === "") fail("line " + (k + 1) + ": required field \"" + label + "\" is empty")
+      }
+      for (let i = 1; i < present.length; i++) {
+        const [k, label] = present[i], [pk, plabel] = present[i - 1]
+        if (k < pk) fail("line " + (k + 1) + ": \"### " + label + "\" is out of the form'"'"'s field order (it comes before \"### " + plabel + "\")")
       }
     } else {
       const k = head(2, "Acceptance criteria")
