@@ -82,6 +82,20 @@ if runner 0 "a clean run exits 0" "STUB_STREAM=$tmp/stream-ok" "STUB_RUN=$tmp/ca
   [ "$(grep -c . "$tmp/out")" = 2 ] && line_matches '^pass  3  [0-9]+s$' && line_matches '^total [0-9]+s$' && ok "a clean run prints one pass line and the total, exit 0" || { bad "a clean run prints one pass line and the total"; sed 's/^/      /' "$tmp/out"; }
 fi
 
+# a run's PATH is built from resolved directories, not the caller's shim directory
+real_node="$(node -p process.execPath)"
+mkdir -p "$tmp/shims"
+printf '#!/bin/bash\nexec "%s" "$@"\n' "$real_node" >"$tmp/shims/node"
+chmod +x "$tmp/shims/node"
+printf '%s\n' '#!/bin/bash' 'printf "%s\n" "$PATH" >"$STUB_PATH_OUT"' 'gh issue list --state open --search greet' >"$tmp/writes-path"
+if runner 0 "a run's PATH drops the shim directory" "PATH=$tmp/shims:$PATH" "STUB_STREAM=$tmp/stream-ok" "STUB_RUN=$tmp/writes-path" "STUB_PATH_OUT=$tmp/run-path" -- 3; then
+  case ":$(cat "$tmp/run-path" 2>/dev/null):" in
+    *":$tmp/shims:"*) bad "a run's PATH drops the caller's shim directory and keeps the resolved node (shim dir on the run's PATH)"; cat "$tmp/run-path" ;;
+    *":$(dirname "$real_node"):"*) ok "a run's PATH drops the caller's shim directory and keeps the resolved node" ;;
+    *) bad "a run's PATH drops the caller's shim directory and keeps the resolved node (node dir missing)"; cat "$tmp/run-path" ;;
+  esac
+fi
+
 # denial
 if runner 1 "a permission denial fails the flow" "STUB_STREAM=$tmp/stream-denied" "STUB_RUN=$tmp/calls-gh" -- 3; then
   line_matches '^FAIL  3  [0-9]+s  .*permission denied: 10x-land merge gh-5' && ok "a permission denial fails the flow and names the command; a failing scenario makes the exit code non-zero" || { bad "a permission denial fails the flow and names the command"; sed 's/^/      /' "$tmp/out"; }
