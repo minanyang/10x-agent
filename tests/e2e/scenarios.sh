@@ -359,7 +359,7 @@ flow_batch_bash() {
   rm -f "$REPO/.envrc"
   [ -d "$HOME/Library/pnpm" ] || : >"$RUN/pnpm-created"
   [ -d "$HOME/Library/pnpm/store" ] || : >"$RUN/pnpm-store-created"
-  mkdir -p "$HOME/Library/pnpm"
+  mkdir -p "$HOME/Library/pnpm/store"
   printf 'e2e-fixed pnpm probe\n' >"$HOME/Library/pnpm/.10x-e2e-probe"
   cp "$HOME/Library/pnpm/.10x-e2e-probe" "$RUN/pnpm-probe-before"
   benv 10x-batch init gh-5 >/dev/null 2>&1
