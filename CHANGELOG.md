@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-11-11
 
 - 10x's scripts refuse to run git in a ticket worktree whose `.git` file or admin directory (`commondir`, `gitdir`) no longer points at the main checkout, so the conductor's `10x-land check` refuses a worktree a batch worker redirected to a config whose `core.fsmonitor`, filters or hooks would run as you. The check is made once before git runs: a process still rewriting those files while 10x runs can race it. `10x-worktree list` skips such a worktree and exits 1; remove one by hand after inspecting it.
 - `/10x:audit` runs Cloudflare's installed `security-audit` skill on a scope you choose (a diff, paths or the whole repo) and merges its findings into `.10x/security.md`, matching earlier entries so a re-run never triages the same issue twice. It then asks about each new or deferred entry and opens a local ticket for each `fix-now`, which `/10x:work` fixes and clears from the log. `10x-security` gains `prepare`, `import` and `ticket`; `set` and `remove` accept audit run ids, and `10x-land ticket` reserves the slug `audit`.

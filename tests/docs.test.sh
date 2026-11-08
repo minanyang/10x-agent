@@ -179,7 +179,9 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   for (const w of ["--permission-mode auto", "-fallback"]) if (scripts === null || !scripts.includes(w)) missing.push(`docs/scripts.md: ${w}`)
   for (const w of ["## Plan boundary", "TENX_BATCH_PLAN_DIR"]) if (hooks === null || !hooks.includes(w)) missing.push(`docs/hooks.md: ${w}`)
   if (!section(hooks, "Grant").includes("10x-test")) missing.push("docs/hooks.md: 10x-test in ## Grant")
-  if (!section(log, "Unreleased").includes("auto mode")) missing.push("CHANGELOG.md: auto mode under ## Unreleased")
+  // The newest section: `## Unreleased` until a release renames it to the version.
+  const newest = ((log || "").split("\n").find((s) => /^##\s/.test(s)) || "").replace(/^##\s+/, "").trim()
+  if (!section(log, newest).includes("auto mode")) missing.push("CHANGELOG.md: auto mode in the newest section")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
@@ -275,11 +277,12 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   const name = "README and CHANGELOG mention batch auto mode"
   const log = read("CHANGELOG.md")
   const lines = log === null ? [] : log.split("\n")
-  const at = lines.findIndex((s) => s.trim() === "## Unreleased")
+  // The newest section: `## Unreleased` until a release renames it to the version.
+  const at = lines.findIndex((s) => /^##\s/.test(s))
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  const unreleased = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
+  const newest = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
   const missing = []
-  if (!unreleased.includes("/10x:batch auto")) missing.push("CHANGELOG.md: /10x:batch auto under ## Unreleased")
+  if (!newest.includes("/10x:batch auto")) missing.push("CHANGELOG.md: /10x:batch auto in the newest section")
   for (const [f, text, trust] of [["README.md", readme, "issues you trust"], ["README.zh-TW.md", zh, "只批次處理你信任的 issue"]]) {
     if (text === null) { missing.push(`${f}: missing`); continue }
     if (!text.includes("/10x:batch auto")) missing.push(`${f}: /10x:batch auto`)

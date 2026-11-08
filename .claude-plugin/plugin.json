@@ -1,7 +1,7 @@
 {
   "name": "10x",
   "displayName": "10x Agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A multi-agent workflow for shipping code: agents plan, build and review, and nothing lands without evidence a script can check.",
   "author": { "name": "Min-An Yang", "url": "https://github.com/minanyang" },
   "homepage": "https://github.com/minanyang/10x-agent#readme",
