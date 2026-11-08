@@ -119,8 +119,8 @@ chmod +x "$tmp/stub/gh" "$tmp/stub/worker"
 export PATH="$tmp/stub:$BIN:$PATH" STUB_LOG="$tmp/stub.log" WORKER_LOG="$tmp/worker.log" STUB_ISSUES="5 6 7 8 9"
 export TENX_BATCH_CLAUDE="$tmp/stub/worker"
 unset CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS TENX_BATCH_PLAN_DIR TENX_BATCH CLAUDE_CONFIG_DIR
-# The worker's write rules follow ZDOTDIR and XDG_CONFIG_HOME: the cases set them where they matter.
-unset ZDOTDIR XDG_CONFIG_HOME
+# The worker's write rules follow ZDOTDIR, XDG_CONFIG_HOME, PNPM_HOME and COREPACK_HOME: the cases set them where they matter.
+unset ZDOTDIR XDG_CONFIG_HOME PNPM_HOME COREPACK_HOME
 
 git -c init.defaultBranch=main init -q --bare "$tmp/origin.git"
 git -c init.defaultBranch=main init -q "$tmp/repo"
@@ -673,6 +673,32 @@ real_of() {
     }
     console.log(p)' "$1"
 }
+# path_deny — the PATH and cache denies of the plan's AC4 and AC5, one per line, read from the environment as
+# 10x-batch reads it: each non-empty absolute entry of $PATH and $PNPM_HOME when absolute, path.resolve'd;
+# ~/.npm/_npx, ~/Library/Caches/pnpm/dlx and ~/.cache/node/corepack under the real home, and $COREPACK_HOME when
+# absolute, resolved; each followed by its real path as real_of gives it.
+path_deny() {
+  node -e '
+    const fs = require("fs"), os = require("os"), path = require("path")
+    const real = (p) => {
+      for (let hops = 0; hops < 40; hops++) {
+        const rest = []; let cur = p
+        while (!fs.lstatSync(cur, { throwIfNoEntry: false })) { rest.unshift(path.basename(cur)); cur = path.dirname(cur) }
+        try { return path.join(fs.realpathSync(cur), ...rest) } catch {
+          if (!fs.lstatSync(cur).isSymbolicLink()) return p
+          p = path.join(path.resolve(path.dirname(cur), fs.readlinkSync(cur)), ...rest)
+        }
+      }
+      return p
+    }
+    const abs = (v) => v && path.isAbsolute(v)
+    const e = process.env
+    const h = fs.realpathSync(os.homedir())
+    const ps = [...(e.PATH || "").split(path.delimiter).filter(abs).map((x) => path.resolve(x)), ...(abs(e.PNPM_HOME) ? [path.resolve(e.PNPM_HOME)] : []),
+      path.join(h, ".npm", "_npx"), path.join(h, "Library", "Caches", "pnpm", "dlx"), path.join(h, ".cache", "node", "corepack"),
+      ...(abs(e.COREPACK_HOME) ? [path.resolve(e.COREPACK_HOME)] : [])]
+    for (const p of ps) console.log(p + "\n" + real(p))'
+}
 write_rules() {
   local home plug zdot wt p r out=() seen="|"
   home="$(cd "$HOME" && pwd -P)"; plug="$(cd "$BIN/.." && pwd -P)"
@@ -688,6 +714,7 @@ write_rules() {
     r="$(real_of "${p%/\*\*}")"
     if [ "$r" != "${p%/\*\*}" ]; then [ "$p" = "${p%/\*\*}" ] && out+=("$r") || out+=("$r/**"); fi
   done
+  while IFS= read -r p; do out+=("$p/**"); done < <(path_deny)
   for p in "${out[@]}"; do
     case "$seen" in *"|Edit(/$p)|"*) ;; *) seen+="Edit(/$p)|" ;; esac
   done
@@ -847,6 +874,7 @@ sandbox_deny() {
       [ "$g" = "$wt/t1/.git" ] && continue
       for p in "$a" "$g"; do echo "$p"; real_of "$p"; done
     done
+    path_deny
   } | LC_ALL=C sort -u
 }
 # same_deny <expected> — every one of the six runs' denyWrite is <expected>, with no entry twice and no glob; a failure shows the diff.
@@ -956,6 +984,136 @@ for vfd in "unset==" "absolute=$tmp/cfg=$tmp/cfg" "empty==$root" "relative=cfg=$
     done
   fi
 done
+end
+
+# ---- PATH entries, PNPM_HOME and the caches whose contents run later (gh-27)
+
+# allow_of <n> — the sandbox.filesystem.allowWrite of run <n>'s --settings, one per line, in order.
+allow_of() {
+  sed -n "${1}p" "$WORKER_LOG.settings" | node -e '
+    console.log(JSON.parse(require("fs").readFileSync(0, "utf8")).sandbox.filesystem.allowWrite.join("\n"))' 2>/dev/null
+}
+# The PATH every gh-27 case starts from: the stubs, this repository's bin/, and what 10x-batch and the checks run.
+P0="$tmp/stub:$BIN:$(dirname "$(command -v node)"):$(dirname "$(command -v git)"):/usr/bin:/bin"
+opath="$PATH"
+
+reset; ticket t1 t2
+begin "run: every run's allowWrite holds nothing under ~/Library/pnpm"
+six_runs .worktrees/t1
+for n in 1 2 3 4 5 6; do
+  need "run $n: allowWrite is the temp dir, the npm and generic caches, ~/Library/Developer and the two descriptors" \
+    test "$(allow_of "$n" | tr '\n' ' ')" = "$TMPDIR $HOME/.npm $HOME/Library/Caches $HOME/.cache $HOME/Library/Developer /dev/stdout /dev/fd "
+  need "run $n: nothing under ~/Library/pnpm" not grep -q "^$HOME/Library/pnpm" <(allow_of "$n")
+done
+end
+
+reset; ticket t1 t2
+begin "run: every run denies Write and Bash each absolute PATH entry and its target, never a relative one"
+home="$(cd "$HOME" && pwd -P)"
+mkdir -p "$tmp/pt"; ln -sfn "$tmp/pt" "$tmp/plink"
+PATH="$P0:$HOME/Library/pnpm:$HOME/.cache/shims:$HOME/.local/bin:$tmp/plink:node_modules/.bin::$HOME/.local/bin/"
+six_runs .worktrees/t1
+same_deny "$(sandbox_deny "" "" "")"
+for n in 1 2 3 4 5 6; do
+  for d in "$HOME/Library/pnpm" "$HOME/.cache/shims" "$HOME/.local/bin" "$tmp/plink" "$tmp/pt"; do
+    need "run $n: Edit(/$d/**)" edit_rule_n "$n" "Edit(/$d/**)"
+    need "run $n: denyWrite $d" has_deny "$n" "$d"
+  done
+  need "run $n: the trailing slash is resolved away" not has_deny "$n" "$HOME/.local/bin/"
+  need "run $n: no relative entry in denyWrite" test -z "$(deny_of "$n" | grep -v '^/')"
+  need "run $n: no rule for the relative entry" not grep -qF "node_modules/.bin" <(sed -n "${n}p" "$WORKER_LOG.disallowed")
+  need "run $n: the empty entry does not deny the main checkout" not has_deny "$n" "$root"
+  need "run $n: nor its Edit rule" not edit_rule_n "$n" "Edit(/$root/**)"
+done
+need "the full Edit rule set of the plan run" test "$(rules "$(head -1 "$WORKER_LOG.disallowed")")" = "$(rules "$want|$edits|$(write_rules)")"
+PATH="$opath"
+rm -rf "${tmp:?}/pt" "${tmp:?}/plink"
+end
+
+reset; ticket t1 t2
+begin "run: PNPM_HOME joins the denies when set and absolute"
+PATH="$P0"
+export PNPM_HOME="$tmp/pnpmhome"
+six_runs .worktrees/t1
+same_deny "$(sandbox_deny "" "" "")"
+for n in 1 2 3 4 5 6; do
+  need "run $n: Edit(/$tmp/pnpmhome/**), though PATH lacks it" edit_rule_n "$n" "Edit(/$tmp/pnpmhome/**)"
+  need "run $n: denyWrite $tmp/pnpmhome" has_deny "$n" "$tmp/pnpmhome"
+done
+reset; ticket t1
+export PNPM_HOME="rel/pnpm"
+vb init t1
+vb run t1 plan
+need "a relative PNPM_HOME: exit 0" test $? -eq 0
+need "a relative PNPM_HOME is not denied" not grep -qF "rel/pnpm" "$WORKER_LOG.settings" "$WORKER_LOG.disallowed"
+unset PNPM_HOME
+PATH="$opath"
+end
+
+reset; ticket t1 t2
+begin "run: every run denies Write and Bash the npx, pnpm dlx and corepack caches"
+home="$(cd "$HOME" && pwd -P)"
+six_runs .worktrees/t1
+for n in 1 2 3 4 5 6; do
+  for d in "$home/.npm/_npx" "$home/Library/Caches/pnpm/dlx" "$home/.cache/node/corepack"; do
+    need "run $n: Edit(/$d/**)" edit_rule_n "$n" "Edit(/$d/**)"
+    need "run $n: denyWrite $d" has_deny "$n" "$d"
+  done
+done
+end
+
+reset; ticket t1 t2
+begin "run: COREPACK_HOME joins the cache denies when set and absolute"
+home="$(cd "$HOME" && pwd -P)"
+mkdir -p "$tmp/cpreal"; ln -sfn "$tmp/cpreal" "$tmp/cp"
+export COREPACK_HOME="$tmp/cp"
+six_runs .worktrees/t1
+same_deny "$(sandbox_deny "" "" "")"
+for n in 1 2 3 4 5 6; do
+  for d in "$tmp/cp" "$tmp/cpreal" "$home/.cache/node/corepack"; do
+    need "run $n: Edit(/$d/**)" edit_rule_n "$n" "Edit(/$d/**)"
+    need "run $n: denyWrite $d" has_deny "$n" "$d"
+  done
+done
+reset; ticket t1
+export COREPACK_HOME="cprel"
+vb init t1
+vb run t1 plan
+need "a relative COREPACK_HOME: exit 0" test $? -eq 0
+need "a relative COREPACK_HOME is not denied" not grep -qF "cprel" "$WORKER_LOG.settings" "$WORKER_LOG.disallowed"
+need "the default corepack cache still is" has_deny 1 "$home/.cache/node/corepack"
+unset COREPACK_HOME
+rm -rf "${tmp:?}/cp" "${tmp:?}/cpreal"
+end
+
+reset; ticket t1
+begin "run: a PATH entry containing an allowWrite root or the main checkout is refused"
+home="$(cd "$HOME" && pwd -P)"
+vb init t1
+PATH="$P0:$HOME/.cache"
+need "an entry equal to ~/.cache: exit 2" exits 2 run t1 plan
+need "names the entry and the root" line "10x-batch: PATH entry $HOME/.cache contains $home/.cache"
+PATH="$P0:$root"
+need "an entry equal to the main checkout: exit 2" exits 2 run t1 plan
+need "names the entry and the main checkout" line "10x-batch: PATH entry $root contains $root"
+PATH="$P0"
+PNPM_HOME="$HOME/.cache" vb run t1 plan
+need "PNPM_HOME equal to ~/.cache: exit 2" test $? -eq 2
+need "names PNPM_HOME" line "10x-batch: PNPM_HOME $HOME/.cache contains $home/.cache"
+need "no worker started" test ! -s "$WORKER_LOG"
+need "no run recorded" test ! -e "$SB/t1/runs.tsv"
+PATH="$P0:$HOME/Library/pnpm"
+need "\$HOME/Library/pnpm is not refused" exits 0 run t1 plan
+reset; ticket t1
+PATH="$P0"; vb init t1
+PATH="$P0:$HOME/.cache"
+lp 30
+PATH="$P0"
+need "loop finished" finished
+need "loop reports it failed with the line as evidence" \
+  printed "{\"items\":[{\"id\":\"t1\",\"need\":\"failed\",\"evidence\":\"10x-batch: PATH entry $HOME/.cache contains $home/.cache\"}]}"
+need "still no worker" test ! -s "$WORKER_LOG"
+PATH="$opath"
 end
 
 reset; ticket t1
@@ -1831,7 +1989,7 @@ want="$(node -e '
   const os = require("os"), path = require("path")
   const h = (x) => path.join(os.homedir(), x)
   console.log(JSON.stringify({ sandbox: { enabled: true, allowUnsandboxedCommands: false, failIfUnavailable: true, enableWeakerNetworkIsolation: true,
-    filesystem: { allowWrite: [os.tmpdir(), h(".npm"), h("Library/pnpm"), h("Library/Caches"), h(".cache"), h("Library/Developer"), "/dev/stdout", "/dev/fd"] },
+    filesystem: { allowWrite: [os.tmpdir(), h(".npm"), h("Library/Caches"), h(".cache"), h("Library/Developer"), "/dev/stdout", "/dev/fd"] },
     network: { allowedDomains: ["*"], allowLocalBinding: true } } }))
 ')"
 vb init t1 t2
