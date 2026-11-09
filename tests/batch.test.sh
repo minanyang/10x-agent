@@ -1170,6 +1170,15 @@ need "the refusal line" line "10x-batch: refused inside a batch worker"
 need "nothing changed" test "$(snap)" = "$before"
 end
 
+begin "accept-green: refuses a worktree whose admin dir is redirected"
+cp "$root/.git/worktrees/t1/commondir" "$tmp/commondir.orig"
+mkdir -p "$tmp/evil"; printf '%s\n' "$tmp/evil" >"$root/.git/worktrees/t1/commondir"
+need "exit 2" exits 2 accept-green t1 src/a.test.mjs "r"
+need "names the worktree and the commondir file" eval 'grep -qF "refusing to run git in $wt1: " "$tmp/out" && grep -qF "$root/.git/worktrees/t1/commondir" "$tmp/out"'
+need "no record" test ! -e "$SB/t1/accepted-green.md"
+cp "$tmp/commondir.orig" "$root/.git/worktrees/t1/commondir"; rm -r "$tmp/evil"
+end
+
 begin "accept-green is in every run's disallowed rules"
 vb run t1 plan
 need "both rules on the run" eval 'tr "|" "\n" <"$WORKER_LOG.disallowed" | grep -qxF "Bash(10x-batch accept-green:*)" && tr "|" "\n" <"$WORKER_LOG.disallowed" | grep -qxF "Bash(10x-batch accept-green *)"'
