@@ -12,7 +12,8 @@
 # `init` first prints where tickets live, `tickets: <github|files>` (config `tickets`, else github for a github.com
 # origin and files otherwise; exit 2 on any other value, before anything is created). It then keeps .10x/ and the
 # worktree directory out of git (.git/info/exclude) and prints for an id `ticket dir: <.10x/<id>/, created>` and `base: <branch> (<ref>)` — run it before writing
-# anything under .10x/. Without an id it creates .10x/drafts/, where /10x:open writes issue drafts,
+# anything under .10x/ — then `plan: approved` (.10x/<id>/plan.md is a regular file with a `Status: approved` line),
+# `plan: draft` (any other plan.md) or `plan: none`. Without an id it creates .10x/drafts/, where /10x:open writes issue drafts,
 # and prints what /10x:open drafts from: `drafts: <absolute path>`, one `form: <file> name: … labels: …
 # title: … required: … fields: …` line per issue form (or `forms: none`), one `template: <file>` line per .md
 # template and `banned: <json array>` (scripts/issue-form.js).
@@ -64,6 +65,11 @@ case "$cmd" in
   init)
     if [ -n "${1:-}" ]; then
       check_id "$1"; tickets_line; ensure_excluded; mkdir -p "$(task_dir "$1")"; ticket_lines "$1"
+      # Routes /10x:work's Step 0; the same approval test as bin/10x-batch and hooks/stop-gate.js.
+      plan="$(task_dir "$1")/plan.md"
+      if [ ! -e "$plan" ] && [ ! -L "$plan" ]; then say "plan: none"
+      elif [ ! -L "$plan" ] && [ -f "$plan" ] && grep -Eq '^Status:[[:space:]]*approved[[:space:]]*$' "$plan"; then say "plan: approved"
+      else say "plan: draft"; fi
     else
       tickets_line; ensure_excluded
       mkdir -p "$ROOT/.10x/drafts"

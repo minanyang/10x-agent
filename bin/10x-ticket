@@ -9,10 +9,11 @@
 // any comment posted to it all concern the same repo.
 //
 // --out must name this issue's .10x/gh-<number>/ticket.md in the main checkout, so a permission rule for
-// `10x-ticket *` cannot be stretched into a write anywhere else.
+// `10x-ticket *` cannot be stretched into a write anywhere else. With TENX_BATCH set (a /10x:batch worker), --out
+// exits 2 before any gh call when that directory's plan.md is approved: the worker goes to Step 2 instead.
 
 const { execFileSync } = require('node:child_process')
-const { lstatSync, realpathSync, renameSync, writeFileSync } = require('node:fs')
+const { lstatSync, readFileSync, realpathSync, renameSync, writeFileSync } = require('node:fs')
 const { basename, dirname, join, resolve } = require('node:path')
 
 const args = process.argv.slice(2)
@@ -74,6 +75,15 @@ function outTarget(number) {
   return join(parent, 'ticket.md')
 }
 
+// A regular, non-symlinked plan.md with a `Status: approved` line (the test of bin/10x-batch and hooks/stop-gate.js).
+function approved(plan) {
+  try {
+    return lstatSync(plan).isFile() && /^Status:\s*approved\s*$/m.test(readFileSync(plan, 'utf8'))
+  } catch {
+    return false
+  }
+}
+
 // OWNER/REPO of origin, which must be on github.com (the same host and path rules as 10x-land).
 function originRepo(form) {
   let url
@@ -101,6 +111,8 @@ function github(ref) {
     die(`issue ${ref} is not in origin's repo ${repo}; describe the task in words instead`)
   const number = url ? url[2] : /^[1-9][0-9]*$/.test(ref) ? ref : die(`'${ref}' is neither an issue number nor an issue URL of ${repo}`)
   const target = outPath ? outTarget(number) : null
+  if (target && process.env.TENX_BATCH && approved(join(dirname(target), 'plan.md')))
+    die(`refused: .10x/gh-${number}/plan.md is approved: go to Step 2 (10x-worktree add gh-${number}); a batch worker does not fetch an approved ticket again`)
   const raw = gh(['issue', 'view', number, '--repo', `github.com/${repo}`, '--json', 'number,title,body,url,state,labels,issueType,comments'])
   const i = JSON.parse(raw)
   const out = [`# ${i.title}`, '', `- source: GitHub issue #${i.number} (${i.state.toLowerCase()})`, `- url: ${i.url}`]

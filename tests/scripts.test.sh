@@ -45,8 +45,11 @@ head -n 1 "$tmp/out" >"$tmp/init-id.first"
 # out_is <expected> <real-path expected> — the output is one of the two forms of a path under $tmp (macOS: /var vs /private/var).
 out_is() { [ "$(cat "$tmp/out")" = "$1" ] || [ "$(cat "$tmp/out")" = "$2" ]; }
 rp="$(cd "$tmp/repo" && pwd -P)"
-out_is "$(printf 'tickets: files\nticket dir: %s\nbase: main (origin/main)' "$tmp/repo/.10x/T0")" "$(printf 'tickets: files\nticket dir: %s\nbase: main (origin/main)' "$rp/.10x/T0")" \
+out_is "$(printf 'tickets: files\nticket dir: %s\nbase: main (origin/main)\nplan: none' "$tmp/repo/.10x/T0")" "$(printf 'tickets: files\nticket dir: %s\nbase: main (origin/main)\nplan: none' "$rp/.10x/T0")" \
   && ok "init prints the ticket dir and the base" || { bad "init prints the ticket dir and the base"; cat "$tmp/out"; }
+printf '# T0\n\nStatus: approved\n' >.10x/T0/plan.md
+10x-worktree init T0 >"$tmp/out" 2>&1
+[ "$(tail -n 1 "$tmp/out")" = "plan: approved" ] && ok "init prints plan: approved for an approved plan" || { bad "init prints plan: approved for an approved plan"; cat "$tmp/out"; }
 echo plan >.10x/T0/plan.md
 [ -z "$(git status --porcelain)" ] && ok "ticket files stay out of git before any worktree" || bad "ticket files stay out of git before any worktree"
 [ ! -e .10x/drafts ] && ok "init <id> does not create drafts/" || bad "init <id> does not create drafts/"
@@ -1922,6 +1925,8 @@ printf 'labels: [bug, "triage"]\nbody:\n  - type: textarea\n    attributes:\n   
 printf '# T\nForm: flowlabels.yml\n\n### X\nx\n' >"$dr/flowlabels.md"
 : >"$tmp/stub.log"
 expect "issue reads a form whose labels are a flow list" 0 10x-land issue flowlabels
+printf '# T\nLabels: bug\nForm: bug.yml\n\n### What happens\nit breaks\n\n### Expected\nit holds\n\n### Steps to reproduce\n1. run\n\n### Version / commit\nabc123\n\n### Acceptance criteria\n- [ ] AC1 — it holds\n' >"$dr/bugorder.md"
+refuse "issue refuses form sections out of field order" 'line 8: "### Expected" is out of the form'"'"'s field order (it comes before "### Steps to reproduce")' bugorder
 rm -r "$tmp/land/.github"
 ln "$tmp/real-body.md" "$td/pr-body.md"
 expect "pr refuses a hard-linked body" 2 10x-land pr L1
@@ -2065,6 +2070,13 @@ git remote set-url origin https://notgithub.com/acme/land.git
 expect "ticket refuses a non-github.com origin" 2 10x-ticket github 7
 git remote set-url origin git@github.com:acme/land.git
 [ ! -s "$tmp/stub.log" ] && ok "no gh call for a refused ticket" || bad "no gh call for a refused ticket"
+# a batch worker does not fetch a ticket whose plan is approved
+printf '# T\n\nStatus: approved\n' >"$gd/plan.md"
+: >"$tmp/stub.log"
+TENX_BATCH=1 10x-ticket github 7 --out .10x/gh-7/ticket.md >"$tmp/out" 2>&1; rc=$?
+[ "$rc" -eq 2 ] && [ "$(cat "$tmp/out")" = "10x-ticket: refused: .10x/gh-7/plan.md is approved: go to Step 2 (10x-worktree add gh-7); a batch worker does not fetch an approved ticket again" ] && [ ! -s "$tmp/stub.log" ] &&
+  ok "10x-ticket refuses --out over an approved plan inside a batch worker" || { bad "10x-ticket refuses --out over an approved plan inside a batch worker (exit $rc)"; cat "$tmp/out" "$tmp/stub.log"; }
+rm "$gd/plan.md"
 
 # 10x-ticket issue-types lists the issue types of origin's repo
 STUB_GRAPHQL='{"data":{"repository":{"issueTypes":{"nodes":[{"name":"Bug"},{"name":"Feature"}]}}}}' expect "issue-types prints one type per line" 0 10x-ticket issue-types

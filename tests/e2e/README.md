@@ -92,9 +92,15 @@ model has to find out by itself because no command prints the answer:
 - **Close flows start from prepared state** (`prep_ticket`): the worktree, a committed fix, `ticket.md`, an approved
   `plan.md`, `review.md` and `evidence.md` — `/10x:work` is not run.
 - **Fake `gh`** (`bin/gh`) answers from `canned.json` and `state.json`, logs every call's argv to `calls.log`, and
-  squash-merges into the bare origin on `pr merge`. **Fake `ssh`** (`bin/ssh`) is `GIT_SSH_COMMAND`: it runs
-  `git-upload-pack` / `git-receive-pack` on the bare origin for `git@github.com:test/fixture.git`.
-- **No real `gh`.** Every PATH directory holding a `gh` is replaced by a shadow directory of symlinks to its other
+  squash-merges into the bare origin on `pr merge`. **Fake `ssh`** (`bin/ssh`) is `GIT_SSH_COMMAND` and the first
+  `ssh` on a run's PATH: it runs `git-upload-pack` / `git-receive-pack` on the bare origin for
+  `git@github.com:test/fixture.git`. The PATH entry is what a batch worker reaches: its sandboxed Bash replaces
+  `GIT_SSH_COMMAND` with the sandbox's own `ssh -o ProxyCommand=…`, which looks `ssh` up on PATH.
+- **A fixed PATH.** A run's PATH is not the caller's: after the fake `ssh`, the fake `gh` and the plugin's `bin/` it holds only the
+  directories of the resolved `node`, `git` and `jq` (resolved once when `lib.sh` is sourced) and `/usr/bin`, `/bin`,
+  `/usr/sbin`, `/sbin`, so a version manager's shim directory on the caller's PATH never runs inside a run.
+  `claude` is resolved from the caller's PATH and run by its absolute path.
+- **No real `gh`.** Every directory of that PATH holding a `gh` is replaced by a shadow directory of symlinks to its other
   executables; the runner runs with an empty `GH_CONFIG_DIR` and without `GH_TOKEN`, `GITHUB_TOKEN`,
   `GH_ENTERPRISE_TOKEN`. A flow with the fake also fails when its tool log has more executed `gh <sub> <sub2>`
   commands than the fake's call log has entries.
