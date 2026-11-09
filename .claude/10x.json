@@ -11,6 +11,7 @@
     "bash tests/scripts.test.sh",
     "bash tests/security.test.sh",
     "bash tests/security-fixes.test.sh",
+    "bash tests/worktree-link.test.sh",
     "bash tests/batch.test.sh",
     "bash tests/roadmap.test.sh",
     "bash tests/red-proof-runners.test.sh",
