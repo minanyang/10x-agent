@@ -45,13 +45,14 @@ e2e_prereqs() {
 
 # ---------------------------------------------------------------- environment
 
-# build_path <with-fake 1|0> <shadow-dir> <fake-dir> — the PATH of a run: the fake gh (if any), the plugin's bin/, then
-# E2E_BASE_PATH without plugin-cache entries, each directory holding a gh replaced by a shadow of all its other
-# executables.
+# build_path <with-fake 1|0> <shadow-dir> <fake-dir> <ssh-dir> — the PATH of a run: the fake ssh, the fake gh (if any),
+# the plugin's bin/, then E2E_BASE_PATH without plugin-cache entries, each directory holding a gh replaced by a shadow
+# of all its other executables. The fake ssh comes first because a sandboxed worker's Bash replaces GIT_SSH_COMMAND
+# with the sandbox's own `ssh -o ProxyCommand=…`, which still finds `ssh` on PATH.
 build_path() {
-  local fake="$1" shadow="$2" fakedir="$3" out="" d n=0 f
-  if [ "$fake" = 1 ]; then out="$fakedir"; fi
-  out="${out:+$out:}$PLUGIN/bin"
+  local fake="$1" shadow="$2" fakedir="$3" out="$4" d n=0 f
+  if [ "$fake" = 1 ]; then out="$out:$fakedir"; fi
+  out="$out:$PLUGIN/bin"
   local IFS=:
   for d in $E2E_BASE_PATH; do
     [ -n "$d" ] || continue
@@ -98,12 +99,13 @@ new_run() {
   local dir
   dir="$(mktemp -d "$FLOW_ROOT/run.XXXXXX")"
   dir="$(cd "$dir" && pwd -P)"
-  mkdir -p "$dir/gh" "$dir/log" "$dir/ghconfig" "$dir/fakebin" "$dir/shadow"
+  mkdir -p "$dir/gh" "$dir/log" "$dir/ghconfig" "$dir/fakebin" "$dir/shadow" "$dir/sshbin"
   ln -s "$E2E_DIR/bin/gh" "$dir/fakebin/gh"
+  ln -s "$E2E_DIR/bin/ssh" "$dir/sshbin/ssh"
   : >"$dir/gh/calls.log"
   echo '{}' >"$dir/gh/canned.json"
   echo "$fake" >"$dir/fake"
-  build_path "$fake" "$dir/shadow" "$dir/fakebin" >"$dir/path"
+  build_path "$fake" "$dir/shadow" "$dir/fakebin" "$dir/sshbin" >"$dir/path"
   printf '[user]\n\tname = E2E\n\temail = e2e@example.com\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n' >"$dir/gitconfig"
   echo "$dir" >>"$FLOW_ROOT/runs"
   use_run "$dir"
