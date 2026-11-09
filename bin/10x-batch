@@ -113,6 +113,7 @@ const os = require('node:os')
 const path = require('node:path')
 const md = require(path.join(__dirname, '..', 'scripts', 'md-check.js'))
 const roadmap = require(path.join(__dirname, '..', 'scripts', 'roadmap.js'))
+const worktree = require(path.join(__dirname, '..', 'scripts', 'worktree.js'))
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -1292,6 +1293,8 @@ function acceptGreen(argv) {
     die(`accept-green ${id} refused: '${flat(arg)}' is not a path relative to the worktree root`)
   const wt = path.join(WT_DIR, id)
   if (!fs.existsSync(path.join(wt, '.git'))) die(`accept-green ${id} refused: ${id} has no worktree at ${wt}`)
+  const redirected = worktree.reason(wt, common)
+  if (redirected) die(`accept-green ${id} refused: ${redirected}`)
   const wtGit = (a) => git(['-C', wt, ...a])
   const ref = baseRef()
   const mb = wtGit(['merge-base', ref, 'HEAD'])

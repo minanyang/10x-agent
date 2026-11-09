@@ -22,6 +22,7 @@ main_root() {
 
 ROOT="$(main_root)"
 CONFIG="$ROOT/.claude/10x.json"
+COMMON="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)"
 
 # cfg <dotted.key> [default] — print a config value (arrays one item per line).
 cfg() { cfg_in "$CONFIG" "$@"; }
@@ -104,10 +105,24 @@ task_dir() { printf '%s/.10x/%s\n' "$ROOT" "$1"; }
 
 # The worktree of ticket <id>, or die.
 wt_path() {
-  local p
+  local p r
   p="$(worktree_dir)/$1"
   [ -e "$p/.git" ] || die "ticket $1 has no worktree at $p (run: 10x-worktree add $1)"
+  r="$(wt_check "$p")"
+  [ -z "$r" ] || die "$r"
   printf '%s\n' "$p"
+}
+
+# wt_check <worktree> — prints why git must not run in <worktree> (its .git file or admin directory no longer points at
+# the main checkout), nothing when it may. scripts/worktree.js reads files only, never git. A check that cannot run is a
+# reason too: an empty one must never come from a broken check.
+wt_check() {
+  local out
+  if ! out="$(node "$(dirname "${BASH_SOURCE[0]}")/worktree.js" "$1" "$COMMON" 2>&1)"; then
+    printf 'refusing to run git in %s: the worktree check failed: %s\n' "$(shown "$1")" "$(shown "$out")"
+    return 0
+  fi
+  [ -z "$out" ] || printf '%s\n' "$out"
 }
 
 # Base branch name: config `base`, else develop if origin has it, else origin's default, else main.
