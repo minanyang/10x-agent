@@ -124,7 +124,7 @@ chmod +x "$tmp/stub/gh" "$tmp/stub/worker"
 # cases require to stay empty, and it rewrites PATH entries. So PATH names only the stubs, bin/, the node and git
 # resolved above and the system directories, and the managers' activation variables are unset.
 export PATH="$tmp/stub:$BIN:$NODE_DIR:$GIT_DIR_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
-unset ${!MISE_@} ${!__MISE_@} ASDF_DIR ASDF_DATA_DIR VOLTA_HOME NVM_DIR NVM_BIN FNM_DIR FNM_MULTISHELL_PATH
+unset "${!MISE_@}" "${!__MISE_@}" ASDF_DIR ASDF_DATA_DIR VOLTA_HOME NVM_DIR NVM_BIN FNM_DIR FNM_MULTISHELL_PATH
 export STUB_LOG="$tmp/stub.log" WORKER_LOG="$tmp/worker.log" STUB_ISSUES="5 6 7 8 9"
 export TENX_BATCH_CLAUDE="$tmp/stub/worker"
 unset CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS TENX_BATCH_PLAN_DIR TENX_BATCH CLAUDE_CONFIG_DIR
