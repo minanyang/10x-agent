@@ -38,6 +38,9 @@
 # changes go in one commit, nothing else. A path changed differently in both places, a main
 # checkout copy edited from another version than the branch's, or a symlink on a path being
 # moved, stops it before anything moves. Prints each committed path.
+# Before running git in an existing worktree, `add`, `path`, `rm` and `memory` exit 2 when its .git file or admin
+# directory no longer points at the main checkout (scripts/worktree.js): a redirected config would run its own
+# commands. `list` prints such a worktree as a `skipped: <reason>` line instead of its row and exits 1.
 
 set -euo pipefail
 # shellcheck source=../scripts/lib.sh
@@ -95,6 +98,8 @@ case "$cmd" in
     path="$(worktree_dir)/$id"
     if [ -e "$path/.git" ]; then
       ticket_lines "$id"
+      r="$(wt_check "$path")"
+      [ -z "$r" ] || die "$r"
       say "exists: $path on $(git -C "$path" rev-parse --abbrev-ref HEAD)"
       exit 0
     fi
@@ -149,14 +154,17 @@ case "$cmd" in
 
   list)
     dir="$(worktree_dir)"
-    found=0
+    found=0; skipped=0
     for p in "$dir"/*/; do
       [ -e "$p/.git" ] || continue
       found=1
       p="${p%/}"
+      r="$(wt_check "$p")"
+      if [ -n "$r" ]; then say "skipped: $r"; skipped=1; continue; fi
       printf '%-24s %-40s %s uncommitted\n' "$(basename "$p")" "$(git -C "$p" rev-parse --abbrev-ref HEAD)" "$(git -C "$p" status --porcelain | wc -l | tr -d ' ')"
     done
     [ "$found" = 1 ] || say "no ticket worktrees under $dir"
+    [ "$skipped" = 0 ] || exit 1
     ;;
 
   path)
