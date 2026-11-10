@@ -9,6 +9,7 @@
 # docs/scripts.md's `10x-batch run` entry must name the `git common dir` a worker's Write and Edit tools are denied.
 # docs/scripts.md's `10x-batch run` entry must name the `PATH entry` a worker is denied, and refused when it contains
 # an allowWrite path.
+# docs/scripts.md's `10x-batch run` entry must name the main checkout's `.claude/10x.json` a worker is denied.
 # README.zh-TW.md must have the same ## / ### headings, level by level, and the two READMEs must link to each other.
 # Every relative link in README.md, README.zh-TW.md and docs/*.md must resolve to a file, and an anchor to a heading
 # of that file as GitHub slugs it.
@@ -247,6 +248,15 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   const entry = (scripts || "").split("\n").find((s) => s.startsWith("- `10x-batch run "))
   !entry ? bad(name, "no `10x-batch run` entry in docs/scripts.md")
     : entry.includes("PATH entry") ? ok(name) : bad(name, "the `10x-batch run` entry does not name PATH entry")
+}
+
+// worker-10x-json AC3 — the `10x-batch run` entry of docs/scripts.md names the main checkout's project config.
+{
+  const name = "docs/scripts.md names the project config in the 10x-batch run entry"
+  const scripts = read("docs/scripts.md")
+  const entry = (scripts || "").split("\n").find((s) => s.startsWith("- `10x-batch run "))
+  !entry ? bad(name, "no `10x-batch run` entry in docs/scripts.md")
+    : entry.includes(".claude/10x.json") ? ok(name) : bad(name, "the `10x-batch run` entry does not name .claude/10x.json")
 }
 
 // gh-24 AC5, AC8 — docs/loop.md's `### The batch sandbox` section names `denyWrite`.
