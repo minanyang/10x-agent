@@ -46,6 +46,17 @@ check "a .git file through a symlink and .. is refused, and runs no planted fsmo
 printf '%s/.worktrees/A/.git\n' "$via" >"$admin/gitdir"
 check "an admin gitdir through a symlink and .. is refused" "$admin/gitdir"
 
+# git resolves a link file's raw bytes, node the decoded string: a byte that is not UTF-8 (\xff, decoded to U+FFFD)
+# could name another directory for each, so the guard refuses it.
+printf '%s/\xff/../.git\n' "$tmp/repo" >"$admin/commondir"
+10x-land check A >"$tmp/out" 2>&1; rc=$?
+printf 'gitdir: %s/.git/worktrees/\xff/../A\n' "$tmp/repo" >"$wt/.git"
+10x-worktree path A >"$tmp/out2" 2>&1; rc2=$?
+restore
+[ "$rc" -eq 2 ] && grep -qF "$admin/commondir is not valid UTF-8" "$tmp/out" && [ "$rc2" -eq 2 ] && grep -qF "$wt/.git is not valid UTF-8" "$tmp/out2" &&
+  ok "a commondir or .git file that is not valid UTF-8 is refused" ||
+  { bad "a commondir or .git file that is not valid UTF-8 is refused (exit $rc, $rc2)"; cat "$tmp/out" "$tmp/out2"; }
+
 rm "$wt/l"
 10x-land check A >"$tmp/out" 2>&1; rc=$?
 [ "$rc" -eq 0 ] && grep -qxF "clean: $wt" "$tmp/out" &&

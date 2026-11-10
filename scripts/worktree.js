@@ -5,7 +5,8 @@
 //   reason(<worktree>, <git common dir>)  — a one-line reason to refuse, or null
 //   node scripts/worktree.js <worktree> <git common dir>  — prints the reason (nothing when clean), exit 0; 2 on usage
 //
-// Accepted, as git writes them (absolute, or relative under worktree.useRelativePaths), all compared as real paths:
+// Accepted, as git writes them (absolute, or relative under worktree.useRelativePaths), each one line of valid UTF-8,
+// all compared as real paths:
 //   <wt>/.git              a regular file `gitdir: <common>/worktrees/<name>`, relative to <wt>
 //   <admin>/commondir      a regular file naming <common>, relative to <admin>
 //   <admin>/gitdir         a regular file naming <wt>/.git, relative to <admin>
@@ -30,7 +31,12 @@ function line(file) {
   const st = fs.lstatSync(file, { throwIfNoEntry: false })
   if (!st) return { bad: `${shown(file)} is missing` }
   if (!st.isFile()) return { bad: `${shown(file)} is not a regular file` }
-  const s = fs.readFileSync(file, 'utf8').replace(/\n$/, '')
+  // git resolves the raw bytes, node the decoded string: a byte that is not UTF-8 (decoded to U+FFFD) could name
+  // another directory for each, so only content that survives a decode and re-encode is taken.
+  const raw = fs.readFileSync(file)
+  const decoded = raw.toString('utf8')
+  if (!Buffer.from(decoded, 'utf8').equals(raw)) return { bad: `${shown(file)} is not valid UTF-8` }
+  const s = decoded.replace(/\n$/, '')
   if (/[\n\r]/.test(s) || !s) return { bad: `${shown(file)} does not hold one line` }
   return { value: s }
 }
