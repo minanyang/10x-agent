@@ -55,7 +55,7 @@
 // checkout's .claude/, ~/.claude/ and, when set, $CLAUDE_CONFIG_DIR's settings.json and settings.local.json, each also
 // as a real path and its symlink target), and Edit of what
 // a process outside the sandbox runs (writeDeny(): the git common dir, every <worktree dir>/*/.git, the main checkout's
-// .envrc, the zsh files of $ZDOTDIR (with .zlogout and the compiled .zwc) and $HOME/.zshenv(.zwc), the bash (with
+// .envrc and .claude/10x.json, the zsh files of $ZDOTDIR (with .zlogout and the compiled .zwc) and $HOME/.zshenv(.zwc), the bash (with
 // .bash_logout), git, ssh and login-agent files of $HOME, the plugin
 // root, ~/.claude.json, ~/.claude/plugins and ~/.claude/hooks and, when CLAUDE_CONFIG_DIR is set, its .claude.json,
 // plugins and hooks, every absolute PATH entry and $PNPM_HOME, the npx, pnpm dlx and corepack caches and
@@ -187,7 +187,7 @@ function real(p) {
   return p
 }
 // What a process outside the sandbox later runs — git, a shell, a login agent, Claude Code's own config and plugins,
-// this plugin's scripts — from one table, as `edit` (paths for the Write and Edit rules, a directory as `<dir>/**`) and
+// this plugin's scripts and the main checkout's .claude/10x.json — from one table, as `edit` (paths for the Write and Edit rules, a directory as `<dir>/**`) and
 // `sandbox` (the Bash sandbox's denyWrite, a directory as itself, no glob): real paths, plus the real path of any that
 // is a symlink. zsh reads $HOME/.zshenv before ZDOTDIR is set; a relative ZDOTDIR or XDG_CONFIG_HOME is ignored. A path
 // through a dangling symlink, at it or at an ancestor, is denied with the path the link names, as far as it resolves.
@@ -209,6 +209,9 @@ function writeDeny(id) {
   const claude = [home, ...(configDir === undefined ? [] : [path.resolve(ROOT, configDir)])]
   const files = [
     path.join(canonical(ROOT), '.envrc'),
+    // Its setup runs outside the sandbox, and worktreeDir and close decide a later worker's denies. The ticket's own
+    // worktree copy stays writable: it is content under review.
+    path.join(canonical(ROOT), '.claude', '10x.json'),
     // zsh runs a newer <file>.zwc instead of <file>, and .zlogout when a login shell exits.
     ...['.zshrc', '.zshenv', '.zprofile', '.zlogin', '.zlogout'].flatMap((f) => [f, `${f}.zwc`]).map((f) => path.join(zdot, f)),
     ...['.zshenv', '.zshenv.zwc', '.bashrc', '.bash_profile', '.bash_login', '.bash_logout', '.profile', '.gitconfig', '.ssh/config'].map((f) => path.join(home, f)),

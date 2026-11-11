@@ -662,7 +662,7 @@ edits="Edit(/$S/**)|Edit(/$root/.claude/settings.json)|Edit(/$root/.claude/setti
 # rules <lines> — each line's rules sorted, the lines made unique: the order of the rules within a run is not the case's concern.
 rules() { local l; while IFS= read -r l; do printf '%s\n' "$l" | tr '|' '\n' | sort | tr '\n' ' '; echo; done <<<"$1" | sort -u; }
 # write_rules [<zdot>] [<worktree dir>] — the Edit rules on the files a process outside the sandbox runs, joined by |:
-# the git common dir, every worktree's .git file, .envrc, the zsh files of <zdot> (default the real home) and the
+# the git common dir, every worktree's .git file, .envrc, .claude/10x.json, the zsh files of <zdot> (default the real home) and the
 # home's .zshenv, the bash, git, ssh and login-agent files of the real home, the plugin root, ~/.claude.json and
 # ~/.claude/plugins and hooks, and the real path of
 # each of them whose real path differs (a symlink at it or at any ancestor; a dangling link followed to what it names).
@@ -712,7 +712,7 @@ write_rules() {
   local home plug zdot wt p r out=() seen="|"
   home="$(cd "$HOME" && pwd -P)"; plug="$(cd "$BIN/.." && pwd -P)"
   zdot="${1:-$home}"; wt="${2:-$root/.worktrees}"
-  for p in "$root/.git/**" "$wt/*/.git" "$root/.envrc" "$zdot/.zshrc" "$zdot/.zshenv" "$zdot/.zprofile" "$zdot/.zlogin" \
+  for p in "$root/.git/**" "$wt/*/.git" "$root/.envrc" "$root/.claude/10x.json" "$zdot/.zshrc" "$zdot/.zshenv" "$zdot/.zprofile" "$zdot/.zlogin" \
     "$zdot/.zshrc.zwc" "$zdot/.zshenv.zwc" "$zdot/.zprofile.zwc" "$zdot/.zlogin.zwc" "$zdot/.zlogout" "$zdot/.zlogout.zwc" \
     "$home/.zshenv" "$home/.zshenv.zwc" "$home/.bashrc" "$home/.bash_profile" "$home/.bash_login" "$home/.bash_logout" \
     "$home/.profile" "$home/.gitconfig" \
@@ -853,7 +853,7 @@ deny_of() {
 # has_deny <n> <path> — run <n>'s denyWrite holds <path> exactly.
 has_deny() { deny_of "$1" | grep -qxF -- "$2"; }
 # sandbox_deny <zdot> <worktree dir> <config dir> — the denyWrite the plan's AC3 and AC4 give run t1 of this repository, sorted
-# and unique: the files a process outside the sandbox runs, each with its real path; the directories without /**; the
+# and unique: the files a process outside the sandbox runs or reads (.claude/10x.json among them), each with its real path; the directories without /**; the
 # settings files; the git files git runs code from; each registered worktree's admin dir and .git file but not
 # <worktree dir>/t1's. <zdot> and <worktree dir> default as in write_rules; <config dir> is CLAUDE_CONFIG_DIR resolved
 # (none when empty).
@@ -862,7 +862,7 @@ sandbox_deny() {
   home="$(cd "$HOME" && pwd -P)"; plug="$(cd "$BIN/.." && pwd -P)"
   zdot="${1:-$home}"; wt="${2:-$root/.worktrees}"; cfg="${3-}"; common="$root/.git"
   {
-    for p in "$root/.envrc" "$zdot/.zshrc" "$zdot/.zshenv" "$zdot/.zprofile" "$zdot/.zlogin" \
+    for p in "$root/.envrc" "$root/.claude/10x.json" "$zdot/.zshrc" "$zdot/.zshenv" "$zdot/.zprofile" "$zdot/.zlogin" \
       "$zdot/.zshrc.zwc" "$zdot/.zshenv.zwc" "$zdot/.zprofile.zwc" "$zdot/.zlogin.zwc" "$zdot/.zlogout" "$zdot/.zlogout.zwc" \
       "$home/.zshenv" "$home/.zshenv.zwc" "$home/.bashrc" "$home/.bash_profile" "$home/.bash_login" "$home/.bash_logout" \
       "$home/.profile" "$home/.gitconfig" "$home/.ssh/config" \
@@ -908,6 +908,19 @@ need "the git hooks dir is denied" has_deny 6 "$root/.git/hooks"
 need "info/attributes is denied" has_deny 4 "$root/.git/info/attributes"
 need "the main checkout's .envrc is denied" has_deny 3 "$root/.envrc"
 need "commondir, which redirects git to another config, is denied" has_deny 2 "$root/.git/commondir"
+end
+
+reset; ticket t1 t2
+# The main checkout's .claude/10x.json: its setup runs outside the sandbox, and worktreeDir and close decide a later
+# worker's denies. The ticket's own worktree copy is content under review and stays writable.
+begin "run: every run denies Write and Bash the main checkout's project config, not the ticket's own"
+six_runs .worktrees/t1
+for n in 1 2 3 4 5 6; do
+  need "run $n: the Edit rule denies the main checkout's project config" \
+    sh -c "sed -n '${n}p' \"\$1\" | tr '|' '\n' | grep -qxF -- \"\$2\"" _ "$WORKER_LOG.disallowed" "Edit(/$root/.claude/10x.json)"
+  need "run $n: the sandbox denies Bash the main checkout's project config" has_deny "$n" "$root/.claude/10x.json"
+  need "run $n: not the ticket's own worktree config" not has_deny "$n" "$root/.worktrees/t1/.claude/10x.json"
+done
 end
 
 reset; ticket t1 t2
