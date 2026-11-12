@@ -536,6 +536,36 @@ for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/S
   missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
 }
 
+// the user is shown only the lines of plan.md above its "# Appendix" line; batch offers one approve for the whole round.
+{
+  const name = "work: shows only the plan above its Appendix line"
+  const text = fs.readFileSync(`${dir}/work/SKILL.md`, "utf8")
+  const flat = (s) => s.replace(/\s+/g, " ")
+  const step = (n) => flat((new RegExp(`^## Step ${n}\\b[\\s\\S]*?(?=^## Step )`, "m").exec(text) || [""])[0])
+  const missing = [0, 1].flatMap((n) => [
+    [step(n).includes("above `# Appendix`"), `Step ${n} names the lines above \`# Appendix\``],
+    [step(n).includes("`user-facing: lines 1-<n>`"), `Step ${n} takes them from the \`user-facing: lines 1-<n>\` line`],
+  ]).filter(([c]) => !c).map(([, w]) => w)
+  missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
+}
+{
+  const name = "batch: shows only the plan above its Appendix line"
+  const text = fs.readFileSync(`${dir}/batch/SKILL.md`, "utf8")
+  const step2 = (/^## Step 2\b[\s\S]*?(?=^## )/m.exec(text) || [""])[0].replace(/\s+/g, " ")
+  step2.includes("above its `# Appendix` line") ? ok(name) : bad(`${name} (Step 2 lacks "above its \`# Appendix\` line")`)
+}
+{
+  const name = "batch: approve all runs one 10x-batch approve naming the round's approvable tickets"
+  const text = fs.readFileSync(`${dir}/batch/SKILL.md`, "utf8")
+  const step2 = (/^## Step 2\b[\s\S]*?(?=^## )/m.exec(text) || [""])[0].replace(/\s+/g, " ")
+  const missing = [
+    [step2.includes("`approve all`"), "Step 2 offers `approve all`"],
+    [step2.includes("`10x-batch approve <id> <id>…`"), "Step 2 runs `10x-batch approve <id> <id>…`"],
+    [step2.includes("shown in that message"), "Step 2 names only the tickets shown in that message"],
+  ].filter(([c]) => !c).map(([, w]) => w)
+  missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
+}
+
 // work gains no issue-author check: the check lives in 10x-batch alone, and neither work's skill nor a script it runs
 // asks gh who wrote an issue.
 {

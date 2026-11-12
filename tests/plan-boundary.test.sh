@@ -113,7 +113,7 @@ S="$(cd "$frepo" && node -e '
 batch() { (cd "$frepo" && PATH="$ROOT/bin:$PATH" TENX_BATCH_CLAUDE="$tmp/stub/worker" 10x-batch "$@") >"$tmp/batch.out" 2>&1; }
 batch init t1 && batch run t1 plan
 # shellcheck disable=SC2016  # backticks are literal Markdown
-printf '# t1\n\nStatus: draft\n\n## Acceptance criteria\n- AC1 — the change works\n\n## Approach\nOne change.\n\n## Files\n- `a` — changed\n\n## Readers\n- `thing` — `grep -rn thing`\n  - no hits\n\n## Overlap\n- none\n\n## Tests\n| AC | Test file | Case |\n|---|---|---|\n| AC1 | `tests/x.sh` | `works` |\n' >"$frepo/.10x/t1/plan.md"
+printf '# t1\n\nStatus: draft\n\n## Acceptance criteria\n- AC1 — the change works\n\n## Files\n- `a` — changed\n\n# Appendix\n\n## Approach\nOne change.\n\n## Readers\n- `thing` — `grep -rn thing`\n  - no hits\n\n## Overlap\n- none\n\n## Tests\n| AC | Test file | Case |\n|---|---|---|\n| AC1 | `tests/x.sh` | `works` |\n' >"$frepo/.10x/t1/plan.md"
 batch approve t1
 if [ -s "$S/t1.approved" ]; then
   check "$T" deny "$(plan Write "$S/t1.approved")"

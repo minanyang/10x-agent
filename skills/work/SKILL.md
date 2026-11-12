@@ -47,7 +47,7 @@ Work out the id from the argument. This step only names the ticket: it never fet
 
 Once the id is known, run `10x-worktree init <id>` on every invocation, before anything reads or writes under `.10x/`: it creates `.10x/<id>/`, keeps `.10x/` out of git, and prints the `ticket dir:` and `base:` lines the rest of the skill resolves against.
 
-Then go by `init`'s last line, `plan:`, whatever the argument's form. `plan: approved` — `.10x/<id>/plan.md` has `Status: approved` — go to Step 2: the ticket was planned in an earlier session, so nothing is fetched and nothing is asked. `plan: draft` — the plan exists as a draft — run `10x-plan-check <id>` first; on exit 1, handle it as in Step 1's check and come back here once it exits 0. Then show the draft once — its path on one line, then the file verbatim as rendered markdown, never summarised again in the same reply — and `.10x/<id>/comment.md` the same way when there is one, and ask for approval or changes; on approval, continue as at the end of Step 1. `plan: none` — Step 1.
+Then go by `init`'s last line, `plan:`, whatever the argument's form. `plan: approved` — `.10x/<id>/plan.md` has `Status: approved` — go to Step 2: the ticket was planned in an earlier session, so nothing is fetched and nothing is asked. `plan: draft` — the plan exists as a draft — run `10x-plan-check <id>` first; on exit 1, handle it as in Step 1's check and come back here once it exits 0. Then show the draft once — its path on one line, then the lines above `# Appendix` (lines 1 to `<n>` of the check's `user-facing: lines 1-<n>` line) verbatim as rendered markdown, then one line saying the appendix is in the same file, never summarised again in the same reply — and `.10x/<id>/comment.md` whole and verbatim when there is one, and ask for approval or changes; on approval, continue as at the end of Step 1. `plan: none` — Step 1.
 
 Small path: a `size: small` line before `plan: none` means `.10x/<id>/ticket.md` declares `Size: small` and has a criterion, no `plan.md` exists and the ticket is in no batch. Nothing is fetched: go to Step 2 on the small path. A `gh-<n>` ticket not yet saved has no `ticket.md` here, so Step 1 decides its size.
 
@@ -75,11 +75,16 @@ One or two sentences: the outcome, not the steps.
 ## Acceptance criteria
 - AC1 — Each one checkable: a behaviour, a test, a command's output.
 
-## Approach
-What changes and why this way. Name the alternative you rejected when there was a real one.
-
 ## Files
 The files this ticket binds, each with what changes in it. Implementation stays inside this list.
+
+## Risks and assumptions
+What could go wrong that the user should know before approving, and the grill's `## Assumptions`: decisions the grill did not settle with the user, each with the answer taken.
+
+# Appendix
+
+## Approach
+What changes and why this way. Name the alternative you rejected when there was a real one.
 
 ## Readers
 - `<term>` — `<search command>` (gone)
@@ -104,12 +109,11 @@ The files this ticket binds, each with what changes in it. Implementation stays 
 |---|---|---|
 | AC1 | `<test file>` | `<the case's name, as written in the test>` |
 
-## Assumptions
-Decisions the grill did not settle with the user, each with the answer taken.
-
 ## Out of scope
 What a reader might expect here but this ticket does not do.
 ````
+
+The part above `# Appendix` is what the user is shown, and is at most 40 lines; everything below it is for the implementer and the reviewers.
 
 How to fill the sections the checks read:
 
@@ -129,7 +133,7 @@ Exit 1 names every line at fault: fix them and run it again until it exits 0.
 
 A plan whose `## Files` has more than 3 top-level bullets is read cold before it is shown: the check's last line is then `cold read required: <n> files — spawn Explore before showing the plan` until `.10x/<id>/cold-read.md` holds the cold read. Once that is the only line at fault, spawn the `Explore` agent with only the paths of `.10x/<id>/ticket.md` and `.10x/<id>/plan.md` and: *"Read both files whole, then the repository files the plan names. List every point where implementing this plan would need a guess — a name, a format, an order, a case it does not settle. Mark those the code answers, with the file and line."* Write its reply verbatim to `.10x/<id>/cold-read.md` — that file is never written any other way, and never just to make the check pass. Answer from the code what it can; ask the user the rest in one grill round, a recommended answer each (product answers also go into `comment.md` for a GitHub issue); update the plan. Run `10x-plan-check <id>` again after this and after any later change to the plan, before it is shown.
 
-Show the plan once — its path on one line, then the file verbatim as rendered markdown, never summarised again in the same reply — and `comment.md` the same way when there is one, and **stop**. On approval, when `comment.md` exists, post it first — it is public, and the user has now seen it:
+Show the plan once — its path on one line, then the lines above `# Appendix` (lines 1 to `<n>` of the last check's `user-facing: lines 1-<n>` line) verbatim as rendered markdown, then one line saying the appendix is in the same file, never summarised again in the same reply — and `comment.md` whole and verbatim when there is one, and **stop**. On approval, when `comment.md` exists, post it first — it is public, and the user has now seen it:
 
 ```bash
 10x-land comment <id>
