@@ -10,6 +10,8 @@
 # docs/scripts.md's `10x-batch run` entry must name the `PATH entry` a worker is denied, and refused when it contains
 # an allowWrite path.
 # docs/scripts.md's `10x-batch run` entry must name the main checkout's `.claude/10x.json` a worker is denied.
+# README.md, README.zh-TW.md, docs/configuration.md and the Unreleased changelog section must give `batch.parallel`'s
+# default as 2, and docs/loop.md must say a roadmap follow-up joins the next version.
 # README.zh-TW.md must have the same ## / ### headings, level by level, and the two READMEs must link to each other.
 # Every relative link in README.md, README.zh-TW.md and docs/*.md must resolve to a file, and an anchor to a heading
 # of that file as GitHub slugs it.
@@ -351,6 +353,24 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   const at = lines.findIndex((s) => s.trim() === "## Unreleased")
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
   if (!(at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")).includes("Decided:")) missing.push("CHANGELOG.md ## Unreleased: Decided:")
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
+// gh-41 AC3 — the batch.parallel default of 2 in the docs and the Unreleased changelog section; the roadmap follow-up in
+// docs/loop.md.
+{
+  const name = "docs and CHANGELOG give the batch.parallel default as 2"
+  const missing = []
+  const need = (f, text, words) => { for (const w of words) if (text === null || !text.includes(w)) missing.push(`${f}: ${w}`) }
+  need("README.md", read("README.md"), ["(default `2`)"])
+  need("README.zh-TW.md", read("README.zh-TW.md"), ["（預設 `2`）"])
+  need("docs/configuration.md", read("docs/configuration.md"), ["| `batch.parallel` | `2`."])
+  need("docs/loop.md", read("docs/loop.md"), ["follow-up"])
+  const lines = (read("CHANGELOG.md") || "").split("\n")
+  const at = lines.findIndex((s) => /^##\s/.test(s))
+  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
+  if (at < 0 || lines[at].trim() !== "## Unreleased") missing.push("CHANGELOG.md: the first ## heading is not ## Unreleased")
+  need("CHANGELOG.md ## Unreleased", at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n"), ["`batch.parallel`", "defaults to `2`"])
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 

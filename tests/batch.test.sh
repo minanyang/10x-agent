@@ -1413,13 +1413,12 @@ end
 # ---------------------------------------------------------------- schedule
 
 reset; ticket t1 t2 t3
-begin "schedule: at most batch.parallel implement runs, default 1"
+begin "schedule: at most batch.parallel implement runs, default 2"
 vb init t1 t2 t3
 approved t1 a; approved t2 b; approved t3 c
-need "default 1" acts_are "implement t1"
-need "t2 refused" exits 2 run t2 implement
-echo '{"close":"local","batch":{"parallel":2}}' >.claude/10x.json
-need "parallel 2" acts_are "implement t1,implement t2"
+need "default 2" acts_are "implement t1,implement t2"
+need "t3 refused" exits 2 run t3 implement
+need "names the default cap" has "batch.parallel (2) slots"
 sleeper; row t1 implement implement "open:$SLEEPER"
 need "one open, one more" acts_are "implement t2"
 need "t3 refused" exits 2 run t3 implement
@@ -1471,6 +1470,7 @@ end
 reset; ticket t1 t2
 begin "schedule: a waiting implement session keeps its batch.parallel slot"
 vb init t1 t2
+echo '{"close":"local","batch":{"parallel":1}}' >.claude/10x.json
 approved t1 a; row t1 implement implement 0; evidence t1 "- AC1 — asked: Which flag name?"; mkdir -p .worktrees/t1
 approved t2 b
 need "t1 waits on a question, t2 does not implement" acts_are "answer t1"

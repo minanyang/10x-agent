@@ -75,7 +75,7 @@ Optional settings — base branch, gates, close mode, where tickets live — liv
 
 `/10x:batch gh-12 gh-13` or `--search "label:bug"` plans all tickets and asks in one round. `.10x/_batch/board.md` shows each ticket's phase, session and outcome.
 
-- `batch.parallel` caps implementation workers (default `1`); tickets land one at a time.
+- `batch.parallel` caps implementation workers (default `2`); tickets land one at a time.
 - `claude --resume <session id>` opens a worker.
 - `/10x:batch auto <tickets>` approves plans with no product question itself; batches take only your own issues, because a stranger's could steer workers.
 - Allow `Bash(git -C * add *)` and `Bash(git -C * commit *)` ([caveat](tests/e2e/README.md)); the board lists other denials.
