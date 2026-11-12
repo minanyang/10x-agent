@@ -1689,6 +1689,171 @@ need "the evidence is its question and its turn.md" grep -qxF "| 1 | t1 | waitin
 need "and t2's" grep -qF "| t2 | waiting | $(field t2 2 3) | — | Keep the old name?; .10x/_batch/t2/turn.md |" "$B/board.md"
 end
 
+# ---------------------------------------------------------------- replan
+
+# rest_snap — every file under .10x and the state dir with its checksum but t1's own, and board.md.
+rest_snap() {
+  find .10x "$XDG_STATE_HOME" -type f ! -path '.10x/t1/*' ! -path '.10x/_batch/t1/*' ! -path "$SB/t1/*" ! -path "$S/t1.approved" \
+    ! -name board.md -print0 | sort -z | xargs -0 cksum
+}
+# new_plan_run <id> <run n> — the last worker start is run <n> of <id>: a new plan session, /10x:work <id>, its plan dir.
+new_plan_run() {
+  [ "$(tail -n 1 "$WORKER_LOG" | cut -f1,4)" = "$(printf -- '--session-id\t/10x:work %s' "$1")" ] &&
+    [ "$(tail -n 1 "$WORKER_LOG" | cut -f2)" = "$(field "$1" "$2" 3)" ] &&
+    [ "$(field "$1" "$2" 3)" != "$(field "$1" $(($2 - 1)) 3)" ] &&
+    [ "$(tail -n 1 "$WORKER_LOG.plandir")" = "$root/.10x/$1" ] &&
+    [ "$(field "$1" "$2" 2)/$(field "$1" "$2" 4)" = plan/plan ]
+}
+
+reset; ticket t1 t2 t3
+begin "replan: a failed ticket gets a new plan session and the rest of the batch stays as it was"
+vb init t1 t2 t3
+approved t1 a; row t1 implement implement 0; plan_md t1 draft a
+row t2 plan plan 0; plan_md t2 draft b
+need "t1 is failed" phase_is t1 failed
+need "t2 is waiting" phase_is t2 waiting
+need "t3 is queued" phase_is t3 queued
+rest_before="$(rest_snap)"; cp "$SB/t1/runs.tsv" "$tmp/runs.before"
+need "exit 0" exits 0 replan t1
+need "prints the phase" line "phase: waiting"
+need "prints the board" has "board:"
+need "one worker started" test "$(wc -l <"$WORKER_LOG" | tr -d ' ')" = 1
+need "a new plan session of /10x:work t1 with the ticket dir, recorded as plan/plan" new_plan_run t1 3
+need "earlier run records stay" eval 'head -n 3 "$SB/t1/runs.tsv" | cmp -s - "$tmp/runs.before"'
+need "nothing outside t1 and board.md changed" test "$(rest_snap)" = "$rest_before"
+need "nothing archived" not compgen -G ".10x/_batch.*"
+need "no state dir archive" not compgen -G "$S/batch.*"
+10x-batch drop t3 >/dev/null
+need "status lists answer t1 approvable" eval 'vb status && has "answer t1 approvable"'
+end
+
+reset; ticket t1
+begin "replan: a failed ticket with no plan.md is planned again"
+vb init t1
+row t1 plan plan 3
+need "t1 is failed" phase_is t1 failed
+need "no plan.md" test ! -e .10x/t1/plan.md
+need "exit 0" exits 0 replan t1
+need "prints the phase" line "phase: waiting"
+need "one worker started" test "$(wc -l <"$WORKER_LOG" | tr -d ' ')" = 1
+need "a new plan session of /10x:work t1 with the ticket dir, recorded as plan/plan" new_plan_run t1 2
+need "no plan.md written" test ! -e .10x/t1/plan.md
+need "the ticket dir holds only ticket.md" test "$(ls .10x/t1)" = ticket.md
+end
+
+reset; ticket tf th tq tp tw ta ti tm tl td
+begin "replan: any phase but failed is refused with the phase named"
+vb init tf th tq tp tw ta ti tm tl td
+approved th src/a.js
+approved tf src/a.js; row tf implement implement 1
+sleeper; row tp plan plan "open:$SLEEPER"
+row tw plan plan 0; plan_md tw draft w.txt
+approved ta a.txt
+approved ti i.txt; sleeper; row ti implement implement "open:$SLEEPER"
+implemented tm m.txt
+landed tl l.txt
+mkdir -p "$SB/td"; touch "$SB/td/dropped"
+for p in tq:queued tp:planning tw:waiting ta:approved th:held ti:implementing tm:implemented tl:landed td:dropped tf:failed; do
+  need "${p%%:*} is ${p#*:}" phase_is "${p%%:*}" "${p#*:}"
+done
+before="$(snap)"; wl="$(cat "$WORKER_LOG")"
+for p in tq:queued tp:planning tw:waiting ta:approved th:held ti:implementing tm:implemented tl:landed td:dropped; do
+  need "${p%%:*}: exit 2" exits 2 replan "${p%%:*}"
+  need "${p%%:*}: the refusal names the phase" line "10x-batch: replan ${p%%:*} refused: ${p%%:*} is ${p#*:}, not failed"
+done
+need "a ticket not in the batch: exit 2" exits 2 replan tz
+need "a ticket not in the batch is refused as every command refuses it" has "tz is not in this batch ("
+need "no id: exit 2" exits 2 replan
+need "no id: the usage names replan <id>" has "replan <id>"
+need "two ids: exit 2" exits 2 replan tf tq
+need "two ids: the usage names replan <id>" has "replan <id>"
+need "no worker started" test "$(cat "$WORKER_LOG")" = "$wl"
+need "nothing written" test "$(snap)" = "$before"
+end
+
+reset; ticket t1
+begin "replan: an approved plan goes back to draft and its approval records are deleted"
+vb init t1
+approved t1 a; row t1 implement implement 0
+mkdir -p "$B/t1" "$SB/t1"
+printf '%s\n' 0123456789abcdef0123456789abcdef >"$SB/t1/auto-approved"; echo go >"$B/t1/reply.md"
+there() { test -e "$S/t1.approved" -a -e "$SB/t1/auto-approved" -a -e "$B/t1/reply.md"; }
+gone() { test ! -e "$S/t1.approved" -a ! -e "$SB/t1/auto-approved" -a ! -e "$B/t1/reply.md"; }
+leftovers() { echo x >"$S/t1.approved"; printf '%s\n' 0123456789abcdef0123456789abcdef >"$SB/t1/auto-approved"; echo go >"$B/t1/reply.md"; }
+need "t1 is failed" phase_is t1 failed
+need "the three records exist" there
+cp .10x/t1/plan.md "$tmp/plan.before"
+need "approved plan: exit 0" exits 0 replan t1
+need "the three records are deleted" gone
+need "only the Status line changed" eval 'sed "s/^Status: approved/Status: draft/" "$tmp/plan.before" | cmp -s - .10x/t1/plan.md'
+need "it now says Status: draft" grep -qxF "Status: draft" .10x/t1/plan.md
+# CRLF line ends are kept. (An implement run that exited 1 fails the ticket whatever the plan's text reads like.)
+row t1 implement implement 1
+plan_md t1 approved a; awk '{ printf "%s\r\n", $0 }' .10x/t1/plan.md >"$tmp/plan.before"; cp "$tmp/plan.before" .10x/t1/plan.md
+leftovers
+need "CRLF: t1 is failed" phase_is t1 failed
+need "CRLF: exit 0" exits 0 replan t1
+need "CRLF: the three records are deleted" gone
+need "CRLF: only the Status line changed, its \\r kept" eval 'sed "s/^Status: approved/Status: draft/" "$tmp/plan.before" | cmp -s - .10x/t1/plan.md'
+# A draft plan is left byte for byte, the records are deleted all the same.
+row t1 implement implement 1
+plan_md t1 draft a; cp .10x/t1/plan.md "$tmp/plan.before"
+leftovers
+need "draft: t1 is failed" phase_is t1 failed
+need "draft: exit 0" exits 0 replan t1
+need "draft: the three records are deleted" gone
+need "draft: plan.md is byte-identical" cmp -s "$tmp/plan.before" .10x/t1/plan.md
+end
+
+reset; ticket t1
+begin "replan: a symlinked ticket dir or plan.md is refused"
+vb init t1
+approved t1 a; row t1 implement implement 0
+mkdir -p "$B/t1" "$SB/t1"
+printf '%s\n' 0123456789abcdef0123456789abcdef >"$SB/t1/auto-approved"; echo go >"$B/t1/reply.md"
+there() { test -e "$S/t1.approved" -a -e "$SB/t1/auto-approved" -a -e "$B/t1/reply.md"; }
+cp .10x/t1/plan.md "$tmp/plan.before"; cp .10x/t1/plan.md "$tmp/out-plan.md"
+rm .10x/t1/plan.md; ln -s "$tmp/out-plan.md" .10x/t1/plan.md
+need "plan.md link: t1 is failed" phase_is t1 failed
+before="$(snap)"
+need "plan.md link: exit 2" exits 2 replan t1
+need "plan.md link: the refusal line" line "10x-batch: replan t1 refused: .10x/t1/plan.md is a symlink"
+need "plan.md link: the target is unchanged" cmp -s "$tmp/plan.before" "$tmp/out-plan.md"
+need "plan.md link: the approval records are still there" there
+need "plan.md link: nothing else changed" test "$(snap)" = "$before"
+need "plan.md link: no worker started" test ! -s "$WORKER_LOG"
+rm .10x/t1/plan.md; cp "$tmp/plan.before" .10x/t1/plan.md; mv .10x/t1 "$tmp/t1dir"; ln -s "$tmp/t1dir" .10x/t1
+need "dir link: t1 is failed" phase_is t1 failed
+before="$(snap)"
+need "dir link: exit 2" exits 2 replan t1
+need "dir link: the refusal line" line "10x-batch: replan t1 refused: .10x/t1 is a symlink"
+need "dir link: the target dir's plan.md is unchanged" cmp -s "$tmp/plan.before" "$tmp/t1dir/plan.md"
+need "dir link: the approval records are still there" there
+need "dir link: nothing else changed" test "$(snap)" = "$before"
+need "dir link: no worker started" test ! -s "$WORKER_LOG"
+end
+
+reset; ticket t1
+begin "replan: refused inside a batch worker, for a state dir inside the checkout and for an issue that is not yours"
+vb init t1 gh-5
+approved t1 a; row t1 implement implement 0
+approved gh-5 b; row gh-5 implement implement 0
+need "t1 is failed" phase_is t1 failed
+need "gh-5 is failed" phase_is gh-5 failed
+before="$(snap)"
+need "TENX_BATCH: exit 2" eval 'TENX_BATCH=1 exits 2 replan t1'
+need "TENX_BATCH: the refusal line" line "10x-batch: refused inside a batch worker"
+need "TENX_BATCH: nothing changed" test "$(snap)" = "$before"
+need "state dir inside the checkout: exit 2" eval 'XDG_STATE_HOME="$root/xs" exits 2 replan t1'
+need "state dir inside the checkout: names it" line "10x-batch: state dir $(XDG_STATE_HOME="$root/xs" state_dir) is inside $root"
+need "state dir inside the checkout: nothing created" test ! -e "$root/xs"
+need "not your issue: exit 2" eval 'STUB_AUTHORS="5:other" exits 2 replan gh-5'
+need "not your issue: names the issue and its author" line "10x-batch: not your issue: gh-5 (author other)"
+need "not your issue: its approval record is still there" test -s "$S/gh-5.approved"
+need "nothing changed" test "$(snap)" = "$before"
+need "no worker started" test ! -s "$WORKER_LOG"
+end
+
 # relock_md <id> <ruling> [<reason>] — a relock.md with one entry; an approved one has a commit line.
 relock_md() {
   { printf '# Relocks\n\n## Relock 1\n- reason: %s\n- ruling: %s\n' "${3:-the test expects the old flag}" "$2"

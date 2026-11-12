@@ -591,6 +591,27 @@ for (const skill of ["open", "work", "close", "batch", "roadmap", "audit"])
   fm && !fm[1].includes("accept-green") && t.slice(fm[0].length).includes("10x-batch accept-green") ? ok(name) : bad(name)
 }
 {
+  const name = "batch: 10x-batch replan is granted and offered for a failed ticket on the user's word"
+  const t = fs.existsSync(`${dir}/batch/SKILL.md`) ? fs.readFileSync(`${dir}/batch/SKILL.md`, "utf8") : ""
+  const fm = /^---\n([\s\S]*?)\n---/.exec(t)
+  const body = fm ? t.slice(fm[0].length) : ""
+  const section = (re) => {
+    const lines = body.split("\n")
+    const at = lines.findIndex((s) => re.test(s))
+    const next = lines.findIndex((s, k) => k > at && /^## /.test(s))
+    return at < 0 ? [] : lines.slice(at + 1, next < 0 ? undefined : next)
+  }
+  const step1 = section(/^## Step 1\b/), step4 = section(/^## Step 4\b/), never = section(/^## Never$/)
+  const missing = [
+    [fm && fm[1].split("\n").includes("  - Bash(10x-batch replan *)"), "the grant `Bash(10x-batch replan *)` in allowed-tools"],
+    [body.includes("10x-batch replan <id>"), "`10x-batch replan <id>` in the body"],
+    [step1.some((s) => s.includes("replan") && s.includes("drop")), "a Step 1 paragraph naming `replan` and `drop`"],
+    [step4.some((s) => s.includes("`failed`") && s.includes("replan") && s.includes("drop")), "the Step 4 `failed` bullet naming `replan` and `drop`"],
+    [never.some((s) => s.includes("10x-batch replan")), "a `## Never` line naming `10x-batch replan`"],
+  ].filter(([c]) => !c).map(([, w]) => w)
+  missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
+}
+{
   const name = "batch: 10x-batch checked is named in the prose and not granted in allowed-tools"
   const t = fs.existsSync(`${dir}/batch/SKILL.md`) ? fs.readFileSync(`${dir}/batch/SKILL.md`, "utf8") : ""
   const fm = /^---\n([\s\S]*?)\n---/.exec(t)
