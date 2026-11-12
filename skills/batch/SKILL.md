@@ -43,6 +43,8 @@ Start every `plan`, `implement` and `close` action as `10x-batch run <id> <kind>
 
 A refused `10x-batch run` (a permission or the schedule) is reported to the user as it was printed. Never work around it, and never retry it differently.
 
+The board's `## Hand checks pending` section lists each criterion a landed ticket left for the user to check by hand, `- <version> — <id> AC<n>: <text>` (`(no version)` for a ticket in no recorded version), earlier batches' tickets of the same version included. It is not an action and never holds the batch, but a version is not marked `Done` while it lists one. When the user says a check passed, run `10x-batch checked <id> AC<n> "<what you saw>"` with their words; the ticket need not be in this batch. It is not in this skill's `allowed-tools` on purpose: each record asks the user's permission. A check that failed is not reopened: it is a new ticket, opened with `/10x:open` and linked into the same version with `/10x:roadmap`, and the original stays pending until the user runs it again.
+
 ## Step 2 — Rounds of answers
 
 When `status` lists `answer` lines, Read each such ticket's `.10x/_batch/<id>/turn.md` and show them all, grouped by ticket, in one message. For an `approvable` one, also Read `.10x/<id>/plan.md` and show it verbatim after its turn, under its path, and tell the user they can open that file themselves before approving: the user approves the plan, not the worker's account of it. Give the choices per ticket: answers to its questions, or, for an `approvable` one, `approve`, `revise <notes>` and `drop`. Wait for the reply; it may cover several tickets.
@@ -88,5 +90,6 @@ The final reply is the board; in auto mode, followed by each ticket's `## Auto d
 
 - Never run `/10x:work` or `/10x:close` yourself, and never edit anything but `.10x/_batch/<id>/reply.md`.
 - Never run `10x-batch approve` for a ticket the user did not approve in their own words, nor `10x-batch accept-green` for a file the user did not accept in theirs.
+- Never run `10x-batch checked` for a hand check the user did not report as passed in their own words.
 - Never use `CronCreate`, `ScheduleWakeup` or `/loop`; background runs wake you.
 - Never reply that something is unverified, unchecked or not yet confirmed: check it first. Only when a check is impossible, say so, naming what was tried and why it cannot be checked.

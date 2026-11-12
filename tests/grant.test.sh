@@ -248,6 +248,8 @@ check "$T: not approve, even from a record an older SKILL.md wrote" nothing "$(b
 check "$T: nor init from such a record" nothing "$(bash_ s40 "10x-batch init gh-9")"
 node -e 'const f = process.argv[1], r = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const p of Object.values(r.skills.batch)) p.grants.push("10x-batch accept-green *"); require("fs").writeFileSync(f, JSON.stringify(r))' "$CLAUDE_PLUGIN_DATA/sessions/s40.json"
 check "$T: not accept-green, even from a record an older SKILL.md wrote" nothing "$(bash_ s40 "10x-batch accept-green gh-5 tests/a.test.sh why")"
+node -e 'const f = process.argv[1], r = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const p of Object.values(r.skills.batch)) p.grants.push("10x-batch checked *"); require("fs").writeFileSync(f, JSON.stringify(r))' "$CLAUDE_PLUGIN_DATA/sessions/s40.json"
+check "$T: not checked, even from a record an older SKILL.md wrote" nothing "$(bash_ s40 "10x-batch checked gh-5 AC1 saw it")"
 
 T="roadmap: 10x-land ticket is allowed for every slug, 10x-land issue still asks"
 check "$T: nothing before" nothing "$(bash_ s41 "10x-land ticket add-a-flag")"

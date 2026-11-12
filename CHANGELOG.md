@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- A ticket whose only open criteria are hand checks lands without waiting for you, in `/10x:batch auto`'s auto mode too: a plan row `| AC<n> | — | hand check: … |` lets `evidence.md` hold `- AC<n> — hand-check: <what to check>`, which the Stop gate and `10x-batch` accept only for a criterion so declared. The batch board lists every pending hand check per roadmap version under `## Hand checks pending`, earlier batches' landed tickets included, and a version reads `Done` only once that list is empty. The new `10x-batch checked <id> AC<n> "<what you saw>"` records a check you ran as met in your words; like `10x-batch accept-green`, it always asks and is refused inside a worker. `/10x:work` runs a hand check itself first when the project's `CLAUDE.md` states a deep link and a screenshot command (`docs/loop.md`), and `/10x:close` leaves a pending one unticked in the PR, marked `(hand check pending)`.
+
 ## 0.2.0 — 2026-11-11
 
 - 10x's scripts refuse to run git in a ticket worktree whose `.git` file or admin directory (`commondir`, `gitdir`) no longer points at the main checkout, so the conductor's `10x-land check` refuses a worktree a batch worker redirected to a config whose `core.fsmonitor`, filters or hooks would run as you. The check is made once before git runs: a process still rewriting those files while 10x runs can race it. `10x-worktree list` skips such a worktree and exits 1; remove one by hand after inspecting it.
