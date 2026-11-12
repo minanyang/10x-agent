@@ -1907,7 +1907,7 @@ need "but is not under Needs the human" not grep -qF -- "- t3 — relocked" "$B/
 end
 
 reset; ticket t1 t2
-begin "denial: a run that exits 0 is judged by its files, its denials shown as evidence"
+begin "denial: the board shows a count and the denials file, never the commands"
 vb init t1 t2
 cat >"$tmp/denied.jsonl" <<'EOF'
 {"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"Drafted."}]}}
@@ -1918,12 +1918,55 @@ need "the denials are recorded" test "$(cat "$B/t1/01-denials.tsv")" = "$(printf
 plan_md t1 draft a
 need "not failed: waiting on its draft" phase_is t1 waiting
 need "approvable" acts_are "plan t2,answer t1 approvable"
-need "the denials in the evidence" grep -qxF "| 1 | t1 | waiting | $(field t1 1 3) | — | .10x/_batch/t1/turn.md; run 01 (plan) denied: git fetch; node --test |" "$B/board.md"
-need "and under Needs the human" grep -qxF -- "- t1 — waiting, plan approvable: .10x/_batch/t1/turn.md; run 01 (plan) denied: git fetch; node --test" "$B/board.md"
+need "the count and the file in the evidence" grep -qxF "| 1 | t1 | waiting | $(field t1 1 3) | — | .10x/_batch/t1/turn.md; 2 denied (see .10x/_batch/t1/01-denials.tsv) |" "$B/board.md"
+need "and under Needs the human" grep -qxF -- "- t1 — waiting, plan approvable: .10x/_batch/t1/turn.md; 2 denied (see .10x/_batch/t1/01-denials.tsv)" "$B/board.md"
 row t2 plan plan 0; approve_plan t2 b; row t2 implement implement 0; evidence t2 "- AC1 — met: x"; mkdir -p .worktrees/t2
 printf 'Bash\tgit push\n' >"$B/t2/02-denials.tsv"
 need "an implemented ticket with a denial stays implemented" phase_is t2 implemented
-need "its denial is listed for the human" grep -qxF -- "- t2 — implemented: run 02 (implement) denied: git push" "$B/board.md"
+need "its count is listed for the human" grep -qxF -- "- t2 — implemented: 1 denied (see .10x/_batch/t2/02-denials.tsv)" "$B/board.md"
+need "no denied command is on the board" not grep -qF -e "git fetch" -e "node --test" -e "git push" "$B/board.md"
+end
+
+reset; ticket t1 t2
+begin "denial: an implement run with an open criterion and denials is waiting, not failed"
+vb init t1 t2
+approved t1 a; row t1 implement implement 0; evidence t1 "- AC1 — pending"; mkdir -p .worktrees/t1
+echo 'Stopped.' >"$B/t1/turn.md"; printf 'Bash\tgit fetch origin\nBash\tcd x && git status\n' >"$B/t1/02-denials.tsv"
+approved t2 b; row t2 implement implement 0; evidence t2 "- AC1 — pending"; mkdir -p .worktrees/t2
+echo 'Stopped.' >"$B/t2/turn.md"
+need "status lists answer t1 alone" acts_are "answer t1"
+need "with denials: waiting on the criterion, its turn.md and the count" grep -qxF "| 1 | t1 | waiting | s-t1-2 | — | open criterion: AC1 — pending; .10x/_batch/t1/turn.md; 2 denied (see .10x/_batch/t1/02-denials.tsv) |" "$B/board.md"
+need "and under Needs the human" grep -qxF -- "- t1 — waiting: open criterion: AC1 — pending; .10x/_batch/t1/turn.md; 2 denied (see .10x/_batch/t1/02-denials.tsv)" "$B/board.md"
+need "without denials: failed as before" grep -qxF "| 2 | t2 | failed | s-t2-2 | failed | open criterion: AC1 — pending |" "$B/board.md"
+end
+
+reset; ticket t1 t2
+begin "denial: a close run that did not land with denials is waiting, not failed"
+vb init t1 t2
+implemented t1 a; row t1 close close 0
+echo 'Could not push.' >"$B/t1/turn.md"; printf 'Bash\tgit push origin main\n' >"$B/t1/03-denials.tsv"
+implemented t2 b; row t2 close close 0
+echo 'Could not push.' >"$B/t2/turn.md"
+need "status lists answer t1 alone" acts_are "answer t1"
+need "with denials: waiting with today's text and the count" grep -qxF "| 1 | t1 | waiting | s-t1-3 | — | close did not land; see .10x/_batch/t1/turn.md; 1 denied (see .10x/_batch/t1/03-denials.tsv) |" "$B/board.md"
+need "and under Needs the human" grep -qxF -- "- t1 — waiting: close did not land; see .10x/_batch/t1/turn.md; 1 denied (see .10x/_batch/t1/03-denials.tsv)" "$B/board.md"
+need "without denials: failed as before" grep -qxF "| 2 | t2 | failed | s-t2-3 | failed | close did not land; see .10x/_batch/t2/turn.md |" "$B/board.md"
+end
+
+reset; ticket t1 t2 t3
+begin "denial: a non-zero exit, a FAIL gate and an unavailable sandbox stay failed with denials"
+vb init t1 t2 t3
+mkdir -p "$B/t1" "$B/t3"
+row t1 plan plan 3; printf 'Bash\tgit fetch origin\n' >"$B/t1/01-denials.tsv"
+approved t2 x; row t2 implement implement 0; evidence t2 "- AC1 — met: x"; mkdir -p .worktrees/t2 .10x/t2/verify
+{ printf '%-28s %-6s %6s  %s\n' gate result secs log "npm test" FAIL 3 b.log; } >.10x/t2/verify/summary.txt
+printf 'Bash\tgit fetch origin\nBash\tgit push\n' >"$B/t2/02-denials.tsv"
+row t3 plan plan 1; echo unavailable >"$B/t3/01-sandbox"; printf 'Bash\tgit fetch origin\n' >"$B/t3/01-denials.tsv"
+vb status
+need "a non-zero exit" grep -qxF "| 1 | t1 | failed | s-t1-1 | failed | run 01 (plan) exited 3; 1 denied (see .10x/_batch/t1/01-denials.tsv) |" "$B/board.md"
+need "a FAIL gate" grep -qxF "| 2 | t2 | failed | s-t2-2 | failed | gate FAIL: npm test; 2 denied (see .10x/_batch/t2/02-denials.tsv) |" "$B/board.md"
+need "an unavailable sandbox" grep -qxF "| 3 | t3 | failed | s-t3-1 | failed | sandbox unavailable; 1 denied (see .10x/_batch/t3/01-denials.tsv) |" "$B/board.md"
+need "none of them is answerable: the batch is settled" acts_are "done"
 end
 
 reset; ticket t1 t2 t3 t4
@@ -2195,7 +2238,7 @@ fi
 end
 
 reset; ticket t0 t1 t2
-begin "loop: a denied run with no other need is a denied item"
+begin "loop: a denied item's evidence is the count and the denials file"
 vb init t0 t1 t2
 row t0 plan plan 0; echo q >"$B/t0/turn.md"
 implemented t1 b; printf 'Bash\tgit push\n' >"$B/t1/02-denials.tsv"
@@ -2203,7 +2246,7 @@ landed t2 c; printf 'Bash\tgit push\n' >"$B/t2/03-denials.tsv"
 lp 30
 need "loop finished" finished
 need "t0 answers; t1 is denied with the board's evidence; a landed ticket is no item" \
-  printed '{"items":[{"id":"t0","need":"answer","evidence":".10x/_batch/t0/turn.md"},{"id":"t1","need":"denied","evidence":"run 02 (implement) denied: git push"}]}'
+  printed '{"items":[{"id":"t0","need":"answer","evidence":".10x/_batch/t0/turn.md"},{"id":"t1","need":"denied","evidence":"1 denied (see .10x/_batch/t1/02-denials.tsv)"}]}'
 end
 
 reset; ticket t1

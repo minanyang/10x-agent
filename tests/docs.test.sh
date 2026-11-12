@@ -326,6 +326,20 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
+// gh-39 AC7 — the denied count on the board and the runs that wait instead of failing, in the docs and the changelog.
+{
+  const name = "docs describe the denied count and the waiting cases"
+  const missing = []
+  const need = (f, text, words) => { for (const w of words) if (text === null || !text.includes(w)) missing.push(`${f}: ${w}`) }
+  need("docs/loop.md", read("docs/loop.md"), ["denied (see", "instead of `failed`"])
+  need("docs/scripts.md", read("docs/scripts.md"), ["denied (see", "instead of `failed`"])
+  const lines = (read("CHANGELOG.md") || "").split("\n")
+  const at = lines.findIndex((s) => s.trim() === "## Unreleased")
+  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
+  need("CHANGELOG.md ## Unreleased", at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n"), ["denied (see"])
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 // AC4 — heading parity and cross-links.
 {
   const name = "README.zh-TW.md has the same ## and ### headings, level by level, as README.md"
