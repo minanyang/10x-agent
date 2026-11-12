@@ -8,10 +8,13 @@
 # `## Acceptance criteria`) with no `## Tests` row; a `## Tests` table missing or whose header is not
 # `| AC | Test file | Case |`; a phrase of references/banned-phrases.txt outside code; `## Readers` missing or
 # empty, or an entry with no nested hit line; a `## Tool behaviour relied on` entry with no fenced block whose
-# first line is `$ <command>` and which holds an output line; `## Overlap` missing or empty. A plan whose
+# first line is `$ <command>` and which holds an output line; `## Overlap` missing or empty; no `# Appendix` line
+# outside fences, or a second one; a `##` section above it other than Goal, Acceptance criteria, Files and Risks and
+# assumptions, or one of those below it; more than 40 lines above it, trailing blank lines dropped. A plan whose
 # `## Files` has more than 3 top-level bullets also needs the cold read saved as a non-blank regular file
 # .10x/<id>/cold-read.md: without it, the last line printed is `cold read required: <n> files — …`, exit 1.
-# Exit 0 when none of these holds, 2 on a usage error or a missing plan.md.
+# Exit 0 when none of these holds, printing `plan ok: <path>` and `user-facing: lines 1-<n>`, <n> the lines above
+# `# Appendix`; 2 on a usage error or a missing plan.md.
 
 set -euo pipefail
 # shellcheck source=../scripts/lib.sh
@@ -91,6 +94,24 @@ node -e '
   if (!overlap) bad(0, "no \"## Overlap\" section")
   else if (!lines.slice(overlap.from, overlap.to).some((s) => s.trim() !== "")) bad(overlap.line, "\"## Overlap\" is empty")
 
+  const markers = []
+  for (let k = 0; k < lines.length; k++) if (text[k] !== null && /^# Appendix\s*$/.test(lines[k])) markers.push(k)
+  let shown = 0
+  if (!markers.length) bad(0, "no \"# Appendix\" line")
+  else {
+    const at = markers[0]
+    for (const k of markers.slice(1)) bad(k + 1, "a second \"# Appendix\" line")
+    const facing = ["goal", "acceptance criteria", "files", "risks and assumptions"]
+    for (const s of secs) {
+      const mine = facing.includes(s.name.toLowerCase())
+      if (s.line - 1 < at && !mine) bad(s.line, "\"## " + s.name + "\" belongs below \"# Appendix\"")
+      if (s.line - 1 > at && mine) bad(s.line, "\"## " + s.name + "\" belongs above \"# Appendix\"")
+    }
+    shown = at
+    while (shown > 0 && lines[shown - 1].trim() === "") shown--
+    if (shown > 40) bad(at + 1, "user-facing part is " + shown + " lines, over 40")
+  }
+
   const files = sec("Files")
   let bound = 0
   if (files) for (let k = files.from; k < files.to; k++) if (top(k)) bound++
@@ -98,7 +119,7 @@ node -e '
   try { cold = fs.lstatSync(coldPath).isFile() && fs.readFileSync(coldPath, "utf8").trim() !== "" } catch {}
   const coldMissing = bound > 3 && !cold
 
-  if (!problems.length && !coldMissing) { console.log("plan ok: " + planPath); process.exit(0) }
+  if (!problems.length && !coldMissing) { console.log("plan ok: " + planPath + "\nuser-facing: lines 1-" + shown); process.exit(0) }
   if (problems.length) {
     problems.sort((a, b) => a.line - b.line)
     console.log(planPath + ":")

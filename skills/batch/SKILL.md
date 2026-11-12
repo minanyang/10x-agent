@@ -47,12 +47,13 @@ The board's `## Hand checks pending` section lists each criterion a landed ticke
 
 ## Step 2 — Rounds of answers
 
-When `status` lists `answer` lines, Read each such ticket's `.10x/_batch/<id>/turn.md` and show them all, grouped by ticket, in one message. For an `approvable` one, also Read `.10x/<id>/plan.md` and show it verbatim after its turn, under its path, and tell the user they can open that file themselves before approving: the user approves the plan, not the worker's account of it. Give the choices per ticket: answers to its questions, or, for an `approvable` one, `approve`, `revise <notes>` and `drop`. Wait for the reply; it may cover several tickets.
+When `status` lists `answer` lines, Read each such ticket's `.10x/_batch/<id>/turn.md` and show them all, grouped by ticket, in one message. For an `approvable` one, also Read `.10x/<id>/plan.md` and show the lines above its `# Appendix` line — the first line that is exactly `# Appendix` outside a code fence; an approvable plan has passed `10x-plan-check`, so there is one — verbatim after its turn, under its path, and tell the user the appendix is in that file and they can open it themselves before approving: the user approves the plan, not the worker's account of it. Give the choices per ticket: answers to its questions, or, for an `approvable` one, `approve`, `revise <notes>` and `drop`; when the message shows two or more `approvable` tickets, also offer `approve all`. Wait for the reply; it may cover several tickets.
 
 Write each ticket's reply to `.10x/_batch/<id>/reply.md`, then start `10x-batch run <id> reply` in the background (same flags as Step 1):
 
 - answers: the user's words for that ticket, verbatim.
-- `approve`: run `10x-land comment <id>` first when `.10x/<id>/comment.md` exists (left to the user's permissions), then `10x-batch approve <id>`, which records the approval and writes the reply itself. It is not in this skill's `allowed-tools` on purpose: each approve asks the user's permission, naming the ticket, so text a worker wrote can never approve a plan. Only the user's `approve` for that ticket starts it.
+- `approve`: run `10x-land comment <id>` first when `.10x/<id>/comment.md` exists (left to the user's permissions), then `10x-batch approve <id>`, which records the approval and writes the reply itself. It is not in this skill's `allowed-tools` on purpose: each approve asks the user's permission, naming the ticket, so text a worker wrote can never approve a plan. Only the user's `approve` for that ticket, or their `approve all` (below), starts it.
+- `approve all`: run `10x-land comment <id>` for each approvable ticket shown in that message that has `.10x/<id>/comment.md`, then one `10x-batch approve <id> <id>…` naming exactly the approvable tickets shown in that message. Leave out of it a ticket whose comment was denied or failed, and report it. `approve` records nothing when any id is refused: an exit 2 is quoted, and the user asked how to go on, as in Step 0.
 - accepting a `GREEN` file: when a worker's `asked` line asks to accept a `GREEN` test file and the user says yes for that file, run `10x-batch accept-green <id> <file> "<reason>"`, with the user's reason, then write "Accepted GREEN for <file>, recorded by the user. Run 10x-red-proof <id> again and go on." as the reply. It is not in this skill's `allowed-tools` on purpose: each acceptance asks the user's permission, and in a batch red-proof reads the record it writes in the state directory, not the worker's `.10x/<id>/accepted-green.md`.
 - `revise <notes>`: write "Revise the plan: <notes>". Show its next turn on its own, not in a round.
 - `drop`: run `10x-batch drop <id>`.
@@ -69,7 +70,7 @@ Start `10x-batch loop` with `run_in_background` and `timeout: 7200000`, then end
 - Exit 2: quote its `10x-batch:` line and ask the user how to go on.
 - Otherwise read its one line, `{"items":[…]}`, and relay only the items it printed, grouped by ticket, in one message:
   - `answer`: Read and show `.10x/_batch/<id>/turn.md`, and `.10x/<id>/product-questions.md` when it exists.
-  - `approve`: as in Step 2 — show the turn and `plan.md` verbatim; on the user's `approve`, `10x-land comment <id>` when `.10x/<id>/comment.md` exists, then `10x-batch approve <id>`, which still asks permission.
+  - `approve`: as in Step 2 — show the turn and the lines of `plan.md` above its `# Appendix` line verbatim, under its path; on the user's `approve`, `10x-land comment <id>` when `.10x/<id>/comment.md` exists, then `10x-batch approve <id>`, which still asks permission; `approve all` as in Step 2.
   - `failed` and `denied`: show its evidence, for the user to decide on.
 
 After the user's reply, write each `reply.md` or approve as in Step 2, then start `10x-batch loop` again (not `10x-batch run`).
@@ -89,7 +90,7 @@ The final reply is the board; in auto mode, followed by each ticket's `## Auto d
 ## Never
 
 - Never run `/10x:work` or `/10x:close` yourself, and never edit anything but `.10x/_batch/<id>/reply.md`.
-- Never run `10x-batch approve` for a ticket the user did not approve in their own words, nor `10x-batch accept-green` for a file the user did not accept in theirs.
+- Never run `10x-batch approve` for a ticket the user did not approve in their own words — `approve all` covers only the approvable tickets shown in the message it answers — nor `10x-batch accept-green` for a file the user did not accept in theirs.
 - Never run `10x-batch checked` for a hand check the user did not report as passed in their own words.
 - Never use `CronCreate`, `ScheduleWakeup` or `/loop`; background runs wake you.
 - Never reply that something is unverified, unchecked or not yet confirmed: check it first. Only when a check is impossible, say so, naming what was tried and why it cannot be checked.

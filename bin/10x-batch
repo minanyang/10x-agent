@@ -6,7 +6,7 @@
 //   10x-batch run <id> plan|reply|implement|close
 //   10x-batch status
 //   10x-batch drop <id>
-//   10x-batch approve <id>
+//   10x-batch approve <id>...
 //   10x-batch accept-green <id> <file> "<reason>"
 //   10x-batch checked <id> AC<n> "<what you saw>"
 //   10x-batch loop
@@ -80,11 +80,12 @@
 // none is. `status` and `init` also set the State of each recorded version whose ids are all landed or closed, none
 // with a hand check pending, to `Done <YYYY-MM-DD>` (local date) in .10x/roadmap.md, changing nothing else, once, and
 // print `roadmap: <version> Done <date>` when they do.
-// `approve` records the user's approval of a draft plan that passes 10x-plan-check: the sha256 of plan.md with its
-// Status line blanked, in S/<id>.approved, printing the plan's path and short hash, out of reach of every worker: its
-// Bash runs in the sandbox, which cannot write S, and its Edit and Write tools are denied S. A plan session's ticket is
-// `approved`
-// only when plan.md says so and that record matches it. It then writes the approve reply to reply.md.
+// `approve` records the user's approval of each id's draft plan that passes 10x-plan-check: one record per id, the
+// sha256 of plan.md with its Status line blanked, in S/<id>.approved, printing the plan's path and short hash, out of
+// reach of every worker: its Bash runs in the sandbox, which cannot write S, and its Edit and Write tools are denied S.
+// A plan session's ticket is `approved`
+// only when plan.md says so and that record matches it. It then writes the approve reply to each id's reply.md. When
+// any id is not in the batch or not approvable, it names each such id and writes nothing for any.
 // `accept-green` records, on the user's go only, that a test file staying GREEN in 10x-red-proof is accepted: it
 // appends `## Accepted <n>` with the file, its blob at the ticket worktree's HEAD and the reason (newlines flattened) to
 // S/batch/<id>/accepted-green.md and prints `accepted: <id> <file> blob <12 hex>`. While the ticket is in the batch,
@@ -131,10 +132,10 @@ const HEADER = ['n', 'kind', 'session', 'session_kind', 'start', 'end', 'exit', 
 const RUNNING = { plan: 'planning', implement: 'implementing', close: 'closing' }
 const SETTLED = new Set(['landed', 'pr-open', 'failed', 'held', 'dropped'])
 const USAGE =
-  'usage: 10x-batch init [--auto] <ticket>... [--search "<query>"] | run <id> plan|reply|implement|close | status | drop <id> | approve <id> | accept-green <id> <file> "<reason>" | checked <id> AC<n> "<what you saw>" | loop'
+  'usage: 10x-batch init [--auto] <ticket>... [--search "<query>"] | run <id> plan|reply|implement|close | status | drop <id> | approve <id>... | accept-green <id> <file> "<reason>" | checked <id> AC<n> "<what you saw>" | loop'
 const APPROVE_REPLY = 'Approved. Set `Status: approved` in plan.md and stop; the implementation runs in a new session.\n'
 const FIXED_REPLY =
-  "Auto mode: no human answers this batch's questions. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, one line per question (its number, the choice and why), and go on.\n"
+  "Auto mode: no human answers this batch's questions. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question (its number, the choice and why), and go on.\n"
 const FIXED_MAX = 3
 const POLL_MS = 10000
 
@@ -1320,14 +1321,29 @@ function drop(argv) {
   process.stdout.write(`dropped: ${id}\nboard: ${BOARD}\n`)
 }
 
+// All or nothing: every id is checked before any record or reply is written.
 function approve(argv) {
-  if (argv.length !== 1) die(USAGE)
-  const [id] = argv
-  const { rows, i } = ticketRows(id)
-  const r = rows[i]
-  if (r.phase !== 'waiting' || !r.approvable) die(`approve ${id} refused: ${id} is ${r.phase}${r.phase === 'waiting' ? ' and its plan.md is not a draft that passes 10x-plan-check' : ''}`)
-  const hash = recordApproval(id)
-  process.stdout.write(`approved: ${id}\nplan: ${rel(path.join(tdir(id), 'plan.md'))} sha256 ${hash.slice(0, 12)}\nreply: ${rel(path.join(bdir(id), 'reply.md'))}\n`)
+  if (!argv.length) die(USAGE)
+  const want = [...new Set(argv)]
+  const ids = readIds()
+  const rows = deriveAll(ids)
+  const errors = []
+  for (const id of want) {
+    if (!ids.includes(id)) {
+      errors.push(`${id} is not in this batch (${TICKETS})`)
+      continue
+    }
+    const r = rows[ids.indexOf(id)]
+    if (r.phase !== 'waiting' || !r.approvable) errors.push(`approve ${id} refused: ${id} is ${r.phase}${r.phase === 'waiting' ? ' and its plan.md is not a draft that passes 10x-plan-check' : ''}`)
+  }
+  if (errors.length) {
+    for (const e of errors) process.stderr.write(`10x-batch: ${e}\n`)
+    process.exit(2)
+  }
+  for (const id of want) {
+    const hash = recordApproval(id)
+    process.stdout.write(`approved: ${id}\nplan: ${rel(path.join(tdir(id), 'plan.md'))} sha256 ${hash.slice(0, 12)}\nreply: ${rel(path.join(bdir(id), 'reply.md'))}\n`)
+  }
 }
 
 // The approval record of ticket <id>'s plan.md and the approve reply; returns the hash.
