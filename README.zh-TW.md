@@ -75,7 +75,7 @@ base branch、gates、close 模式、ticket 放在哪裡等選用設定放在 `.
 
 `/10x:batch gh-12 gh-13` 或 `--search "label:bug"` 會規劃所有 ticket，並在同一輪裡問你。`.10x/_batch/board.md` 列出每張 ticket 的階段、session 和結果。
 
-- `batch.parallel` 限制同時實作的 worker 數（預設 `1`）；ticket 一次落地一張。
+- `batch.parallel` 限制同時實作的 worker 數（預設 `2`）；ticket 一次落地一張。
 - `claude --resume <session id>` 可以進入某個 worker。
 - `/10x:batch auto <tickets>` 會自行核准沒有產品問題的計畫；批次只收你自己開的 issue，因為別人的 issue 可能操縱 worker。
 - 要允許 `Bash(git -C * add *)` 和 `Bash(git -C * commit *)`（[注意事項](tests/e2e/README.md)）；其他被拒絕的指令會列在 board 上。

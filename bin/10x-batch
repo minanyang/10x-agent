@@ -127,7 +127,7 @@
 // `auto mode unavailable: ran in <mode>` to its evidence.
 //
 // Config (.claude/10x.json): `close`, `worktreeDir`, `batch.parallel` (implement runs at once, an integer ≥ 1,
-// default 1). Refusals print `10x-batch: <why>` and exit 2.
+// default 2). Refusals print `10x-batch: <why>` and exit 2.
 
 const { execFileSync, spawn, spawnSync } = require('node:child_process')
 const { createHash, randomUUID } = require('node:crypto')
@@ -392,7 +392,7 @@ function readConfig() {
 
 function parallel() {
   const v = config.batch && typeof config.batch === 'object' ? config.batch.parallel : undefined
-  if (v == null) return 1
+  if (v == null) return 2
   if (!Number.isInteger(v) || v < 1) die(`batch.parallel must be an integer ≥ 1, got ${JSON.stringify(v)}`)
   return v
 }

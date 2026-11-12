@@ -93,8 +93,9 @@ Write `.10x/roadmap.draft.md`. It starts as a byte-for-byte copy of `.10x/roadma
 
 - Each requirement goes into a version, or into `## Not yet assigned`, `## Later` or `## Decided against` (with its reason).
 - A picked security entry becomes the item `<title> (security <fingerprint>)`: its title, with `|` written `\|` and each `; ` written `, ` so it stays one item, then its full fingerprint. Never shorten or reword the ` (security sha256:<hex>)` ending: Tickets finds the entry by it.
+- A follow-up — a requirement that fixes or completes what a version already in the table delivers, the `next:` version's own items included, and fits one ticket — joins the version `show` printed as `next:` before a new row is considered: it is appended to that row's `Contents` after `; `, and every other cell of the row stays byte-for-byte. Several follow-ups are appended in the order the user gave them; a change the user asked for on the same row applies too. With `next: none`, or when the user asks for a version of its own, it is a new row. A `Done` row is never changed. A picked security entry is placed as above, not by this rule.
 - A new version is a new row, placed by order: what it depends on first, then risk, then what can ship alone. Moving a row up or down keeps it.
-- Every existing row, state and section entry stays byte-for-byte. Change one only when the user's own words ask for it (move, drop, rename, re-scope) — never to tidy it, and never a `Done` row.
+- Every existing row, state and section entry stays byte-for-byte. Change one only when the user's own words ask for it (move, drop, rename, re-scope) — never to tidy it, and never a `Done` row. Appending a follow-up to the `next:` version's `Contents` is the one change made without them.
 
 Then:
 
@@ -102,11 +103,11 @@ Then:
 10x-roadmap check
 ```
 
-On exit 1, each `<file>:<line>: <why>` names a fault: fix the draft and run it again until it exits 0. Exit 2 (`10x-roadmap: <why>`) stops the skill: relay it. On exit 0, each `not kept: <line>` is an existing row or entry the draft no longer has as it was. One the user did not ask to change is restored from `.10x/roadmap.md` and `check` run again. Each `new id: <version> <id>` is a ticket id the draft adds to a row; add one only for a ticket the user named or approved in this session.
+On exit 1, each `<file>:<line>: <why>` names a fault: fix the draft and run it again until it exits 0. Exit 2 (`10x-roadmap: <why>`) stops the skill: relay it. On exit 0, each `not kept: <line>` is an existing row or entry the draft no longer has as it was. One the user did not ask to change is restored from `.10x/roadmap.md` and `check` run again; the row a follow-up joined has one expected `not kept:` line, which is not restored. Each `new id: <version> <id>` is a ticket id the draft adds to a row; add one only for a ticket the user named or approved in this session.
 
 ### Step 3 — Show and stop
 
-Show, in one message: the assumptions the grill left (omit when none); the draft's path; the draft verbatim as rendered markdown; then the `not kept:` and `new id:` lines `check` printed, verbatim — or, when it printed no `not kept:` line, that every existing row and entry is kept. **Stop** until the user approves or asks for changes. Changes go into the draft, then `check` again and the draft shown again.
+Show, in one message: the assumptions the grill left (omit when none); one line per follow-up, `follow-up: <item> → <version>`, then the sentence that any of them can have a version of its own instead (omit when none); the draft's path; the draft verbatim as rendered markdown; then the `not kept:` and `new id:` lines `check` printed, verbatim — or, when it printed no `not kept:` line, that every existing row and entry is kept. **Stop** until the user approves or asks for changes. Changes go into the draft, then `check` again and the draft shown again.
 
 ### Step 4 — Apply
 
@@ -249,7 +250,7 @@ The final reply is the path's last step: `show`'s output, `apply`'s `roadmap:`, 
 
 - Never write `.10x/roadmap.md` with Write, Edit or a shell redirect; it changes only through `10x-roadmap apply` and `10x-roadmap link`.
 - Never run `10x-roadmap apply` before the user has seen and approved the draft.
-- Never change an existing row, state or section entry the user did not ask to change.
+- Never change an existing row, state or section entry the user did not ask to change, other than appending a follow-up to the `next:` version's `Contents`.
 - Never create an issue or a ticket file before the user has seen and approved its draft.
 - Never create labels, issue types, milestones or projects.
 - Never put secrets, tokens, internal URLs or customer data in an issue body — it may be public.
