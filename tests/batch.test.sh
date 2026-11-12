@@ -1592,10 +1592,11 @@ end
 reset; ticket t1
 begin "checked: refuses what is not a pending hand check"
 vb init t1
-mkdir -p .10x/t1 .10x/t2 .10x/t3 .10x/t6 .10x/t7
+mkdir -p .10x/t1 .10x/t2 .10x/t3 .10x/t5 .10x/t6 .10x/t7
 hand_md t1 approved; evidence t1 "- AC1 — met: x" "- AC2 — hand-check: $HT"
 hand_md t2 approved; evidence t2 "- AC1 — met: x" "- AC2 — hand-check: $HT" "- AC2 — met: seen"
 hand_md t3 approved '`tests/y.sh`' '`two`'; evidence t3 "- AC1 — met: x" "- AC2 — hand-check: $HT"
+hand_md t5 approved
 hand_md t6 approved
 hand_md t7 approved; evidence t7 "- AC1 — met: x" "- AC2 — hand-check: $HT"
 mv .10x/t7 "$tmp/real7"; ln -s "$tmp/real7" .10x/t7
@@ -1610,7 +1611,7 @@ need "the criterion's last state is met: exit 2" exits 2 checked t2 AC2 "again"
 need "the plan does not declare it: exit 2" exits 2 checked t3 AC2 "x"
 need "a criterion with no evidence line: exit 2" exits 2 checked t1 AC1 "x"
 need "no .10x/<id>: exit 2" exits 2 checked t4 AC2 "x"
-need "no evidence.md: exit 2" eval 'mkdir -p .10x/t5 && hand_md t5 approved && exits 2 checked t5 AC2 "x"'
+need "no evidence.md: exit 2" exits 2 checked t5 AC2 "x"
 need "a symlinked evidence.md: exit 2" exits 2 checked t6 AC2 "x"
 need "its target is untouched" cmp -s "$evidence_t6" "$tmp/ev6.before"
 need "a symlinked .10x/<id>: exit 2" exits 2 checked t7 AC2 "x"
