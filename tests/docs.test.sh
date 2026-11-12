@@ -340,6 +340,25 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   en && back ? ok(name) : bad(name, `${en ? "" : "README.md lacks its link; "}${back ? "" : "README.zh-TW.md lacks its link"}`)
 }
 
+// gh-38 AC6 — 10x-batch replan in docs/scripts.md, docs/loop.md and the changelog's first section.
+{
+  const name = "docs describe 10x-batch replan"
+  const missing = []
+  const scripts = read("docs/scripts.md")
+  const entry = (scripts || "").split("\n").find((s) => s.startsWith("- `10x-batch replan <id>`"))
+  if (!entry) missing.push("docs/scripts.md: no `- `10x-batch replan <id>`` entry")
+  else for (const w of ["not failed", "Status: draft", "auto-approved", "reply.md"]) if (!entry.includes(w)) missing.push(`docs/scripts.md entry: ${w}`)
+  const refused = (scripts || "").split("\n").find((s) => s.includes("10x-batch: refused inside a batch worker"))
+  if (!refused || !refused.includes("`replan`")) missing.push("docs/scripts.md: `replan` in the paragraph naming `refused inside a batch worker`")
+  if (!(read("docs/loop.md") || "").includes("10x-batch replan")) missing.push("docs/loop.md: 10x-batch replan")
+  const lines = (read("CHANGELOG.md") || "").split("\n")
+  const at = lines.findIndex((s) => /^##\s/.test(s))
+  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
+  const first = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
+  if (!first.includes("10x-batch replan")) missing.push("CHANGELOG.md: 10x-batch replan under the first ## heading")
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 // AC5 — relative links.
 {
   const name = "every relative link in README.md, README.zh-TW.md and docs/*.md resolves"
