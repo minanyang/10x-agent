@@ -76,10 +76,17 @@
 # .10x/security.md entry it fixes; it is a header, never part of an issue body. `issue` runs `10x-security route` on it
 # and refuses, before any gh write or label call, an entry that routes to advisory, and a title or body (after the
 # header) that names any entry, printing `10x: draft <slug> contains security entry <fp>`.
+# A draft may carry a `Size: small` or `Size: normal` header line (any other value exits 2, naming the line). `issue`
+# publishes `Size: small` as the issue body's first line, a blank line after it, and `Size: normal` nowhere; `ticket`
+# keeps it in the verbatim copy. `issue`, `ticket` and `advisory` refuse `Size: small` beside a Security: line, and
+# `issue` and `ticket` refuse a `Size: small` draft whose body names, in an inline code span (a leading ./ and a
+# trailing :<line> or :<from>-<to> dropped), a file of the main checkout's index matching its security.paths globs,
+# naming the Size line and the file; a security.paths that is not an array of non-empty strings, none starting
+# with `:`, exits 2.
 # `ticket` (refused unless tickets is files) writes .10x/drafts/<slug>.md verbatim to .10x/<slug>/ticket.md
-# and deletes the draft, with no gh call and no origin. The draft is a title, an optional Security: line and a body: a
-# Labels:, Type: or Form: header line is refused, and the body gets `issue`'s checks for the `## Acceptance criteria`
-# layout. It refuses an existing .10x/<slug>/ and the slugs gh-<n>, drafts and audit, and prints `ticket: <abs path>`.
+# and deletes the draft, with no gh call and no origin. The draft is a title, optional Security: and Size: lines and a
+# body: a Labels:, Type: or Form: header line is refused, and the body gets `issue`'s checks for the
+# `## Acceptance criteria` layout. It refuses an existing .10x/<slug>/ and the slugs gh-<n>, drafts and audit, and prints `ticket: <abs path>`.
 # `advisory` takes the same slugs and drafts as `ticket`, but needs the Security: line and an entry that
 # `10x-security route` routes to advisory (so never with tickets: files), and refuses a body naming the entry's
 # location. It opens a draft GitHub security advisory in origin's repo (gh api, host pinned to github.com) from the
@@ -325,16 +332,19 @@ commit_sources() {
     sources+=("commit $(git -C "$ROOT" rev-parse --short=7 "$c")" "$msgs/$c")
   done <<<"$revs"
 }
-# parse_draft <draft> — sets title, labels, itype, form, security and body_from (the first body line) from a draft's
-# header, and labels_line, type_line, form_line, security_line: the line of each header line, 0 when absent.
+# parse_draft <draft> — sets title, labels, itype, form, security, size and body_from (the first body line) from a
+# draft's header, and labels_line, type_line, form_line, security_line, size_line: the line of each header line, 0 when
+# absent. Dies on a Size other than small or normal, and on Size: small beside a Security: line.
 parse_draft() {
   { IFS= read -r first || true; } <"$1"
   [[ "$first" == "# "* ]] || die "$1: line 1 must be '# <title>'"
   title="${first#\# }"
   [ -n "${title//[[:space:]]/}" ] || die "$1: empty title"
-  labels=(); itype=""; form=""; security=""; labels_line=0; type_line=0; form_line=0; security_line=0; body_from=2
+  labels=(); itype=""; form=""; security=""; size=""; labels_line=0; type_line=0; form_line=0; security_line=0; size_line=0; body_from=2
   while IFS= read -r line; do
     case "$line" in
+      "Size:"*)   size="${line#Size:}"; size="${size#"${size%%[![:space:]]*}"}"; size="${size%"${size##*[![:space:]]}"}"; size_line=$body_from
+                  case "$size" in small|normal) ;; *) die "$1: line $body_from: invalid Size '$(shown "$size")' (want small or normal)" ;; esac ;;
       "Security:"*) security="${line#Security:}"; security="${security#"${security%%[![:space:]]*}"}"; security="${security%"${security##*[![:space:]]}"}"; security_line=$body_from
                     [[ "$security" =~ ^sha256:[0-9a-f]{64}$ ]] || die "$1: line $body_from: invalid Security fingerprint" ;;
       "Labels:"*) IFS=',' read -ra parts <<<"${line#Labels:}"; labels_line=$body_from
@@ -345,6 +355,34 @@ parse_draft() {
     esac
     body_from=$((body_from + 1))
   done < <(tail -n +2 "$1")
+  [ "$size" != small ] || [ -z "$security" ] ||
+    die "$1: line $size_line: Size: small beside the Security: line on line $security_line; a security fix is never small"
+}
+# small_paths <draft> — for a Size: small draft, dies when an inline code span of the body (outside fences; a leading
+# ./ and a trailing :<line> or :<from>-<to> dropped) is a file of the main checkout's index under security.paths.
+small_paths() {
+  local sg g hits
+  sg="$(security_globs)" || exit 2
+  [ -n "$sg" ] || return 0
+  globs=()
+  while IFS= read -r g; do globs+=("$g"); done <<<"$sg"
+  # shellcheck disable=SC2016
+  hits="$(git -C "$ROOT" ls-files -z -- "${globs[@]}" | node -e '
+    const fs = require("fs")
+    const [draft, from, mdCheck] = process.argv.slice(1)
+    const tracked = new Set(fs.readFileSync(0, "utf8").split("\0").filter(Boolean))
+    const lines = fs.readFileSync(draft, "utf8").split("\n"), b = require(mdCheck).blank(lines, Number(from) - 1)
+    const out = []
+    lines.forEach((s, k) => {
+      if (b[k] === null) return
+      for (const m of s.matchAll(/(`+)([^`]*?)\1/g)) {
+        const p = m[2].trim().replace(/^(\.\/)+/, "").replace(/:\d+(-\d+)?$/, "")
+        if (tracked.has(p)) out.push("line " + (k + 1) + " names `" + p + "`")
+      }
+    })
+    console.log(out.join(", "))
+  ' "$1" "$body_from" "$(dirname "$(readlink -f "$0")")/../scripts/md-check.js")" || die "$1: could not match the body against security.paths"
+  [ -z "$hits" ] || die "$1: line $size_line: Size: small, but $(shown "$hits"), a file under security.paths; drop the Size: small line"
 }
 # sec_route <fingerprint> — sets route_line to `10x-security route`'s line and route to its route (ticket, issue or
 # advisory); its refusal, on stderr as it printed it, exits 2. The script beside this one, never one from PATH.
@@ -658,6 +696,7 @@ case "$cmd" in
       disclosure_check "draft $id" "$named"
       rm -f "$named"
     fi
+    [ "$size" != small ] || small_paths "$draft"
     [ -z "$itype" ] || [[ "$itype" =~ ^[A-Za-z0-9][A-Za-z0-9\ _-]*$ ]] || die "invalid issue type '$itype'"
     if [ ${#labels[@]} -gt 0 ]; then
       existing="$(gh label list --repo "$repo" --limit 1000 --json name --jq '.[].name')" || die "could not list labels"
@@ -680,7 +719,8 @@ case "$cmd" in
     fi
     check_body "$draft" "$body_from" "$formfile"
     bodyfile="$(mktemp)"; trap 'rm -f "$bodyfile"' EXIT
-    tail -n +"$body_from" "$draft" | sed '1{/^[[:space:]]*$/d;}' >"$bodyfile"
+    # Size: small is published as the body's first line, the one line 10x-ticket reads it from.
+    { [ "$size" != small ] || printf 'Size: small\n\n'; tail -n +"$body_from" "$draft" | sed '1{/^[[:space:]]*$/d;}'; } >"$bodyfile"
     args=(issue create --repo "$repo" --title "$title" --body-file "$bodyfile")
     for l in ${labels[@]+"${labels[@]}"}; do args+=(--label "$l"); done
     [ -z "$itype" ] || args+=(--type "$itype")
@@ -698,6 +738,7 @@ case "$cmd" in
       [ "$n" -eq 0 ] || die "$draft: line $n: '$(shown "$(sed -n "${n}p" "$draft")")' is a GitHub header line; tickets: files drafts have only a title and a body"
     done
     check_body "$draft" "$body_from" ""
+    [ "$size" != small ] || small_paths "$draft"
     ensure_excluded
     td="$(task_dir "$id")"
     mkdir "$td" 2>/dev/null || die ".10x/$id/ already exists"

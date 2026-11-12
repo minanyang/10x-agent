@@ -9,6 +9,7 @@
     "bash tests/grant.test.sh",
     "bash tests/plan-boundary.test.sh",
     "bash tests/scripts.test.sh",
+    "bash tests/size.test.sh",
     "bash tests/security.test.sh",
     "bash tests/security-fixes.test.sh",
     "bash tests/worktree-link.test.sh",

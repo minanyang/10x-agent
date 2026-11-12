@@ -29,6 +29,13 @@
 # `Bash(<name> …)` entry of any skills/*/SKILL.md's allowed-tools, the frontmatter of a skills/*/SKILL.md or agents/*.md,
 # hooks/hooks.json, a file its commands name under ${CLAUDE_PLUGIN_ROOT}, or a file one of those scripts loads (one
 # level) by a `source "$(dirname …)/…"` or a relative `require` resolvable without running it; no such line otherwise.
+# After those reasons comes one `<file> matches security.paths` per file of the packet's diff (`--no-renames`) that a
+# `security.paths` glob of the main checkout's .claude/10x.json matches (git `:(glob)` pathspecs; the branch's own
+# config is not read), for any ticket size. A security.paths that is not an array of non-empty strings, none starting
+# with `:`, exits 2 before the gates.
+# For a small ticket (scripts/lib.sh ticket_size) both write `- size: small` after it — `- size: small, escalated to
+# normal (security review: required)` when the security line is there — and list .10x/<id>/ticket.md as what the
+# ticket asks for; a ticket that is not small gets no size line.
 #
 # Both write a `## Relocks` section after it (`none` when .10x/<id>/relock.md is missing or empty): each entry's
 # `### Relock <n> — approved|rejected` heading; for an approved entry 10x-red-proof accepted, `git diff <the lock it
@@ -68,6 +75,8 @@ locked="$(lock_changed "$path")"
 [ -z "$locked" ] || die "locked file(s) changed since the lock: ${locked//$'\n'/ } — run 10x-red-proof $id (a relock is accepted there)"
 acc_src="$(accepted_source "$id")" || exit 2
 acc_all="$(accepted_last "$acc_src")" || exit 2
+sec_globs="$(security_globs)" || exit 2
+size="$(ticket_size "$id")" || exit 2
 
 pre_review() { # run the preReviewGates in the worktree; the first failure exits 1
   local n=0 c log
@@ -231,6 +240,15 @@ security="$(node -e '
   }
   console.log(reasons.join("; "))
 ' "$path" "$base")" || die "could not work out whether a security review is required"
+if [ -n "$sec_globs" ]; then
+  globs=()
+  while IFS= read -r g; do globs+=("$g"); done <<<"$sec_globs"
+  matched="$(git -C "$path" -c core.quotePath=false diff --name-only --no-renames "$base" HEAD -- "${globs[@]}")" ||
+    die "could not match the diff against security.paths"
+  while IFS= read -r f; do
+    if [ -n "$f" ]; then security+="${security:+; }$f matches security.paths"; fi
+  done <<<"$matched"
+fi
 
 relocks=""
 lock_shas="$(lock_commits "$path")"
@@ -277,6 +295,9 @@ fi
   else echo "- base: \`$(base_ref)\`, merge base \`${base:0:9}\`"; fi
   echo "- uncommitted paths: $(git -C "$path" status --porcelain | wc -l | tr -d ' ') (the diff is committed work only)"
   [ -z "$security" ] || echo "- security review: required ($security)"
+  if [ "$size" = small ]; then
+    if [ -n "$security" ]; then echo "- size: small, escalated to normal (security review: required)"; else echo "- size: small"; fi
+  fi
   echo
   echo "## Plan checks"
   echo
@@ -294,6 +315,7 @@ fi
   echo
   echo "- \`$diff_file\` — the full diff ($(wc -l <"$diff_file" | tr -d ' ') lines)"
   [ -f "$dir/plan.md" ] && echo "- \`$dir/plan.md\` — what the ticket asks for"
+  if [ "$size" = small ]; then echo "- \`$dir/ticket.md\` — what the ticket asks for"; fi
   for f in CLAUDE.md AGENTS.md; do [ -f "$path/$f" ] && echo "- \`$path/$f\`"; done
   if [ -d "$path/.claude/rules" ]; then
     for f in "$path"/.claude/rules/*.md; do [ -f "$f" ] && echo "- \`$f\`"; done

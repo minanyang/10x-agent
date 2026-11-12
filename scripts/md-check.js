@@ -1,5 +1,5 @@
 // Markdown matching shared by 10x-land issue and ticket, 10x-plan-check, 10x-review-packet, 10x-batch and hooks/stop-gate.js,
-// so every check reads code, fences and the banned list the same way.
+// so every check reads code, fences and the banned list the same way; and a ticket's size (scripts/lib.sh ticket_size).
 
 const fs = require('node:fs')
 
@@ -48,19 +48,53 @@ function sections(text) {
   return out
 }
 
-// The criteria of a plan: top-level bullets `- AC<n> — <text>` (a dash or colon after the number) under
-// `## Acceptance criteria`. [{ id, n, line, text }] — <line> is 1-based.
+// Top-level bullets `- AC<n> — <text>` (a dash or colon after the number, an optional `[ ]` / `[x]` checkbox after
+// the bullet) on the 0-based lines [from, to). [{ id, n, line, text }] — <line> is 1-based.
+function acBullets(lines, b, from, to) {
+  const out = []
+  for (let k = from; k < to; k++) {
+    if (b[k] === null || !/^[-*+]\s+(?:\[[ xX]\]\s*)?AC\d+\s*[—–:-]/.test(b[k])) continue
+    const m = lines[k].match(/^[-*+]\s+(?:\[[ xX]\]\s*)?AC(\d+)\s*[—–:-]\s*(.*)$/)
+    if (m) out.push({ id: 'AC' + m[1], n: Number(m[1]), line: k + 1, text: m[2] })
+  }
+  return out
+}
+
+// The criteria of a plan: the AC bullets under `## Acceptance criteria`.
 function criteria(text) {
   const lines = text.split('\n'), b = blank(lines)
   const sec = sections(text).find((s) => s.name.toLowerCase() === 'acceptance criteria')
   if (!sec) return []
-  const out = []
-  for (let k = sec.from; k < sec.to; k++) {
-    if (b[k] === null || !/^[-*+]\s+AC\d+\s*[—–:-]/.test(b[k])) continue
-    const m = lines[k].match(/^[-*+]\s+AC(\d+)\s*[—–:-]\s*(.*)$/)
-    if (m) out.push({ id: 'AC' + m[1], n: Number(m[1]), line: k + 1, text: m[2] })
+  return acBullets(lines, b, sec.from, sec.to)
+}
+
+// The criteria of a ticket: the AC bullets under the first `## Acceptance criteria` or `### Acceptance criteria`
+// heading (an issue form's field) before the first `## Comments` heading, to the next heading of its level or above.
+function ticketCriteria(text) {
+  const lines = text.split('\n'), b = blank(lines)
+  let from = -1, level = 0
+  for (let k = 0; k < lines.length; k++) {
+    const m = b[k] !== null && b[k].match(/^(#{1,6})\s+(.*?)\s*#*\s*$/)
+    if (!m) continue
+    const name = m[2].toLowerCase()
+    if (from >= 0) {
+      if (m[1].length <= level) return acBullets(lines, b, from, k)
+    } else if (m[1].length === 2 && name === 'comments') return []
+    else if ((m[1].length === 2 || m[1].length === 3) && name === 'acceptance criteria') { from = k + 1; level = m[1].length }
   }
-  return out
+  return from < 0 ? [] : acBullets(lines, b, from, lines.length)
+}
+
+// A ticket's size: `small` when its header declares it and ticketCriteria() is not empty, else `normal`. The header is
+// the non-blank lines under the title, holding the line `Size: small` (a draft, a files ticket); or, when line 2 is
+// blank and line 3 starts `- source: `, that list block, holding `- size: small` (what bin/10x-ticket writes). Trailing
+// whitespace and `\r` dropped, case-sensitive.
+function size(text) {
+  const l = text.split('\n').map((s) => s.replace(/\s+$/, ''))
+  const listed = l.length > 2 && l[1] === '' && l[2].startsWith('- source: ')
+  const head = []
+  for (let k = listed ? 2 : 1; k < l.length && l[k] !== ''; k++) head.push(l[k])
+  return head.includes(listed ? '- size: small' : 'Size: small') && ticketCriteria(text).length ? 'small' : 'normal'
 }
 
 // The paths a plan binds: the first code span of each top-level bullet under `## Files`, read from the raw line,
@@ -118,4 +152,4 @@ function handChecks(text) {
   return out
 }
 
-module.exports = { blank, bannedHits, phrases, sections, criteria, files, testFiles, handChecks }
+module.exports = { blank, bannedHits, phrases, sections, criteria, ticketCriteria, size, files, testFiles, handChecks }

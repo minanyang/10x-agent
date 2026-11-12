@@ -13,7 +13,9 @@
 // criterion, leaves one pending or in no known state, or has an `asked` question the last message
 // does not carry. Lines: `- AC<n> — pending | met: … | deferred: "…" | hand-check: … | asked: …`,
 // `- asked: …`; the last line for a criterion wins. `hand-check:` settles only a criterion the plan's
-// `## Tests` declares a hand check (md-check.js handChecks()).
+// `## Tests` declares a hand check (md-check.js handChecks()). With no plan.md (lstat), a ticket.md that
+// md-check.js size() calls small gives the criteria instead (ticketCriteria(): `## Acceptance criteria` or a form's
+// `### Acceptance criteria`, never under `## Comments`), with no hand check; any other ticket without a plan passes.
 //
 // Stop during a flow, and SubagentStop of the two reviewers, also block on a claim that something is
 // unverified, unchecked or not yet confirmed, outside code.
@@ -181,9 +183,19 @@ function evidenceGaps(md, r, sid, id, message) {
   const dir = path.join(r.root, '.10x', id)
   if (fs.readFileSync(path.join(dir, 'session'), 'utf8').trim() !== sid) return []
   if (!fs.existsSync(path.join(worktreeOf(r, id), '.git'))) return []
-  const planText = fs.readFileSync(path.join(dir, 'plan.md'), 'utf8')
-  const plan = md.criteria(planText).map((c) => `AC${c.n}`)
-  const hand = md.handChecks(planText)
+  const planPath = path.join(dir, 'plan.md')
+  let crit, hand
+  if (!fs.lstatSync(planPath, { throwIfNoEntry: false })) {
+    const ticketText = fs.readFileSync(path.join(dir, 'ticket.md'), 'utf8')
+    if (md.size(ticketText) !== 'small') return []
+    crit = md.ticketCriteria(ticketText)
+    hand = []
+  } else {
+    const planText = fs.readFileSync(planPath, 'utf8')
+    crit = md.criteria(planText)
+    hand = md.handChecks(planText)
+  }
+  const plan = crit.map((c) => `AC${c.n}`)
   const raw = fs.readFileSync(path.join(dir, 'evidence.md'), 'utf8').split('\n')
   const outside = md.blank(raw, 0)
   const last = new Map()

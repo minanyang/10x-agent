@@ -77,7 +77,7 @@ If `init` printed `form:` lines, pick the form by the kind: a bug takes the form
 
 ## Step 3 — Draft and stop
 
-Write the draft to `<drafts>/<short-slug>.md`, `<drafts>` being the path on `init`'s `drafts:` line (slug: lowercase letters, digits and `-`; with `tickets: files` it becomes the ticket id, so never `gh-<n>` or `drafts`). Line 1 is `# <title>`; with `tickets: github`, optional `Labels: a, b` (existing labels only), `Type: <name>` and `Form: <file name>` lines follow directly — a `tickets: files` draft has none of them; then a blank line and the body:
+Write the draft to `<drafts>/<short-slug>.md`, `<drafts>` being the path on `init`'s `drafts:` line (slug: lowercase letters, digits and `-`; with `tickets: files` it becomes the ticket id, so never `gh-<n>` or `drafts`). Line 1 is `# <title>`; with `tickets: github`, optional `Labels: a, b` (existing labels only), `Type: <name>` and `Form: <file name>` lines follow directly — a `tickets: files` draft has none of them; in either mode, `Size: small` is the last header line of a small ticket (below); then a blank line and the body:
 
 ```markdown
 # <title>
@@ -105,7 +105,9 @@ Title: a bug by the problem observed (`Close reports a merged PR as open`), a fe
 
 Every criterion is checkable: no `TBD`, `handle edge cases`, `as needed` or the other phrases on `init`'s `banned:` line — `10x-land issue` and `10x-land ticket` refuse them outside code, as they refuse an unnumbered criterion, two checkboxes on one line and an empty or missing required form section.
 
-Show the draft once: one line `Kind: <kind> → <label, type or form file name>`, or `Kind: <kind> → ticket file` with `tickets: files` (the kind is not in the file), the draft's path on one line, then the file verbatim as rendered markdown — never summarised again in the same reply. **Stop** until the user approves or edits it.
+Propose `Size: small` only when the change touches ≤ 3 files whose place Step 1 found, is copy, styling, a located bug fix or a field added to an existing shape, and names no sensitive path — auth, permissions, payments, secrets, a file matching `security.paths` in the main checkout's `.claude/10x.json`. `/10x:work` then works it without a plan and with one review. Otherwise write no `Size:` line: normal is the default. `10x-land issue` and `10x-land ticket` refuse a `Size:` other than `small` or `normal`, `Size: small` beside a `Security:` line, and a `Size: small` draft whose body names, in an inline code span, a tracked file matching `security.paths` — naming the line and the file: drop the `Size:` line and run it again.
+
+Show the draft once: one line `Kind: <kind> → <label, type or form file name>`, or `Kind: <kind> → ticket file` with `tickets: files` (the kind is not in the file), ending in ` · Size: small` for a small draft, the draft's path on one line, then the file verbatim as rendered markdown — never summarised again in the same reply. **Stop** until the user approves or edits it.
 
 ## Step 4 — Create
 
