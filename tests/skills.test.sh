@@ -602,6 +602,8 @@ for (const skill of ["open", "work", "close", "batch", "roadmap", "audit"])
     [small, "only when the full round has a `blocker` or `major`", "Step 7a only on a `blocker` or `major`"],
     [small, "escalated to normal", "`escalated to normal`"],
     [small, "spawn `10x:security-reviewer` too", "the security reviewer for an escalated ticket"],
+    [small, "the fixes round follows as for a normal ticket", "the fixes round for an escalated ticket"],
+    [small, "or the ticket is escalated", "Step 7a runs for an escalated ticket"],
     [work, "`Escalated: <reasons>`", "`Escalated:` in the report"],
     [small, "`fix-now`", "a `fix-now` answer turns the ticket normal"],
     [small, "turns the ticket normal", "a plan change turns the ticket normal"],
