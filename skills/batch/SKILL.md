@@ -50,7 +50,7 @@ The board's `## Hand checks pending` section lists each criterion a landed ticke
 
 ## Step 2 — Rounds of answers
 
-When `status` lists `answer` lines, Read each such ticket's `.10x/_batch/<id>/turn.md` and show them all, grouped by ticket, in one message. For an `approvable` one, also Read `.10x/<id>/plan.md` and show the lines above its `# Appendix` line — the first line that is exactly `# Appendix` outside a code fence; an approvable plan has passed `10x-plan-check`, so there is one — verbatim after its turn, under its path, and tell the user the appendix is in that file and they can open it themselves before approving: the user approves the plan, not the worker's account of it. Give the choices per ticket: answers to its questions, or, for an `approvable` one, `approve`, `revise <notes>` and `drop`; when the message shows two or more `approvable` tickets, also offer `approve all`. Wait for the reply; it may cover several tickets.
+When `status` lists `answer` lines, Read each such ticket's `.10x/_batch/<id>/turn.md` and show them all, grouped by ticket, in one message — for a ticket whose session is not a plan session, first its Evidence from the board: it may wait on a denied command with no question in its turn. For an `approvable` one, also Read `.10x/<id>/plan.md` and show the lines above its `# Appendix` line — the first line that is exactly `# Appendix` outside a code fence; an approvable plan has passed `10x-plan-check`, so there is one — verbatim after its turn, under its path, and tell the user the appendix is in that file and they can open it themselves before approving: the user approves the plan, not the worker's account of it. Give the choices per ticket: answers to its questions, or, for an `approvable` one, `approve`, `revise <notes>` and `drop`; when the message shows two or more `approvable` tickets, also offer `approve all`. Wait for the reply; it may cover several tickets.
 
 Write each ticket's reply to `.10x/_batch/<id>/reply.md`, then start `10x-batch run <id> reply` in the background (same flags as Step 1):
 
@@ -72,7 +72,7 @@ Start `10x-batch loop` with `run_in_background` and `timeout: 7200000`, then end
 - No JSON line (it was stopped at its limit): start `10x-batch loop` again the same way.
 - Exit 2: quote its `10x-batch:` line and ask the user how to go on.
 - Otherwise read its one line, `{"items":[…]}`, and relay only the items it printed, grouped by ticket, in one message:
-  - `answer`: Read and show `.10x/_batch/<id>/turn.md`, and `.10x/<id>/product-questions.md` when it exists.
+  - `answer`: Read and show `.10x/_batch/<id>/turn.md`, and `.10x/<id>/product-questions.md` when it exists; for a ticket whose session is not a plan session, first its Evidence from the board.
   - `approve`: as in Step 2 — show the turn and the lines of `plan.md` above its `# Appendix` line verbatim, under its path; on the user's `approve`, `10x-land comment <id>` when `.10x/<id>/comment.md` exists, then `10x-batch approve <id>`, which still asks permission; `approve all` as in Step 2.
   - `failed`: show its evidence and offer `replan` and `drop`, as in Step 1.
   - `denied`: show its evidence, for the user to decide on.

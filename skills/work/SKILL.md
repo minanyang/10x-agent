@@ -32,7 +32,7 @@ One ticket per session. Everything the next session needs lives in `.10x/<id>/`.
 
 `10x-worktree init <id>` and `10x-worktree add <id>` print `ticket dir: <path>` and `base: <branch> (<ref>)`. Every `.10x/<id>/` path in this skill means that ticket dir — in the main checkout, never under the worktree — and every path handed to an agent (`plan.md`, `ticket.md`, the packets) is the absolute one built from it. `<base>` is the branch on the `base:` line; never assume `main`.
 
-The scripts below (`10x-worktree`, `10x-ticket`, `10x-grill`, `10x-plan-check`, `10x-land`, `10x-red-proof`, `10x-test`, `10x-verify`, `10x-review-packet`, `10x-security`) are on the Bash tool's PATH while the plugin is enabled. Run them from the project; they find the main checkout themselves. Run one command per Bash call — no `&&`, `;` or `|`.
+The scripts below (`10x-worktree`, `10x-ticket`, `10x-grill`, `10x-plan-check`, `10x-land`, `10x-red-proof`, `10x-test`, `10x-verify`, `10x-review-packet`, `10x-security`) are on the Bash tool's PATH while the plugin is enabled. Run them from the project; they find the main checkout themselves. Run one command per Bash call — no `&&`, `;` or `|`. Run git in a worktree as `git -C <worktree> …`, never after `cd`.
 
 ## Step 0 — Which ticket, which phase
 

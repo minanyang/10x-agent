@@ -37,8 +37,8 @@ const readOnly = ["git log --name-only HEAD..origin/X", "git log -n 5 --oneline"
   "git diff --name-only X...X", "git diff origin/X...X -- .claude/agent-memory"]
 // Commands a skill's prose names for the user or as an explanation, never runs itself.
 const notRun = {
-  close: ["gh auth login", "glab auth login", "git rebase --skip", "git merge --ff-only"],
-  work: [],
+  close: ["gh auth login", "glab auth login", "git rebase --skip", "git merge --ff-only", "git -C X …"],
+  work: ["git -C X …"],
   open: ["gh auth login"],
   batch: [],
   roadmap: ["gh auth login"],
@@ -675,6 +675,23 @@ for (const skill of ["open", "work", "close", "batch", "roadmap", "audit"])
     [open.includes("· Size: small"), "open: `· Size: small` on the `Kind:` line"],
     [close.includes("ticket.md") && /no `plan\.md`|has no plan|without a `plan\.md`/.test(close), "close: criteria from `ticket.md` when there is no `plan.md`"],
   ].filter(([c]) => !c).map(([, w]) => w)
+  missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
+}
+
+// gh-39 AC6 — work and close run git in a worktree with -C, never after cd.
+{
+  const name = "work and close: run git as git -C <worktree>, never after cd"
+  const read = (s) => (fs.existsSync(`${dir}/${s}/SKILL.md`) ? fs.readFileSync(`${dir}/${s}/SKILL.md`, "utf8") : "")
+  const missing = ["work", "close"].flatMap((s) => ["`git -C <worktree> …`", "never after `cd`"].filter((w) => !read(s).includes(w)).map((w) => `${s}: ${w}`))
+  missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
+}
+
+// gh-39 AC8 — a ticket can wait with no question in its turn.md: the conductor shows its Evidence from the board first.
+{
+  const name = "batch: an answer on a non-plan session shows the board's evidence"
+  const text = fs.existsSync(`${dir}/batch/SKILL.md`) ? fs.readFileSync(`${dir}/batch/SKILL.md`, "utf8") : ""
+  const step = (n) => (new RegExp(`^## Step ${n}\\b[\\s\\S]*?(?=^## |(?![\\s\\S]))`, "m").exec(text) || [""])[0].replace(/\s+/g, " ")
+  const missing = [2, 4].filter((n) => !(step(n).includes("not a plan session") && step(n).includes("Evidence"))).map((n) => `Step ${n}: "not a plan session" and its Evidence`)
   missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
 }
 process.exit(fail)

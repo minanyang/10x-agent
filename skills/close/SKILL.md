@@ -34,7 +34,7 @@ allowed-tools:
 
 The PR tool follows `origin`: github.com → `gh`, a GitLab host → `glab`. Any other host, or no `origin`, supports only `local`.
 
-Run one command per Bash call — no `&&`, `;` or `|` — so each call matches this skill's `allowed-tools` on its own. In `pr-merge` mode, running `/10x:close` is the user's request to merge: state the PR URL, then merge.
+Run one command per Bash call — no `&&`, `;` or `|` — so each call matches this skill's `allowed-tools` on its own. Run git in a worktree as `git -C <worktree> …`, never after `cd`. In `pr-merge` mode, running `/10x:close` is the user's request to merge: state the PR URL, then merge.
 
 ## Step 0 — Take stock, stop on anything unfinished
 

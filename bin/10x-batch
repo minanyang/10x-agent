@@ -114,8 +114,11 @@
 // refused first. It then runs one plan-session worker turn as `run <id> plan` does, on the existing plan.md, and
 // touches nothing else of the ticket or the batch.
 //
-// A permission denial does not decide a phase: a run that exits 0 is judged by the ticket's files, and its denials are
-// added to the evidence and listed under `## Needs the human`. A ticket waiting on its implement session shows the
+// A permission denial does not fail a run: a run that exits 0 is judged by the ticket's files, and its denials are
+// added to the evidence and listed under `## Needs the human` as `<N> denied (see .10x/_batch/<id>/<nn>-denials.tsv)`,
+// never as the commands. Two such runs that would be `failed` are `waiting` when they have denials, so the user can
+// allow the command and reply: an implement run that leaves a criterion open with no `asked` line, and a close run
+// that did not land with no open PR. A ticket waiting on its implement session shows the
 // `asked` texts of evidence.md; each approved entry of .10x/<id>/relock.md adds `relocked: <reason>` to the evidence
 // and, until the ticket lands, under `## Needs the human`. A ticket whose latest run has a <nn>-fallback file adds
 // `auto mode unavailable: ran in <mode>` to its evidence.
@@ -819,7 +822,7 @@ function derive(id) {
   const exit = open ? '?' : last.exit
   const tag = `run ${pad(last.n)} (${last.kind})`
   const denied = (readOr(path.join(bdir(id), `${pad(last.n)}-denials.tsv`)) || '').split('\n').filter(Boolean)
-  if (denied.length) row.denied = `${tag} denied: ${denied.map((d) => d.split('\t').pop()).join('; ')}`
+  if (denied.length) row.denied = `${denied.length} denied (see ${rel(path.join(bdir(id), `${pad(last.n)}-denials.tsv`))})`
   if ((readOr(path.join(bdir(id), `${pad(last.n)}-sandbox`)) || '').trim() === 'unavailable') {
     row.sandbox = true
     return set('failed', 'sandbox unavailable')
@@ -838,7 +841,10 @@ function derive(id) {
     const gate = failedGate(id)
     if (gate) return set('failed', `gate FAIL: ${gate}`)
     const ev = evidence(id, planText)
-    if (ev.open && !ev.asked) return set('failed', `open criterion: ${ev.open}`)
+    if (ev.open && !ev.asked) {
+      if (!denied.length) return set('failed', `open criterion: ${ev.open}`)
+      return set('waiting', [`open criterion: ${ev.open}`, fs.existsSync(turn) ? rel(turn) : ''].filter(Boolean).join('; '))
+    }
     if (ev.asked) return set('waiting', [...ev.asks, fs.existsSync(turn) ? rel(turn) : ''].filter(Boolean).join('; '))
     return set('implemented')
   }
@@ -846,7 +852,7 @@ function derive(id) {
     if (!fs.existsSync(path.join(WT_DIR, id))) return set('landed', (readOr(path.join(bdir(id), `${pad(last.n)}-landed`)) || '').trim() || landedOn())
     const url = CLOSE === 'pr' ? prOpen(id) : null
     if (url) return set('pr-open', url)
-    return set('failed', `close did not land${fs.existsSync(turn) ? `; see ${rel(turn)}` : ''}`)
+    return set(denied.length ? 'waiting' : 'failed', `close did not land${fs.existsSync(turn) ? `; see ${rel(turn)}` : ''}`)
   }
   return set('failed', `${tag} has an unknown session kind '${last.session_kind}'`)
 }
