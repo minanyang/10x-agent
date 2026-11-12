@@ -6,12 +6,13 @@
 //   10x-batch run <id> plan|reply|implement|close
 //   10x-batch status
 //   10x-batch drop <id>
+//   10x-batch replan <id>
 //   10x-batch approve <id>...
 //   10x-batch accept-green <id> <file> "<reason>"
 //   10x-batch checked <id> AC<n> "<what you saw>"
 //   10x-batch loop
 //
-// With TENX_BATCH set (every worker has it), init, run, drop, approve, accept-green, checked and loop refuse before reading
+// With TENX_BATCH set (every worker has it), init, run, drop, replan, approve, accept-green, checked and loop refuse before reading
 // anything, so a worker cannot drive its own batch; status still runs.
 //
 // The records a decision is made from live in the state dir S, out of every worker's reach: S is
@@ -21,7 +22,7 @@
 // <id>/: runs.tsv (`n kind session session_kind start end exit pid`, times in epoch ms, end and exit empty while a run
 // is open), `auto-approved` (the plan hash `loop` approved), `dropped` and `accepted-green.md` (the GREEN test files the
 // user accepted). S, S/batch and S/batch/<id> are made 0700, and a symlink at any of them is refused. init, run, drop,
-// approve, accept-green and loop first refuse an S equal to or inside the
+// replan, approve, accept-green and loop first refuse an S equal to or inside the
 // main checkout, a worktree, a path the worker sandbox may write, or a sandbox.filesystem.allowWrite of the project's
 // or the user's .claude/settings.json or settings.local.json, or of the same two files in CLAUDE_CONFIG_DIR, when set,
 // resolved against the main checkout (`state dir <S> is inside <path>`).
@@ -67,8 +68,8 @@
 // temp dir, and the user's store and PNPM_HOME stay out of reach — and its denyWrite the same writeDeny() paths plus
 // the settings files, except the git common dir, narrowed to config, config.worktree, hooks, info/attributes,
 // commondir and the admin dir and .git file of every worktree registered when the run starts but the ticket's own.
-// It refuses a PATH entry or PNPM_HOME that is or contains the main checkout or an allowWrite path. It refuses a plan, implement or
-// close that `status` does not list, a reply to a planning session while a plan-session run that started before the
+// It and replan refuse a PATH entry or PNPM_HOME that is or contains the main checkout or an allowWrite path.
+// It refuses a plan, implement or close that `status` does not list, a reply to a planning session while a plan-session run that started before the
 // ticket's latest run ended is open, and a
 // reply whose first line starts with `/`, and a gh-<n> ticket whose issue is no longer the user's. Every worker gets
 // TENX_BATCH=1. SIGTERM and SIGINT are forwarded to the worker. It prints
@@ -106,6 +107,12 @@
 // evidence, or [{"need":"done"}] when every ticket is settled.
 // `drop` sends SIGTERM to the ticket's open worker (a process whose command line holds the run's session), marks it
 // dropped and rewrites the board.
+// `replan` sends a `failed` ticket back to planning without a new batch; any other phase is refused (`replan <id>
+// refused: <id> is <phase>, not failed`). After every refusal, and before its worker starts, it deletes S/<id>.approved,
+// S/batch/<id>/auto-approved and .10x/_batch/<id>/reply.md, and rewrites the first `Status: approved` line of
+// .10x/<id>/plan.md to `Status: draft`, so the ticket needs a new `approve`; a symlink at .10x/<id> or its plan.md is
+// refused first. It then runs one plan-session worker turn as `run <id> plan` does, on the existing plan.md, and
+// touches nothing else of the ticket or the batch.
 //
 // A permission denial does not decide a phase: a run that exits 0 is judged by the ticket's files, and its denials are
 // added to the evidence and listed under `## Needs the human`. A ticket waiting on its implement session shows the
@@ -132,7 +139,7 @@ const HEADER = ['n', 'kind', 'session', 'session_kind', 'start', 'end', 'exit', 
 const RUNNING = { plan: 'planning', implement: 'implementing', close: 'closing' }
 const SETTLED = new Set(['landed', 'pr-open', 'failed', 'held', 'dropped'])
 const USAGE =
-  'usage: 10x-batch init [--auto] <ticket>... [--search "<query>"] | run <id> plan|reply|implement|close | status | drop <id> | approve <id>... | accept-green <id> <file> "<reason>" | checked <id> AC<n> "<what you saw>" | loop'
+  'usage: 10x-batch init [--auto] <ticket>... [--search "<query>"] | run <id> plan|reply|implement|close | status | drop <id> | replan <id> | approve <id>... | accept-green <id> <file> "<reason>" | checked <id> AC<n> "<what you saw>" | loop'
 const APPROVE_REPLY = 'Approved. Set `Status: approved` in plan.md and stop; the implementation runs in a new session.\n'
 const FIXED_REPLY =
   "Auto mode: no human answers this batch's questions. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question (its number, the choice and why), and go on.\n"
@@ -144,7 +151,7 @@ const die = (msg) => {
   process.exit(2)
 }
 
-if (process.env.TENX_BATCH && ['init', 'run', 'drop', 'approve', 'accept-green', 'checked', 'loop'].includes(process.argv[2])) die('refused inside a batch worker')
+if (process.env.TENX_BATCH && ['init', 'run', 'drop', 'replan', 'approve', 'accept-green', 'checked', 'loop'].includes(process.argv[2])) die('refused inside a batch worker')
 
 let common
 try {
@@ -297,8 +304,8 @@ const sandbox = (id) =>
       network: { allowedDomains: ['*'], allowLocalBinding: true },
     },
   })
-if (['init', 'run', 'drop', 'approve', 'accept-green', 'loop'].includes(process.argv[2])) checkStateDir()
-if (process.argv[2] === 'run') checkPath()
+if (['init', 'run', 'drop', 'replan', 'approve', 'accept-green', 'loop'].includes(process.argv[2])) checkStateDir()
+if (['run', 'replan'].includes(process.argv[2])) checkPath()
 for (const p of [TENX_DIR, BATCH, S, SB]) if (fs.lstatSync(p, { throwIfNoEntry: false })?.isSymbolicLink()) die(`${p} is a symlink`)
 
 const tdir = (id) => path.join(TENX_DIR, id)
@@ -1109,11 +1116,12 @@ function ticketRows(id) {
   return { ids, rows, i: ids.indexOf(id) }
 }
 
-async function run(argv) {
+async function run(argv, replan = false) {
   if (argv.length !== 2 || !KINDS.includes(argv[1])) die(USAGE)
   const [id, kind] = argv
   const { ids, rows, i } = ticketRows(id)
   const r = rows[i]
+  if (replan && r.phase !== 'failed') die(`replan ${id} refused: ${id} is ${r.phase}, not failed`)
   if (r.phase === 'dropped') die(`${kind} ${id} refused: ${id} is dropped`)
   if (roadmap.GH.test(id)) {
     const refused = owner(id.slice(3))
@@ -1138,9 +1146,18 @@ async function run(argv) {
     if (!UUID.test(r.last.session)) die(`reply ${id} refused: its latest session '${flat(r.last.session)}' is not a session id`)
     ;[flag, session, sessionKind] = ['--resume', r.last.session, r.last.session_kind]
   } else {
-    if (!actions(rows).includes(`${kind} ${id}`)) die(refusal(rows, i, kind))
+    if (!replan && !actions(rows).includes(`${kind} ${id}`)) die(refusal(rows, i, kind))
     prompt = kind === 'close' ? `/10x:close ${id}` : `/10x:work ${id}`
     ;[flag, session, sessionKind] = ['--session-id', randomUUID(), kind]
+  }
+  // A replanned ticket needs a new approval, whatever its plan.md says.
+  if (replan) {
+    const plan = path.join(tdir(id), 'plan.md')
+    for (const p of [tdir(id), plan]) if (fs.lstatSync(p, { throwIfNoEntry: false })?.isSymbolicLink()) die(`replan ${id} refused: ${rel(p)} is a symlink`)
+    for (const p of [approval(id), path.join(sdir(id), 'auto-approved'), replyFile]) fs.rmSync(p, { force: true })
+    const text = readOr(plan)
+    const draft = text === null ? null : text.replace(/^Status:[ \t]*approved(?=[ \t]*\r?$)/m, 'Status: draft')
+    if (draft !== text) put(plan, draft)
   }
 
   fs.mkdirSync(bdir(id), { recursive: true })
@@ -1551,6 +1568,7 @@ if (cmd === 'init') init(args)
 else if (cmd === 'run') run(args)
 else if (cmd === 'status' && !args.length) status()
 else if (cmd === 'drop') drop(args)
+else if (cmd === 'replan') args.length === 1 ? run([args[0], 'plan'], true) : die(USAGE)
 else if (cmd === 'approve') approve(args)
 else if (cmd === 'accept-green') acceptGreen(args)
 else if (cmd === 'checked') checked(args)

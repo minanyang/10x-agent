@@ -5,6 +5,7 @@ disable-model-invocation: true
 allowed-tools:
   - Bash(10x-batch init *)
   - Bash(10x-batch run *)
+  - Bash(10x-batch replan *)
   - Bash(10x-batch loop)
   - Bash(10x-batch status)
   - Bash(10x-batch drop *)
@@ -43,6 +44,8 @@ Start every `plan`, `implement` and `close` action as `10x-batch run <id> <kind>
 
 A refused `10x-batch run` (a permission or the schedule) is reported to the user as it was printed. Never work around it, and never retry it differently.
 
+A ticket the board lists as `failed` under `## Needs the human` is shown with its evidence and the choices `replan` and `drop`. On the user's `replan` for that ticket, start `10x-batch replan <id>` with `run_in_background` and `timeout: 7200000`, like a `run`: it sends the ticket back to planning on its existing `plan.md`, with its approval revoked, and it ends `waiting`.
+
 The board's `## Hand checks pending` section lists each criterion a landed ticket left for the user to check by hand, `- <version> — <id> AC<n>: <text>` (`(no version)` for a ticket in no recorded version), earlier batches' tickets of the same version included. It is not an action and never holds the batch, but a version is not marked `Done` while it lists one. When the user says a check passed, run `10x-batch checked <id> AC<n> "<what you saw>"` with their words; the ticket need not be in this batch. It is not in this skill's `allowed-tools` on purpose: each record asks the user's permission. A check that failed is not reopened: it is a new ticket, opened with `/10x:open` and linked into the same version with `/10x:roadmap`, and the original stays pending until the user runs it again.
 
 ## Step 2 — Rounds of answers
@@ -71,9 +74,10 @@ Start `10x-batch loop` with `run_in_background` and `timeout: 7200000`, then end
 - Otherwise read its one line, `{"items":[…]}`, and relay only the items it printed, grouped by ticket, in one message:
   - `answer`: Read and show `.10x/_batch/<id>/turn.md`, and `.10x/<id>/product-questions.md` when it exists.
   - `approve`: as in Step 2 — show the turn and the lines of `plan.md` above its `# Appendix` line verbatim, under its path; on the user's `approve`, `10x-land comment <id>` when `.10x/<id>/comment.md` exists, then `10x-batch approve <id>`, which still asks permission; `approve all` as in Step 2.
-  - `failed` and `denied`: show its evidence, for the user to decide on.
+  - `failed`: show its evidence and offer `replan` and `drop`, as in Step 1.
+  - `denied`: show its evidence, for the user to decide on.
 
-After the user's reply, write each `reply.md` or approve as in Step 2, then start `10x-batch loop` again (not `10x-batch run`).
+After the user's reply, write each `reply.md` or approve as in Step 2, then start `10x-batch loop` again (not `10x-batch run`). After a background `replan`, end your turn instead, and start `10x-batch loop` again only when the replan wakes you: a `loop` started before the replan's run is recorded would report the ticket `failed` again and exit.
 
 On `done`, run `10x-batch status`. The final reply is the board, then, for each ticket under its id, the `## Auto decisions` section of `.10x/<id>/plan.md` verbatim, or `(none)` when the plan has no such section.
 
@@ -92,5 +96,6 @@ The final reply is the board; in auto mode, followed by each ticket's `## Auto d
 - Never run `/10x:work` or `/10x:close` yourself, and never edit anything but `.10x/_batch/<id>/reply.md`.
 - Never run `10x-batch approve` for a ticket the user did not approve in their own words — `approve all` covers only the approvable tickets shown in the message it answers — nor `10x-batch accept-green` for a file the user did not accept in theirs.
 - Never run `10x-batch checked` for a hand check the user did not report as passed in their own words.
+- Never run `10x-batch replan` for a ticket the user did not ask to replan in their own words.
 - Never use `CronCreate`, `ScheduleWakeup` or `/loop`; background runs wake you.
 - Never reply that something is unverified, unchecked or not yet confirmed: check it first. Only when a check is impossible, say so, naming what was tried and why it cannot be checked.
