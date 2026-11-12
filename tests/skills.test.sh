@@ -503,6 +503,24 @@ for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/S
   ]))
 }
 
+// gh-41 — /10x:roadmap adds a follow-up to the version `show` printed as `next:` before it considers a new row, keeps
+// that row's `not kept:` line, names each follow-up in the proposal, and excepts the append in ## Never.
+{
+  const text = fs.readFileSync(`${dir}/roadmap/SKILL.md`, "utf8")
+  const flat = (s) => s.replace(/\s+/g, " ")
+  const step = (s, n) => s.split(/^(?=### Step )/m).find((p) => p.startsWith(`### Step ${n}`)) || ""
+  const reqText = text.slice(text.search(/^## Requirements$/m), text.search(/^## Tickets$/m))
+  const never = text.slice(text.search(/^## Never$/m))
+  const missing = (pairs) => pairs.filter(([c]) => !c).map(([, w]) => w)
+  const verdict = (name, miss) => miss.length ? bad(`${name} (missing: ${miss.join("; ")})`) : ok(name)
+  const s2 = flat(step(reqText, 2))
+  verdict("roadmap: a follow-up joins the next unreleased version before a new row", missing([
+    ...["A follow-up", "`next:`", "before a new row", "`next: none`", "is not restored"].map((w) => [s2.includes(w), `Requirements Step 2: ${w}`]),
+    [flat(step(reqText, 3)).includes("`follow-up: <item> → <version>`"), "Requirements Step 3: the `follow-up: <item> → <version>` line"],
+    [never.split("\n").some((l) => l.includes("Never change an existing row") && l.includes("follow-up")), "## Never: the existing-row line excepts a follow-up"],
+  ]))
+}
+
 // batch accepts `auto` as its first argument: it initialises with --auto, runs `10x-batch loop` in the background,
 // relays only the items loop printed, and on done ends with the board and every ticket's ## Auto decisions.
 {
