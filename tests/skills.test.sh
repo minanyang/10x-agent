@@ -589,17 +589,24 @@ for (const skill of ["open", "work", "close", "batch", "roadmap", "audit"])
 {
   const name = "work has a small path: no plan, one reviewer, a fixes round only on blocker or major, escalation"
   const work = fs.existsSync(`${dir}/work/SKILL.md`) ? fs.readFileSync(`${dir}/work/SKILL.md`, "utf8") : ""
+  // Only the paragraphs that state the small path: the words below also appear in the normal path's text.
+  const small = work.split("\n").filter((s) => /^Small path:|small path/.test(s)).join("\n")
   const missing = [
-    ["size: small", "`size: small`"],
-    ["10x-worktree init", "a second `10x-worktree init` after the ticket is saved"],
-    ["10x:code-reviewer", "`10x:code-reviewer` alone in the full round"],
-    ["blocker", "`blocker`"],
-    ["major", "`major`"],
-    ["escalated to normal", "`escalated to normal`"],
-    ["Escalated:", "`Escalated:` in the report"],
-    ["fix-now", "a `fix-now` answer turns the ticket normal"],
-    ["ticket.md", "`ticket.md` as the criteria source"],
-  ].filter(([w]) => !work.includes(w)).map(([, d]) => d)
+    [small, "`size: small`", "`size: small`"],
+    [small, "`10x-worktree init <id>` again", "a second `10x-worktree init` after the ticket is saved"],
+    [small, "no `plan.md`", "no `plan.md`"],
+    [small, "no `10x-plan-check`", "no `10x-plan-check`"],
+    [small, "no approval stop", "no approval stop"],
+    [small, "per criterion of `ticket.md`", "evidence lines from the criteria of `ticket.md`"],
+    [small, "`10x:code-reviewer` alone", "`10x:code-reviewer` alone in the full round"],
+    [small, "only when the full round has a `blocker` or `major`", "Step 7a only on a `blocker` or `major`"],
+    [small, "escalated to normal", "`escalated to normal`"],
+    [small, "spawn `10x:security-reviewer` too", "the security reviewer for an escalated ticket"],
+    [work, "`Escalated: <reasons>`", "`Escalated:` in the report"],
+    [small, "`fix-now`", "a `fix-now` answer turns the ticket normal"],
+    [small, "turns the ticket normal", "a plan change turns the ticket normal"],
+    [small, "the approval stop", "the plan of a ticket turned normal is approved"],
+  ].filter(([t, w]) => !t.includes(w)).map(([, , d]) => d)
   missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
 }
 
