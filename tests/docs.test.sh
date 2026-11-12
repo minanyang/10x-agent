@@ -348,7 +348,7 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   const entry = (scripts || "").split("\n").find((s) => s.startsWith("- `10x-batch replan <id>`"))
   if (!entry) missing.push("docs/scripts.md: no `- `10x-batch replan <id>`` entry")
   else for (const w of ["not failed", "Status: draft", "auto-approved", "reply.md"]) if (!entry.includes(w)) missing.push(`docs/scripts.md entry: ${w}`)
-  const refused = (scripts || "").split("\n").find((s) => s.includes("refused inside a batch worker"))
+  const refused = (scripts || "").split("\n").find((s) => s.includes("10x-batch: refused inside a batch worker"))
   if (!refused || !refused.includes("`replan`")) missing.push("docs/scripts.md: `replan` in the paragraph naming `refused inside a batch worker`")
   if (!(read("docs/loop.md") || "").includes("10x-batch replan")) missing.push("docs/loop.md: 10x-batch replan")
   const lines = (read("CHANGELOG.md") || "").split("\n")
