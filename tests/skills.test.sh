@@ -585,5 +585,37 @@ for (const skill of ["open", "work", "close", "batch", "roadmap", "audit"])
   ].filter(([c]) => !c).map(([, w]) => w)
   missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
 }
+// gh-36 AC9 — work's small path.
+{
+  const name = "work has a small path: no plan, one reviewer, a fixes round only on blocker or major, escalation"
+  const work = fs.existsSync(`${dir}/work/SKILL.md`) ? fs.readFileSync(`${dir}/work/SKILL.md`, "utf8") : ""
+  const missing = [
+    ["size: small", "`size: small`"],
+    ["10x-worktree init", "a second `10x-worktree init` after the ticket is saved"],
+    ["10x:code-reviewer", "`10x:code-reviewer` alone in the full round"],
+    ["blocker", "`blocker`"],
+    ["major", "`major`"],
+    ["escalated to normal", "`escalated to normal`"],
+    ["Escalated:", "`Escalated:` in the report"],
+    ["fix-now", "a `fix-now` answer turns the ticket normal"],
+    ["ticket.md", "`ticket.md` as the criteria source"],
+  ].filter(([w]) => !work.includes(w)).map(([, d]) => d)
+  missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
+}
+
+// gh-36 AC10 — open proposes the size by rule; close reads the ticket when there is no plan.
+{
+  const name = "open proposes Size: small by rule and close falls back to ticket.md"
+  const read = (s) => (fs.existsSync(`${dir}/${s}/SKILL.md`) ? fs.readFileSync(`${dir}/${s}/SKILL.md`, "utf8") : "")
+  const open = read("open"), close = read("close")
+  const missing = [
+    [open.includes("Size: small"), "open: `Size: small`"],
+    [/3 files|three files|≤ 3/.test(open), "open: the ≤ 3 files rule"],
+    [open.includes("security.paths") || /sensitive path/.test(open), "open: no sensitive path"],
+    [open.includes("· Size: small"), "open: `· Size: small` on the `Kind:` line"],
+    [close.includes("ticket.md") && /no `plan\.md`|has no plan|without a `plan\.md`/.test(close), "close: criteria from `ticket.md` when there is no `plan.md`"],
+  ].filter(([c]) => !c).map(([, w]) => w)
+  missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
+}
 process.exit(fail)
 JS
