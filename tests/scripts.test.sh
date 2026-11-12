@@ -1079,6 +1079,56 @@ mkdir -p .claude && echo '{"close":"local"}' >.claude/10x.json
 STUB_STATE="MERGED https://github.com/acme/land/pull/1" expect "check makes no gh call in local mode" 0 10x-land check L1
 ! grep -q '^pr:' "$tmp/out" && [ ! -s "$tmp/stub.log" ] && ok "local mode: no pr: line, no gh call" || bad "local mode: no pr: line, no gh call"
 rm -r .claude
+# check and the subcommands that move the base or publish the branch refuse a review with an unanswered blocker or major
+cp .10x/L1/review.md "$tmp/review.L1.bak"
+OPEN_URL="OPEN https://github.com/acme/land/pull/1"
+review_is() { printf '%b' "$1" >.10x/L1/review.md; } # <review text with \n escapes>
+review_is '## Round 1 — full\n\n#### F1 — [blocker] boom\n\n### Fixes applied\n\n'
+STUB_STATE="$OPEN_URL" expect "check exits 2 on an unanswered blocker and names it" 2 10x-land check L1
+grep -qxF 'review finding open: round 1 F1 [blocker] boom' "$tmp/out" && grep -q '1 blocker or major finding(s) in .*review.md have no entry in their round.s ### Fixes applied' "$tmp/out" \
+  && ok "check prints the finding line and the summary" || { bad "check prints the finding line and the summary"; cat "$tmp/out"; }
+review_is '## Round 1 — full\n\n#### F1 — [blocker] boom\n\n### Fixes applied\n\n- F1 — fixed in abc123\n'
+STUB_STATE="$OPEN_URL" expect "check passes a blocker answered by id in its round" 0 10x-land check L1
+review_is '## Round 1 — full\n\n- [minor] nit\n- **[Minor] other nit**\n\n### Fixes applied\n\n'
+STUB_STATE="$OPEN_URL" expect "check passes a review with only minors" 0 10x-land check L1
+review_is '## Round 1 — full\n\n- [major] no id here\n\n### Fixes applied\n\n- [major] answered without an id\n'
+STUB_STATE="$OPEN_URL" expect "check passes a major without an id answered by a tag-led bullet" 0 10x-land check L1
+review_is '## Round 1 — full\n\n- [major] no id here\n\n### Fixes applied\n\n- nothing yet\n\n## Round 2 — fixes\n\n### Fixes applied\n\n- [major] answered in round 2\n'
+STUB_STATE="$OPEN_URL" expect "check refuses a major answered only in another round" 2 10x-land check L1
+grep -qxF 'review finding open: round 1 (no id) [major] no id here' "$tmp/out" && ok "check names a finding without an id" || { bad "check names a finding without an id"; cat "$tmp/out"; }
+review_is '## Round 1 — full\n\n#### F1 — [blocker] boom\n\n### Fixes applied\n\n'
+STUB_STATE="MERGED https://github.com/acme/land/pull/1" expect "check does not read the review once the PR is merged" 0 10x-land check L1
+! grep -q 'review finding open' "$tmp/out" && ok "a merged PR prints no review finding" || { bad "a merged PR prints no review finding"; cat "$tmp/out"; }
+o_gate="$(git ls-remote origin)"; l_gate="$(git -C "$lw" rev-parse HEAD)"
+: >"$tmp/stub.log"
+for sub in rebase squash push merge; do
+  STUB_VIEW="main OPEN false" expect "$sub refuses an unanswered blocker" 2 10x-land "$sub" L1
+  grep -qxF 'review finding open: round 1 F1 [blocker] boom' "$tmp/out" && ok "$sub prints the finding line" || { bad "$sub prints the finding line"; cat "$tmp/out"; }
+done
+[ "$(git ls-remote origin)" = "$o_gate" ] && [ "$(git -C "$lw" rev-parse HEAD)" = "$l_gate" ] && ! grep -q 'pr merge' "$tmp/stub.log" \
+  && ok "the refusing subcommands changed nothing" || bad "the refusing subcommands changed nothing"
+cp "$tmp/review.L1.bak" .10x/L1/review.md
+: >"$tmp/stub.log"
+# the grant hook denies gh in local mode during /10x:close (the hook's own cases are in grant.test.sh)
+gplug="$tmp/gh-plugin"; mkdir -p "$gplug/hooks" "$tmp/gh-data"
+cp "$BIN/../hooks/grant.js" "$gplug/hooks/"; cp -R "$BIN/../skills" "$gplug/skills"
+mkdir -p .claude && echo '{"close":"local"}' >.claude/10x.json
+hook_in() { # <event> <key> <value>... — the hook's output
+  node -e '
+    const [cwd, event, ...kv] = process.argv.slice(1)
+    const o = { hook_event_name: event, session_id: "gate1", cwd }
+    for (let i = 0; i < kv.length; i += 2) o[kv[i]] = kv[i + 1]
+    if (o.tool_name) o.tool_input = { command: o.command }
+    process.stdout.write(JSON.stringify(o))
+  ' "$tmp/land" "$@" | CLAUDE_PLUGIN_DATA="$tmp/gh-data" node "$gplug/hooks/grant.js"
+}
+hook_in UserPromptSubmit prompt "/10x:close L1" prompt_id p1 >/dev/null
+hook_out="$(hook_in PreToolUse tool_name Bash command "gh pr view 5")"
+case "$hook_out" in
+  *'"permissionDecision":"deny"'*'close is local'*) ok "the grant hook refuses gh during /10x:close in local mode" ;;
+  *) bad "the grant hook refuses gh during /10x:close in local mode"; echo "      ${hook_out:-nothing}" ;;
+esac
+rm -r .claude
 git remote set-url origin 'git@github.com:ac+me/land.git'
 STUB_STATE="MERGED https://github.com/acme/land/pull/1" expect "check prints no PR when origin's repo cannot be derived" 0 10x-land check L1
 grep -qxF 'pr: none' "$tmp/out" && [ ! -s "$tmp/stub.log" ] && ok "underivable repo: pr: none, no gh call" || { bad "underivable repo: pr: none, no gh call"; cat "$tmp/out" "$tmp/stub.log"; }

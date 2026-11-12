@@ -113,6 +113,16 @@ if runner 0 "a chained denial passes" "STUB_STREAM=$tmp/stream-chained" "STUB_RU
     && ok "a denied command chained with a pipe is a note, not a failure" || { bad "a denied command chained with a pipe is a note, not a failure"; sed 's/^/      /' "$tmp/out" "$tmp/err"; }
 fi
 
+# scenario 14 (close-blocker) runs in local mode: the grant hook denies gh there, so a denied gh command is not the flow's failure
+printf '%s\n' \
+  '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"10x-land check gh-5"}}]}}' \
+  '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"gh auth status"}}]}}' \
+  '{"type":"result","subtype":"success","permission_denials":[{"tool_name":"Bash","tool_use_id":"t2","tool_input":{"command":"gh auth status"}}],"total_cost_usd":0.01,"duration_ms":10}' >"$tmp/stream-local-gh"
+if runner 0 "a denied gh command in a local-mode run does not fail the flow" "STUB_STREAM=$tmp/stream-local-gh" -- 14; then
+  line_matches '^pass  14  [0-9]+s$' && grep -Fq "note: close-blocker denied (local mode): gh auth status" "$tmp/err" \
+    && ok "a denied gh command in a local-mode run does not fail the flow" || { bad "a denied gh command in a local-mode run does not fail the flow"; sed 's/^/      /' "$tmp/out" "$tmp/err"; }
+fi
+
 # a denial after the plan checkpoint fails only the scenarios judged after it
 if runner 1 "a later failure keeps an earlier checkpoint" "STUB_STREAM=$tmp/stream-empty" "STUB_STREAM_2=$tmp/stream-denied" "STUB_RUN=$tmp/writes-plan" -- 5 6; then
   line_matches '^pass  5  [0-9]+s$' && line_matches '^FAIL  6  [0-9]+s  .*permission denied: 10x-land merge gh-5' \
