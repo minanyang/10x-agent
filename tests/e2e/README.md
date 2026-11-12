@@ -128,7 +128,7 @@ Run a scenario against a copy of the plugin with one edit; it must print `FAIL`:
 copy="$(mktemp -d)" && cp -R . "$copy/10x"
 # 1. 10x-land merge without the pin: edit "$copy/10x/bin/10x-land", delete `--match-head-commit "$(git -C "$path" rev-parse HEAD)"`
 TENX_E2E_PLUGIN="$copy/10x" bash tests/e2e/run.sh 11
-# 2. close without the blocker check: edit "$copy/10x/skills/close/SKILL.md", delete the last bullet of Step 0
+# 2. close without the review gate: edit "$copy/10x/bin/10x-land", delete the `review_gate` call from `check`
 TENX_E2E_PLUGIN="$copy/10x" bash tests/e2e/run.sh 14
 # 3. close's grants lost after the background wait: edit "$copy/10x/hooks/hooks.json", delete both `hooks/grant.js` entries
 TENX_E2E_PLUGIN="$copy/10x" bash tests/e2e/run.sh C3

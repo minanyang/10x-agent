@@ -47,14 +47,15 @@ Run one command per Bash call — no `&&`, `;` or `|` — so each call matches t
 
 Stop and say why if any of these holds:
 
-- only in `pr` or `pr-merge` mode (`local` never calls `gh` or `glab`, not even to check): the PR tool is missing or logged out — check with `gh auth status` (or `glab auth status`) **before** rebasing or pushing, so a failure never leaves a pushed branch without a PR. Command not found → install it (https://cli.github.com, https://gitlab.com/gitlab-org/cli); non-zero exit → `gh auth login` / `glab auth login`. Mention that `"close": "local"` in `.claude/10x.json` needs neither;
+- only in `pr` or `pr-merge` mode (`local` never calls `gh` or `glab`, not even to check; in `local` mode the grant hook refuses any `gh` or `glab` command): the PR tool is missing or logged out — check with `gh auth status` (or `glab auth status`) **before** rebasing or pushing, so a failure never leaves a pushed branch without a PR. Command not found → install it (https://cli.github.com, https://gitlab.com/gitlab-org/cli); non-zero exit → `gh auth login` / `glab auth login`. Mention that `"close": "local"` in `.claude/10x.json` needs neither;
 - no worktree for `<id>`: look for an open PR of the branch instead (the second run of `pr` mode, Step 4);
 - uncommitted changes in the worktree;
 - `check` printed `locked test changed: <path>` lines: a locked test changed without a relock that red-proof accepted — that is `/10x:work`'s job;
 - `check` printed `security entry open: <fp>` lines: a confirmed security entry of this ticket at or above `security.blockClose` is still `new` or `fix-now` — name the fingerprints only; the user settles them through `/10x:work`. Not a stop on the `pr: MERGED` cleanup run below;
-- `review: missing`, or the review it names lists a `blocker` / `major` with neither a fix nor a reason — each round's in that round's `### Fixes applied` — that is `/10x:work`'s job.
+- `review: missing` — that is `/10x:work`'s job;
+- `check` exited 2 after `review finding open: round <n> <id> [<severity>] <title>` lines: a `blocker` or `major` of `review.md` has no entry in its round's `### Fixes applied` — quote the lines; answering them is `/10x:work`'s job. Do not read `review.md` to judge it yourself: `rebase`, `squash`, `push` and `merge` refuse the same way.
 
-`pr: MERGED <url>` means the PR was merged since the last run: once the `gh auth status` and uncommitted-changes checks pass, go straight to Step 4, whatever `security entry open:` lines `check` printed (`sync-base`, then `rm`) — no `review.md` check, rebase, verify, push or `10x-land pr`. Any other `pr:` line (`OPEN`, `CLOSED`, `none`) goes on as below.
+`pr: MERGED <url>` means the PR was merged since the last run, and `check` does not read the review then: once the `gh auth status` and uncommitted-changes checks pass, go straight to Step 4, whatever `security entry open:` lines `check` printed (`sync-base`, then `rm`) — no rebase, verify, push or `10x-land pr`. Any other `pr:` line (`OPEN`, `CLOSED`, `none`) goes on as below.
 
 ## Step 1 — Rebase onto the current base
 
