@@ -1850,6 +1850,14 @@ need "state dir inside the checkout: nothing created" test ! -e "$root/xs"
 need "not your issue: exit 2" eval 'STUB_AUTHORS="5:other" exits 2 replan gh-5'
 need "not your issue: names the issue and its author" line "10x-batch: not your issue: gh-5 (author other)"
 need "not your issue: its approval record is still there" test -s "$S/gh-5.approved"
+PATH="$P0:$root"
+need "a PATH entry equal to the main checkout: exit 2" exits 2 replan t1
+need "a PATH entry equal to the main checkout: names the entry" line "10x-batch: PATH entry $root contains $root"
+PATH="$P0"
+PNPM_HOME="$HOME/.cache" vb replan t1
+need "PNPM_HOME equal to ~/.cache: exit 2" test $? -eq 2
+need "PNPM_HOME equal to ~/.cache: names it" line "10x-batch: PNPM_HOME $HOME/.cache contains $(cd "$HOME" && pwd -P)/.cache"
+need "PATH and PNPM_HOME: t1's approval record is still there" test -s "$S/t1.approved"
 need "nothing changed" test "$(snap)" = "$before"
 need "no worker started" test ! -s "$WORKER_LOG"
 end
