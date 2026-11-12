@@ -53,7 +53,7 @@ Run one command per Bash call — no `&&`, `;` or `|`. The arguments pick the pa
 - One row per version, in the order they ship. A `Version` is letters, digits, `.`, `_` and `-`, starts with a letter or digit, is unique and is never all digits (`v1`, `0.2`, `beta`).
 - `Contents` holds the version's items separated by `; `. An item that has a ticket ends with its id in backticks (`gh-<n>` or a `.10x/<id>/` slug); `10x-roadmap link` adds it, never you. A `|` inside a cell is written `\|`.
 - `Why this order` is never empty: why this version comes here — what it depends on, the risk it takes or retires, whether it ships alone.
-- `State` is free text (`Planned`, `In progress`); `Done <YYYY-MM-DD>` is written only by `/10x:batch <version>` once all the row's tickets have landed.
+- `State` is free text (`Planned`, `In progress`); `Done <YYYY-MM-DD>` is written only by `/10x:batch <version>` once all the row's tickets have landed and no hand check of theirs is pending.
 - The three sections each appear once, after the table. A `## Decided against` entry gives its reason after ` — `.
 
 ## Show

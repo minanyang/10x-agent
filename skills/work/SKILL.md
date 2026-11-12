@@ -111,7 +111,7 @@ How to fill the sections the checks read:
 - **Readers** — every identifier, phrase, path or config key the change renames, removes or changes the meaning of: one top-level bullet with the search you ran (leaving out `.git`, the worktree directory and `.10x/`), ending in ` (gone)` when the change removes or renames it. Under it, every hit as `` `<path>[:<line or range>]` — `` what changes there or why it stays, or a single `- no hits`. A hit that stays is listed too: that it stays is a decision.
 - **Tool behaviour relied on** — each thing the plan takes on trust from outside the repo (a flag, a hook's input field, an exit code, an output format), followed by a fenced block whose first line is `$ <command>` and whose next lines are the output you saw. Run it: documentation is not output. The single line `none` when the plan relies on nothing outside the repo.
 - **Overlap** — the files in `## Files` that other work also changes, from three sources, each named with the command run: commits on `origin/<base>` since the merge base (`git fetch`, then `git log --name-only HEAD..origin/<base>`); other worktrees' branches (`git worktree list`, then `git diff --name-only <base>...<branch>` for each branch other than the base); open PRs (`gh pr list --state open --json number,headRefName,files`, or `glab mr list`). List each overlapping branch or PR with the shared files; `none` for a source with no overlap. Never empty.
-- **Tests** — exactly that header, one row per criterion and case; every criterion has a row. `Case` is the case's name in backticks, exactly as written in the test: the review packet looks for it in the diff. A criterion no test can cover has `—` as test file and how it is verified instead as case.
+- **Tests** — exactly that header, one row per criterion and case; every criterion has a row. `Case` is the case's name in backticks, exactly as written in the test: the review packet looks for it in the diff. A criterion no test can cover has `—` as test file and how it is verified instead as case. A criterion only a person can check by hand (a view, a device, a flow no test reaches) has `—` and a case starting with `hand check:` — what to do and what to see: approving the plan approves that the ticket may land with that check still to run.
 
 Check the plan:
 
@@ -160,6 +160,7 @@ Before implementing, write `.10x/<id>/evidence.md` with one line per criterion o
 
 - `- AC<n> — met: <evidence>` — the command and its decisive output line, the commit and the test case, or, for a criterion no test covers, the review verdict and the method;
 - `- AC<n> — deferred: "<the user's words>"` — only when the user said to leave it, quoted;
+- `- AC<n> — hand-check: <what to do and what to see>` — only for a criterion whose `## Tests` row is a `hand check:`, and only when you cannot run the check yourself. When the project's `CLAUDE.md` states a way (a deep link that opens the view, a screenshot command), run it that way first and, when the screenshot shows the result, mark it `met` with the screenshot. Otherwise it lands with the check left to the user, and the conductor records it once they have run it. The Stop hook refuses this state for any other criterion;
 - `- AC<n> — asked: <question>` — while it waits on the user.
 
 A question not tied to a criterion is a line `- asked: <question>`, removed once answered. The last line for a criterion wins. Whenever this skill stops to ask the user something, write its `asked` line first and put the question, word for word, in the message that ends the turn: until the worktree is removed, a Stop hook refuses to end a turn while a criterion is missing or `pending`, or an `asked` question is not in that message.
@@ -249,7 +250,7 @@ The packet's `## Plan checks` lists each `## Tests` case not found in the test f
 
 **The tree is frozen** until every reviewer and the verify run have returned: no edits in the worktree while they read or test it.
 
-Write the findings, and the packet's plan checks, to `.10x/<id>/review.md` as a round: `## Round <n> — full` (`1`, or the next number after a plan change, Step 7b), then a `Verdict:` line and a `Criteria:` line (the criteria they were judged against), then the findings verbatim in substance with the reviewer's own headings demoted to `####` or deeper, then `### Plan checks`. Mark each criterion the verify run proves `met` in `evidence.md`, with the gate and its decisive output line. A criterion whose `## Tests` row has `—` as test file is `met` once the latest full round (each reads the whole branch), or the fixes round after it when that round had a finding against the criterion, returns with no open finding against it: cite that verdict and the row's method. When the finding against it is fixed under `### Fixes applied`, cite that finding and the fix commit instead.
+Write the findings, and the packet's plan checks, to `.10x/<id>/review.md` as a round: `## Round <n> — full` (`1`, or the next number after a plan change, Step 7b), then a `Verdict:` line and a `Criteria:` line (the criteria they were judged against), then the findings verbatim in substance with the reviewer's own headings demoted to `####` or deeper, then `### Plan checks`. Mark each criterion the verify run proves `met` in `evidence.md`, with the gate and its decisive output line. A criterion whose `## Tests` row has `—` as test file and is not a `hand check:` is `met` once the latest full round (each reads the whole branch), or the fixes round after it when that round had a finding against the criterion, returns with no open finding against it: cite that verdict and the row's method. When the finding against it is fixed under `### Fixes applied`, cite that finding and the fix commit instead.
 
 ## Step 7 — Act on the findings
 
@@ -323,9 +324,10 @@ The report has this shape, in this order, with at most three lines of prose arou
 - `Memory:` then the branch's memory files and their whole diff in a `diff` fence — only when the branch touches `.claude/agent-memory`;
 - `Files added:` then the files added to `## Files` in Step 7 — only when there are any;
 - `Deferred:` then one line per criterion marked `deferred`, with the user's words — only when there are any;
+- `Hand checks pending:` then one line per criterion whose last state is `hand-check:`, `AC<n> — <text>` — only when there are any;
 - the next step, `/10x:close <id>`.
 
-Nothing else stays open: every criterion in `evidence.md` is `met` or `deferred` before the report. Then stop. The next step is `/10x:close <id>`.
+Nothing else stays open: every criterion in `evidence.md` is `met`, `deferred` or a declared `hand-check` before the report. Then stop. The next step is `/10x:close <id>`.
 
 ## Replies
 

@@ -96,4 +96,26 @@ function testFiles(text) {
   return out
 }
 
-module.exports = { blank, bannedHits, phrases, sections, criteria, files, testFiles }
+// The criteria a plan declares hand checks: `AC<n>` (each once, in order) of every AC id in the first cell of a
+// `## Tests` row whose second cell is dashes and whose third, its code span unquoted, starts with `hand check:`.
+function handChecks(text) {
+  const lines = text.split('\n'), b = blank(lines)
+  const sec = sections(text).find((s) => s.name.toLowerCase() === 'tests')
+  if (!sec) return []
+  const rows = []
+  for (let k = sec.from; k < sec.to; k++) if (b[k] !== null && /^\s*\|/.test(lines[k]) && !/^\s*\|[\s:|-]+$/.test(lines[k])) rows.push(lines[k])
+  const out = []
+  for (const r of rows.slice(1)) {
+    const c = r.trim().replace(/^\||\|$/g, '').split('|').map((s) => s.trim())
+    const f = (c[1] || '').replace(/^`+|`+$/g, '').trim()
+    const kase = (c[2] || '').replace(/^`+|`+$/g, '').trim()
+    if (!/^[—–-]+$/.test(f) || !/^hand check:/i.test(kase)) continue
+    for (const m of (c[0] || '').matchAll(/AC(\d+)/g)) {
+      const id = `AC${Number(m[1])}`
+      if (!out.includes(id)) out.push(id)
+    }
+  }
+  return out
+}
+
+module.exports = { blank, bannedHits, phrases, sections, criteria, files, testFiles, handChecks }

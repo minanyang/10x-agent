@@ -8,9 +8,10 @@
 //   10x-batch drop <id>
 //   10x-batch approve <id>
 //   10x-batch accept-green <id> <file> "<reason>"
+//   10x-batch checked <id> AC<n> "<what you saw>"
 //   10x-batch loop
 //
-// With TENX_BATCH set (every worker has it), init, run, drop, approve, accept-green and loop refuse before reading
+// With TENX_BATCH set (every worker has it), init, run, drop, approve, accept-green, checked and loop refuse before reading
 // anything, so a worker cannot drive its own batch; status still runs.
 //
 // The records a decision is made from live in the state dir S, out of every worker's reach: S is
@@ -51,7 +52,7 @@
 // (auto mode unavailable), it is stopped and the turn runs again as a new run in the mode used before auto mode: a plan
 // session in default with Edit(.10x/<id>/**) allowed, implement and close in acceptEdits. Every run gets
 // --disallowedTools for the commands hooks/grant.js always asks for (10x-land issue/comment/advisory, 10x-batch
-// approve/init/accept-green, 10x-security set/remove/ticket), Edit of S and of the settings files (the main
+// approve/init/accept-green/checked, 10x-security set/remove/ticket), Edit of S and of the settings files (the main
 // checkout's .claude/, ~/.claude/ and, when set, $CLAUDE_CONFIG_DIR's settings.json and settings.local.json, each also
 // as a real path and its symlink target), and Edit of what
 // a process outside the sandbox runs (writeDeny(): the git common dir, every <worktree dir>/*/.git, the main checkout's
@@ -73,9 +74,12 @@
 // TENX_BATCH=1. SIGTERM and SIGINT are forwarded to the worker. It prints
 // `phase: <phase>` and `board: <path>`, exit 0 once the worker ran, whatever its exit code.
 // `status` writes and prints the board, then the actions allowed now: `plan <id>`, `implement <id>`, `close <id>`,
-// `answer <id>[ approvable]`, and `done` when every ticket is settled. `status` and `init` also set the State of each
-// recorded version whose ids are all landed or closed to `Done <YYYY-MM-DD>` (local date) in .10x/roadmap.md,
-// changing nothing else, once, and print `roadmap: <version> Done <date>` when they do.
+// `answer <id>[ approvable]`, and `done` when every ticket is settled. The board ends with `## Hand checks pending`,
+// one line `- <version> — <id> AC<n>: <text>` per declared hand check whose last evidence.md line is `hand-check:`, of
+// every landed ticket and id of `versions.closed`, a ticket in no recorded version under `(no version)`; absent when
+// none is. `status` and `init` also set the State of each recorded version whose ids are all landed or closed, none
+// with a hand check pending, to `Done <YYYY-MM-DD>` (local date) in .10x/roadmap.md, changing nothing else, once, and
+// print `roadmap: <version> Done <date>` when they do.
 // `approve` records the user's approval of a draft plan that passes 10x-plan-check: the sha256 of plan.md with its
 // Status line blanked, in S/<id>.approved, printing the plan's path and short hash, out of reach of every worker: its
 // Bash runs in the sandbox, which cannot write S, and its Edit and Write tools are denied S. A plan session's ticket is
@@ -88,6 +92,11 @@
 // write. It refuses a ticket not in the batch or dropped, one without a worktree, an empty reason, and a file that is
 // not a test file (redProof.tests, else red-proof's *.test|spec.* pattern) the branch adds or modifies against the
 // merge base with the base ref. No skill grants it, so each acceptance asks; it writes no reply.md.
+// `checked` records, on the user's word only, that a pending hand check passed: it appends
+// `- AC<n> — met: hand check by the user on <YYYY-MM-DD>: <words>` (newlines flattened) to .10x/<id>/evidence.md and
+// prints `checked: <id> AC<n>`, for a ticket in the batch or not. It refuses empty words, a criterion the plan's
+// `## Tests` does not declare a hand check or whose last state is not `hand-check:`, and a missing or symlinked
+// .10x/<id>, plan.md or evidence.md. It writes no state dir, so it runs no state-dir check. No skill grants it.
 // `loop` drives the batch until a human is needed: each pass writes the board, starts every plan, implement and close
 // action and every reply whose reply.md exists as a detached `run`, and in auto mode approves a draft that passes
 // 10x-plan-check (writing `auto-approved`) or sends a planning question FIXED_REPLY (at most 3 times), unless
@@ -122,7 +131,7 @@ const HEADER = ['n', 'kind', 'session', 'session_kind', 'start', 'end', 'exit', 
 const RUNNING = { plan: 'planning', implement: 'implementing', close: 'closing' }
 const SETTLED = new Set(['landed', 'pr-open', 'failed', 'held', 'dropped'])
 const USAGE =
-  'usage: 10x-batch init [--auto] <ticket>... [--search "<query>"] | run <id> plan|reply|implement|close | status | drop <id> | approve <id> | accept-green <id> <file> "<reason>" | loop'
+  'usage: 10x-batch init [--auto] <ticket>... [--search "<query>"] | run <id> plan|reply|implement|close | status | drop <id> | approve <id> | accept-green <id> <file> "<reason>" | checked <id> AC<n> "<what you saw>" | loop'
 const APPROVE_REPLY = 'Approved. Set `Status: approved` in plan.md and stop; the implementation runs in a new session.\n'
 const FIXED_REPLY =
   "Auto mode: no human answers this batch's questions. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, one line per question (its number, the choice and why), and go on.\n"
@@ -134,7 +143,7 @@ const die = (msg) => {
   process.exit(2)
 }
 
-if (process.env.TENX_BATCH && ['init', 'run', 'drop', 'approve', 'accept-green', 'loop'].includes(process.argv[2])) die('refused inside a batch worker')
+if (process.env.TENX_BATCH && ['init', 'run', 'drop', 'approve', 'accept-green', 'checked', 'loop'].includes(process.argv[2])) die('refused inside a batch worker')
 
 let common
 try {
@@ -848,10 +857,8 @@ function failedGate(id) {
   return null
 }
 
-// The first criterion of the plan that evidence.md leaves neither met, deferred nor asked, and the texts of its asked
-// lines; the last line for a criterion wins, as in hooks/stop-gate.js.
-function evidence(id, planText) {
-  const crit = planText ? md.criteria(planText).map((c) => `AC${c.n}`) : []
+// The last state of each criterion in ticket <id>'s evidence.md, outside fences, and the texts of its free asked lines.
+function evidenceLines(id) {
   const raw = (readOr(path.join(tdir(id), 'evidence.md')) || '').split('\n')
   const outside = md.blank(raw, 0)
   const state = new Map()
@@ -862,14 +869,39 @@ function evidence(id, planText) {
     if (ac) state.set(ac[1], ac[2])
     else if (/^\s*[-*+]\s+asked:\s*\S/.test(line)) asks.push(line.replace(/^\s*[-*+]\s+asked:\s*/, '').trim())
   })
+  return { state, asks }
+}
+
+// The first criterion of the plan that evidence.md leaves neither met, deferred, a declared hand-check nor asked, and
+// the texts of its asked lines; the last line for a criterion wins, as in hooks/stop-gate.js.
+function evidence(id, planText) {
+  const crit = planText ? md.criteria(planText).map((c) => `AC${c.n}`) : []
+  const hand = planText ? md.handChecks(planText) : []
+  const { state, asks } = evidenceLines(id)
   let open = null
   for (const ac of crit) {
     const v = state.get(ac)
     if (v === undefined) open ??= `${ac} has no line`
     else if (/^asked:/.test(v)) asks.push(v.replace(/^asked:\s*/, ''))
-    else if (!/^(met|deferred):\s*\S/.test(v)) open ??= `${ac} — ${v}`
+    else if (!/^(met|deferred):\s*\S/.test(v) && !(hand.includes(ac) && /^hand-check:\s*\S/.test(v))) open ??= `${ac} — ${v}`
   }
   return { open, asked: asks.length > 0, asks }
+}
+
+// The criteria of ticket <id>'s plan, declared hand checks, whose last evidence.md line is `hand-check:`, in the plan's
+// order: [{ ac, text }], <text> what follows `hand-check:`.
+function handPending(id) {
+  const planText = readOr(path.join(tdir(id), 'plan.md'))
+  if (planText === null) return []
+  const hand = md.handChecks(planText)
+  const { state } = evidenceLines(id)
+  const out = []
+  for (const c of md.criteria(planText)) {
+    const ac = `AC${c.n}`
+    const v = state.get(ac)
+    if (hand.includes(ac) && v !== undefined && /^hand-check:\s*\S/.test(v)) out.push({ ac, text: v.replace(/^hand-check:\s*/, '') })
+  }
+  return out
 }
 
 // The reasons of relock.md's approved entries (`## Relock <n>` with a `reason` and an `approved` ruling), in order.
@@ -999,7 +1031,31 @@ function board(rows) {
     if (r.phase !== 'landed') for (const x of r.relocked) need.push(`- ${r.id} — relocked: ${flat(x)}`)
   }
   lines.push('', '## Needs the human', ...(need.length ? need : ['- none']))
+  // Landed tickets and the ids closed at init, under the first recorded version whose row lists them, then the rest.
+  const closed = (readOr(CLOSED) || '').split('\n').map((s) => s.trim()).filter((s) => ID.test(s))
+  const pool = [...new Set([...rows.filter((r) => r.phase === 'landed').map((r) => r.id), ...closed])]
+  const seen = new Set()
+  const hand = []
+  const list = (v, id) => {
+    if (!pool.includes(id) || seen.has(id)) return
+    seen.add(id)
+    for (const h of handPending(id)) hand.push(`- ${v} — ${id} ${h.ac}: ${flat(h.text)}`)
+  }
+  for (const row of versionRows()) for (const id of row.ids) list(row.version, id)
+  for (const id of pool) list('(no version)', id)
+  if (hand.length) lines.push('', '## Hand checks pending', ...hand)
   return lines.join('\n') + '\n'
+}
+
+// The roadmap rows of the recorded versions, in S/batch/versions order; none with no versions file, no roadmap.md, or a
+// roadmap that fails its check.
+function versionRows() {
+  const names = (readOr(VERSIONS) || '').split('\n').map((s) => s.trim()).filter((s) => ID.test(s))
+  const text = names.length ? readOr(ROADMAP) : null
+  if (text === null) return []
+  const p = roadmap.parse(text, roadmap.ticketTest(TENX_DIR))
+  if (p.faults.length) return []
+  return names.map((v) => p.rows.find((r) => r.version === v)).filter(Boolean)
 }
 
 function writeBoard(rows) {
@@ -1017,8 +1073,8 @@ function report(rows) {
   process.stdout.write(text + (acts.length ? '\n' + acts.join('\n') + '\n' : '') + done.map((l) => l + '\n').join(''))
 }
 
-// Sets `Done <date>` on each recorded version whose ids have all landed or were closed at init; a version already done,
-// gone from the roadmap, or in a roadmap that fails its check is left as it is.
+// Sets `Done <date>` on each recorded version whose ids have all landed or were closed at init and have no hand check
+// pending; a version already done, gone from the roadmap, or in a roadmap that fails its check is left as it is.
 function markDone(rows) {
   const names = (readOr(VERSIONS) || '').split('\n').map((s) => s.trim()).filter((s) => ID.test(s))
   if (!names.length || fs.lstatSync(ROADMAP, { throwIfNoEntry: false })?.isFile() !== true) return []
@@ -1031,6 +1087,7 @@ function markDone(rows) {
   for (const v of names) {
     const row = p.rows.find((r) => r.version === v)
     if (!row || roadmap.isDone(row.state) || !row.ids.length || !row.ids.every((id) => landed.has(id))) continue
+    if (row.ids.some((id) => handPending(id).length)) continue
     text = roadmap.setState(text, v, `Done ${date}`)
     out.push(`roadmap: ${v} Done ${date}`)
   }
@@ -1108,6 +1165,7 @@ async function run(argv) {
     '10x-batch approve',
     '10x-batch init',
     '10x-batch accept-green',
+    '10x-batch checked',
     '10x-security set',
     '10x-security remove',
     '10x-security ticket',
@@ -1328,6 +1386,32 @@ function acceptGreen(argv) {
   process.stdout.write(`accepted: ${id} ${file} blob ${blob.slice(0, 12)}\n`)
 }
 
+// The user's word that a pending hand check passed: a `met:` line appended to .10x/<id>/evidence.md, where every other
+// state of the criterion is.
+function checked(argv) {
+  if (argv.length !== 3) die(USAGE)
+  const [id, arg] = argv
+  if (!ID.test(id)) die(`checked ${flat(id)} refused: not a ticket id`)
+  const m = /^AC(\d+)$/.exec(arg)
+  if (!m) die(`checked ${id} refused: '${flat(arg)}' is not a criterion (AC<n>)`)
+  const ac = `AC${Number(m[1])}`
+  const words = flat(argv[2]).trim()
+  if (!words) die(`checked ${id} refused: the words are empty`)
+  const plan = path.join(tdir(id), 'plan.md')
+  const ev = path.join(tdir(id), 'evidence.md')
+  for (const p of [tdir(id), plan, ev]) {
+    const st = fs.lstatSync(p, { throwIfNoEntry: false })
+    if (!st) die(`checked ${id} refused: no ${rel(p)}`)
+    if (st.isSymbolicLink()) die(`checked ${id} refused: ${rel(p)} is a symlink`)
+  }
+  if (!md.handChecks(fs.readFileSync(plan, 'utf8')).includes(ac)) die(`checked ${id} refused: the plan does not declare ${ac} a hand check`)
+  const v = evidenceLines(id).state.get(ac)
+  if (v === undefined || !/^hand-check:\s*\S/.test(v)) die(`checked ${id} refused: ${ac} is ${v === undefined ? 'not in evidence.md' : `'${flat(v)}'`}, not a pending hand-check`)
+  const old = fs.readFileSync(ev, 'utf8')
+  put(ev, `${old}${old && !old.endsWith('\n') ? '\n' : ''}- ${ac} — met: hand check by the user on ${today()}: ${words}\n`)
+  process.stdout.write(`checked: ${id} ${ac}\n`)
+}
+
 // ---------------------------------------------------------------- loop
 
 // A product question is the human's: the worker's comment for the issue, or its list of product questions.
@@ -1453,5 +1537,6 @@ else if (cmd === 'status' && !args.length) status()
 else if (cmd === 'drop') drop(args)
 else if (cmd === 'approve') approve(args)
 else if (cmd === 'accept-green') acceptGreen(args)
+else if (cmd === 'checked') checked(args)
 else if (cmd === 'loop') loop(args)
 else die(USAGE)

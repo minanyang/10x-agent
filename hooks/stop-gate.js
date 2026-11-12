@@ -11,8 +11,9 @@
 //
 // Stop blocks while the owned ticket's worktree exists and .10x/<id>/evidence.md misses a plan
 // criterion, leaves one pending or in no known state, or has an `asked` question the last message
-// does not carry. Lines: `- AC<n> — pending | met: … | deferred: "…" | asked: …`, `- asked: …`;
-// the last line for a criterion wins.
+// does not carry. Lines: `- AC<n> — pending | met: … | deferred: "…" | hand-check: … | asked: …`,
+// `- asked: …`; the last line for a criterion wins. `hand-check:` settles only a criterion the plan's
+// `## Tests` declares a hand check (md-check.js handChecks()).
 //
 // Stop during a flow, and SubagentStop of the two reviewers, also block on a claim that something is
 // unverified, unchecked or not yet confirmed, outside code.
@@ -180,7 +181,9 @@ function evidenceGaps(md, r, sid, id, message) {
   const dir = path.join(r.root, '.10x', id)
   if (fs.readFileSync(path.join(dir, 'session'), 'utf8').trim() !== sid) return []
   if (!fs.existsSync(path.join(worktreeOf(r, id), '.git'))) return []
-  const plan = md.criteria(fs.readFileSync(path.join(dir, 'plan.md'), 'utf8')).map((c) => `AC${c.n}`)
+  const planText = fs.readFileSync(path.join(dir, 'plan.md'), 'utf8')
+  const plan = md.criteria(planText).map((c) => `AC${c.n}`)
+  const hand = md.handChecks(planText)
   const raw = fs.readFileSync(path.join(dir, 'evidence.md'), 'utf8').split('\n')
   const outside = md.blank(raw, 0)
   const last = new Map()
@@ -202,7 +205,11 @@ function evidenceGaps(md, r, sid, id, message) {
     else if (/^asked:/.test(v)) {
       const q = v.replace(/^asked:\s*/, '')
       if (unasked(q)) gaps.push(`${ac}: asked "${q}", but your last message does not ask it; ask it verbatim`)
-    } else if (!/^(met|deferred):\s*\S/.test(v)) gaps.push(`${ac}: "${v}" is not a known state (pending, met: <evidence>, deferred: "<the user's words>", asked: <question>)`)
+    } else if (/^hand-check:\s*\S/.test(v)) {
+      if (!hand.includes(ac))
+        gaps.push(`${ac}: hand-check, but its \`## Tests\` row is not a hand check (\`| ${ac} | — | hand check: … |\`); only the plan declares one`)
+    } else if (!/^(met|deferred):\s*\S/.test(v))
+      gaps.push(`${ac}: "${v}" is not a known state (pending, met: <evidence>, deferred: "<the user's words>", hand-check: <what to check>, asked: <question>)`)
   }
   for (const q of free) if (unasked(q)) gaps.push(`asked "${q}", but your last message does not ask it; ask it verbatim, or remove the line once answered`)
   return gaps
