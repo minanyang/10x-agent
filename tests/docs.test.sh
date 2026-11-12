@@ -340,6 +340,20 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
+// gh-40 AC5 — decisions taken on a recommendation in docs/loop.md and the Unreleased changelog section.
+{
+  const name = "docs describe decisions taken on a recommendation"
+  const missing = []
+  const loop = read("docs/loop.md")
+  for (const w of ["Decided:", "decided:"]) if (loop === null || !loop.includes(w)) missing.push(`docs/loop.md: ${w}`)
+  if (loop !== null && loop.includes("is asked, not left")) missing.push(`docs/loop.md: still says "is asked, not left"`)
+  const lines = (read("CHANGELOG.md") || "").split("\n")
+  const at = lines.findIndex((s) => s.trim() === "## Unreleased")
+  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
+  if (!(at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")).includes("Decided:")) missing.push("CHANGELOG.md ## Unreleased: Decided:")
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 // AC4 — heading parity and cross-links.
 {
   const name = "README.zh-TW.md has the same ## and ### headings, level by level, as README.md"

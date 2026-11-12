@@ -1906,6 +1906,33 @@ need "a landed row keeps relocked in its evidence" grep -qF "| t3 | landed | $(f
 need "but is not under Needs the human" not grep -qF -- "- t3 — relocked" "$B/board.md"
 end
 
+# decided_md <id> — appends to the ticket's plan an `## Assumptions` section with two counted `Decided:` bullets and
+# three that are not: an indented one, one inside a fence and a plain assumption.
+decided_md() {
+  printf '\n## assumptions\n- A plain assumption taken at planning.\n- Decided: Keep the old flag? — kept it; alternative: rename it\n  - Decided: an indented note\n```\n- Decided: inside a fence\n```\n* Decided:   Name the file x.sh? — x.sh;  alternative: y.sh  \n' >>".10x/$1/plan.md"
+}
+
+reset; ticket t1 t2 t3
+begin "board: a decision taken on a recommendation is listed under Needs the human until the ticket lands"
+vb init t1 t2 t3
+implemented t1 a
+relock_md t1 "approved — the fixture was wrong" "the fixture was wrong"
+before="$(vb status; acts)"
+decided_md t1
+need "still implemented" phase_is t1 implemented
+need "the actions are unchanged" test "$(vb status; acts)" = "$before"
+need "exactly the two decided lines, in order, after relocked" test "$(grep -E -- '^- t1 — (relocked|decided):' "$B/board.md")" = "$(printf '%s\n' \
+  "- t1 — relocked: the fixture was wrong" \
+  "- t1 — decided: Keep the old flag? — kept it; alternative: rename it" \
+  "- t1 — decided: Name the file x.sh? — x.sh;  alternative: y.sh")"
+need "the evidence cell has no decided" grep -qxF "| 1 | t1 | implemented | $(field t1 2 3) | — | relocked: the fixture was wrong |" "$B/board.md"
+landed t2 b; decided_md t2; vb status
+need "a landed ticket lists none" not grep -qF -- "- t2 — decided" "$B/board.md"
+approved t3 c; decided_md t3; vb drop t3
+need "t3 is dropped" phase_is t3 dropped
+need "a dropped ticket lists none" not grep -qF -- "- t3 — decided" "$B/board.md"
+end
+
 reset; ticket t1 t2
 begin "denial: the board shows a count and the denials file, never the commands"
 vb init t1 t2

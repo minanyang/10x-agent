@@ -694,5 +694,34 @@ for (const skill of ["open", "work", "close", "batch", "roadmap", "audit"])
   const missing = [2, 4].filter((n) => !(step(n).includes("not a plan session") && step(n).includes("Evidence"))).map((n) => `Step ${n}: "not a plan session" and its Evidence`)
   missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
 }
+// gh-40 — work's stop-or-proceed rule, the report's decisions and no deferral on a recommendation.
+{
+  const work = fs.existsSync(`${dir}/work/SKILL.md`) ? fs.readFileSync(`${dir}/work/SKILL.md`, "utf8") : ""
+  const at = work.search(/^### Stop or proceed$/m)
+  const end = at < 0 ? -1 : work.slice(at + 1).search(/\n##+ /)
+  const rule = at < 0 ? "" : work.slice(at, end < 0 ? undefined : at + 1 + end).replace(/\s+/g, " ")
+  const step8 = work.slice(work.search(/^## Step 8\b/m), work.search(/^## Replies$/m)).replace(/\s+/g, " ")
+  const report = (n, checks) => {
+    const missing = checks.filter(([c]) => !c).map(([, w]) => w)
+    missing.length ? bad(`${n} (missing: ${missing.join("; ")})`) : ok(n)
+  }
+  report("work: lists the questions that stop and those that proceed on the recommendation", [
+    [at >= 0 && at < work.search(/^### Tests half$/m), "a `### Stop or proceed` heading before `### Tests half`"],
+    ...["security", "no recommended answer", "cannot undo", "- Decided: <question> — <answer taken>; alternative:",
+      "## Assumptions", "10x-plan-check <id>", ".10x/<id>/decisions.md", "GREEN", "relock", "Step 8", "memory",
+      "Step 7b", "--fixes"].map((w) => [rule.includes(w), `the rule names ${w}`]),
+    [!work.includes("otherwise ask the user"), `no "otherwise ask the user"`],
+    [!work.includes("is asked to the user before the report"), `no "is asked to the user before the report"`],
+  ])
+  report("work: the report lists the decisions taken", [
+    [step8.includes("Decisions taken:") && step8.indexOf("Hand checks pending:") < step8.indexOf("Decisions taken:")
+      && step8.indexOf("Decisions taken:") < step8.indexOf("the next step"), "Step 8: `Decisions taken:` after `Hand checks pending:` and before the next step"],
+    [step8.includes("decisions.md"), "Step 8 reads `decisions.md` on the small path"],
+  ])
+  report("work: a criterion is never deferred on a recommendation", [
+    [rule.includes("never deferred on your own recommendation"), `the rule says "never deferred on your own recommendation"`],
+    [step8.includes("with the user's words"), `Step 8 keeps "with the user's words"`],
+  ])
+}
 process.exit(fail)
 JS
