@@ -93,7 +93,7 @@ if [ "${WORKER_SCRIPT:-}" = flow ]; then
       if grep -q '^Status: approved' ".10x/$id/plan.md" 2>/dev/null; then
         printf -- '- AC1 — met: x\n' >".10x/$id/evidence.md"; mkdir -p ".worktrees/$id"
       else
-        printf '# %s\n\nStatus: draft\n\n## Acceptance criteria\n- AC1 — the change works\n\n## Approach\nOne change.\n\n## Files\n- `f-%s` — changed\n\n## Readers\n- `thing` — `grep -rn thing`\n  - no hits\n\n## Overlap\n- none\n\n## Tests\n| AC | Test file | Case |\n|---|---|---|\n| AC1 | `tests/x.sh` | `works` |\n' "$id" "$id" >".10x/$id/plan.md"
+        printf '# %s\n\nStatus: draft\n\n## Acceptance criteria\n- AC1 — the change works\n\n## Files\n- `f-%s` — changed\n\n# Appendix\n\n## Approach\nOne change.\n\n## Readers\n- `thing` — `grep -rn thing`\n  - no hits\n\n## Overlap\n- none\n\n## Tests\n| AC | Test file | Case |\n|---|---|---|\n| AC1 | `tests/x.sh` | `works` |\n' "$id" "$id" >".10x/$id/plan.md"
       fi ;;
     '/10x:close '*) rmdir ".worktrees/$id" ;;
     Approved.*) sed -i.bak 's/^Status: draft/Status: approved/' ".10x/$id/plan.md"; rm -f ".10x/$id/plan.md.bak" ;;
@@ -193,7 +193,7 @@ snap() { find .10x .git "$XDG_STATE_HOME" -type f -print0 2>/dev/null | sort -z 
 fetched() { grep "^issue view $1 " "$STUB_LOG" | grep -v -- '--json author' | grep -q .; }
 # The fixed reply of auto mode, byte for byte.
 cat >"$tmp/fixed" <<'EOF'
-Auto mode: no human answers this batch's questions. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, one line per question (its number, the choice and why), and go on.
+Auto mode: no human answers this batch's questions. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question (its number, the choice and why), and go on.
 EOF
 # A worker turn that asks a question and writes no plan.
 cat >"$tmp/question.jsonl" <<'EOF'
@@ -224,9 +224,9 @@ ticket() { local id; for id in "$@"; do mkdir -p ".10x/$id"; echo "# $id" >".10x
 plan_md() {
   local id=$1 st=$2 f; shift 2
   {
-    printf '# %s\n\nStatus: %s\n\n## Acceptance criteria\n- AC1 — the change works\n\n## Approach\nOne change.\n\n## Files\n' "$id" "$st"
+    printf '# %s\n\nStatus: %s\n\n## Acceptance criteria\n- AC1 — the change works\n\n## Files\n' "$id" "$st"
     for f in "$@"; do printf -- '- `%s` — changed\n' "$f"; done
-    printf '\n## Readers\n- `thing` — `grep -rn thing`\n  - no hits\n\n## Overlap\n- none\n\n## Tests\n| AC | Test file | Case |\n|---|---|---|\n| AC1 | `tests/x.sh` | `works` |\n'
+    printf '\n# Appendix\n\n## Approach\nOne change.\n\n## Readers\n- `thing` — `grep -rn thing`\n  - no hits\n\n## Overlap\n- none\n\n## Tests\n| AC | Test file | Case |\n|---|---|---|\n| AC1 | `tests/x.sh` | `works` |\n'
   } >".10x/$id/plan.md"
 }
 # row <id> <kind> <session_kind> <exit | open:<pid>> — a run record written by hand.
@@ -1386,6 +1386,30 @@ plan_md t1 approved a
 need "needs a new approval for the plan approved before" eval 'test ! -e $S/t1.approved && phase_is t1 failed'
 end
 
+reset; ticket t1 t2 t3
+begin "approve: several ids record one approval each"
+vb init t1 t2
+row t1 plan plan 0; plan_md t1 draft a; row t2 plan plan 0; plan_md t2 draft b
+need "approve with two ids exits 0" exits 0 approve t1 t2
+need "each id has its own record" test -s "$S/t1.approved" -a -s "$S/t2.approved"
+need "the records are not the same hash" not cmp -s "$S/t1.approved" "$S/t2.approved"
+need "each id has its own approved line" eval 'grep -c "^approved: " "$tmp/out" | grep -qx 2'
+need "t1's plan line carries its own hash" has "plan: .10x/t1/plan.md sha256 $(cut -c1-12 "$S/t1.approved")"
+need "t2's plan line carries its own hash" has "plan: .10x/t2/plan.md sha256 $(cut -c1-12 "$S/t2.approved")"
+need "each id has its own reply" eval 'grep -qF "Approved. Set \`Status: approved\` in plan.md and stop" "$B/t1/reply.md" && grep -qF "Approved. Set \`Status: approved\` in plan.md and stop" "$B/t2/reply.md"'
+end
+
+reset; ticket t1 t2 t3
+begin "approve: one id that is not approvable refuses them all"
+vb init t1 t2
+row t1 plan plan 0; plan_md t1 draft a; row t2 plan plan 0
+need "approve exits 2" exits 2 approve t1 t2 t3
+need "names the id with no approvable plan" has "approve t2 refused: t2 is waiting and its plan.md is not a draft that passes 10x-plan-check"
+need "names the id that is not in the batch" has "t3 is not in this batch"
+need "the approvable id has no record" test ! -e "$S/t1.approved"
+need "the approvable id has no reply" test ! -e "$B/t1/reply.md"
+end
+
 # ---------------------------------------------------------------- schedule
 
 reset; ticket t1 t2 t3
@@ -1488,7 +1512,7 @@ HT='open the app and see the badge'
 hand_md() {
   local id=$1 st=$2 file=${3:-—} kase=${4:-'`hand check: open the app and see the badge`'}
   mkdir -p ".10x/$id"
-  printf '# %s\n\nStatus: %s\n\n## Acceptance criteria\n- AC1 — the change works\n- AC2 — the badge shows\n\n## Approach\nOne change.\n\n## Files\n- `f-%s` — changed\n\n## Readers\n- `thing` — `grep -rn thing`\n  - no hits\n\n## Overlap\n- none\n\n## Tests\n| AC | Test file | Case |\n|---|---|---|\n| AC1 | `tests/x.sh` | `works` |\n| AC2 | %s | %s |\n' "$id" "$st" "$id" "$file" "$kase" >".10x/$id/plan.md"
+  printf '# %s\n\nStatus: %s\n\n## Acceptance criteria\n- AC1 — the change works\n- AC2 — the badge shows\n\n## Files\n- `f-%s` — changed\n\n# Appendix\n\n## Approach\nOne change.\n\n## Readers\n- `thing` — `grep -rn thing`\n  - no hits\n\n## Overlap\n- none\n\n## Tests\n| AC | Test file | Case |\n|---|---|---|\n| AC1 | `tests/x.sh` | `works` |\n| AC2 | %s | %s |\n' "$id" "$st" "$id" "$file" "$kase" >".10x/$id/plan.md"
 }
 # hand_approved <id> [<AC2's test file cell> <AC2's case cell>] — the plan run, approved by the user, then marked approved.
 hand_approved() {
@@ -1796,6 +1820,14 @@ for n in 02 03 04; do
   need "reply $n holds none of the turn" not grep -qF "Which flag name" "$B/t1/$n-reply.md"
 done
 need "no reply.md is left" test ! -e "$B/t1/reply.md"
+end
+
+reset; ticket t1
+begin "loop: the fixed reply puts Auto decisions below the Appendix"
+vb init --auto t1
+WORKER_OUT="$tmp/question.jsonl" lp 90
+need "loop finished" finished
+need "the fixed reply says where Auto decisions go" grep -qF 'record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question' "$B/t1/02-reply.md"
 end
 
 reset; ticket t1

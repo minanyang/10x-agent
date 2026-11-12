@@ -1744,13 +1744,13 @@ A thing.
   - a nested note
 - AC2: the second thing.
 
-## Approach
-Code may say `etc.` here.
-
 ## Files
 - `src/a.mjs` — the change.
 EOF
     ;;
+    appendix) printf '# Appendix\n\n## Approach\nCode may say `etc.` here.\n' ;;
+    extra) printf '## Approach\nNot for the user.\n' ;;
+    risks) printf '## Risks and assumptions\nNone.\n' ;;
     readers) cat <<'EOF'
 ## Readers
 - `oldName` — `grep -rn oldName .` (gone)
@@ -1808,45 +1808,45 @@ pc_names() { # <case> <text>... — the last run named each text
   for t in "$@"; do grep -qF -- "$t" "$tmp/out" || { bad "$d: names '$t'"; cat "$tmp/out"; return; }; done
   ok "$d: names each line"
 }
-pc_plan head readers tools overlap tests
+pc_plan head appendix readers tools overlap tests
 expect "plan-check accepts a plan in the template's format" 0 10x-plan-check P1
-pc_plan head readers tools overlap tests-noac2
+pc_plan head appendix readers tools overlap tests-noac2
 expect "plan-check refuses a criterion with no Tests row" 1 10x-plan-check P1
 pc_names "plan-check refuses a criterion with no Tests row" 'line 11: AC2 has no row in "## Tests"'
 ! grep -q 'AC1 has no row' "$tmp/out" && ok "plan-check: a covered criterion is not named" || bad "plan-check: a covered criterion is not named"
-pc_plan head readers tools overlap tests-header
+pc_plan head appendix readers tools overlap tests-header
 expect "plan-check refuses a Tests table with another header" 1 10x-plan-check P1
 pc_names "plan-check refuses a Tests table with another header" 'Tests table header must be "| AC | Test file | Case |"'
-pc_plan head readers tools overlap
+pc_plan head appendix readers tools overlap
 expect "plan-check refuses a plan without a Tests section" 1 10x-plan-check P1
 pc_names "plan-check refuses a plan without a Tests section" 'no "## Tests" section'
-pc_plan head readers tools overlap tests
+pc_plan head appendix readers tools overlap tests
 sed 's/^A thing\.$/A thing, as needed./' "$tmp/land/.10x/P1/plan.md" >"$tmp/pc" && mv "$tmp/pc" "$tmp/land/.10x/P1/plan.md"
 expect "plan-check refuses a banned phrase" 1 10x-plan-check P1
 pc_names "plan-check refuses a banned phrase" 'line 6: banned phrase "as needed"'
-pc_plan head readers tools overlap tests
+pc_plan head appendix readers tools overlap tests
 printf '## Notes\n`as needed` and\n```\nTBD etc.\n```\n' >>"$tmp/land/.10x/P1/plan.md"
 expect "plan-check ignores a banned phrase in code" 0 10x-plan-check P1
-pc_plan head readers-empty tools overlap tests
+pc_plan head appendix readers-empty tools overlap tests
 expect "plan-check refuses an empty Readers" 1 10x-plan-check P1
-pc_names "plan-check refuses an empty Readers" 'line 19: "## Readers" is empty'
-pc_plan head tools overlap tests
+pc_names "plan-check refuses an empty Readers" 'line 21: "## Readers" is empty'
+pc_plan head appendix tools overlap tests
 expect "plan-check refuses a missing Readers" 1 10x-plan-check P1
 pc_names "plan-check refuses a missing Readers" 'no "## Readers" section'
-pc_plan head readers-nohit tools overlap tests
+pc_plan head appendix readers-nohit tools overlap tests
 expect "plan-check refuses a Readers entry with no hits" 1 10x-plan-check P1
-pc_names "plan-check refuses a Readers entry with no hits" 'line 22: Readers entry has no hit line'
-! grep -q 'line 20:' "$tmp/out" && ok "plan-check: an entry with a hit is not named" || bad "plan-check: an entry with a hit is not named"
-pc_plan head readers tools-nooutput overlap tests
+pc_names "plan-check refuses a Readers entry with no hits" 'line 24: Readers entry has no hit line'
+! grep -q 'line 22:' "$tmp/out" && ok "plan-check: an entry with a hit is not named" || bad "plan-check: an entry with a hit is not named"
+pc_plan head appendix readers tools-nooutput overlap tests
 expect "plan-check refuses a tool claim without output" 1 10x-plan-check P1
-pc_names "plan-check refuses a tool claim without output" 'line 26: tool claim has no fenced `$ <command>` block'
-pc_plan head readers tools overlap-empty tests
+pc_names "plan-check refuses a tool claim without output" 'line 28: tool claim has no fenced `$ <command>` block'
+pc_plan head appendix readers tools overlap-empty tests
 expect "plan-check refuses an empty Overlap" 1 10x-plan-check P1
-pc_names "plan-check refuses an empty Overlap" 'line 32: "## Overlap" is empty'
-pc_plan head readers-nohit tools-nooutput overlap-empty tests-noac2
+pc_names "plan-check refuses an empty Overlap" 'line 34: "## Overlap" is empty'
+pc_plan head appendix readers-nohit tools-nooutput overlap-empty tests-noac2
 sed 's/^A thing\.$/A thing, as needed./' "$tmp/land/.10x/P1/plan.md" >"$tmp/pc" && mv "$tmp/pc" "$tmp/land/.10x/P1/plan.md"
 expect "plan-check names every refusal" 1 10x-plan-check P1
-pc_names "plan-check names every refusal" 'line 6: banned phrase' 'line 11: AC2 has no row' 'line 22: Readers entry has no hit line' 'line 25: tool claim' 'line 30: "## Overlap" is empty'
+pc_names "plan-check names every refusal" 'line 6: banned phrase' 'line 11: AC2 has no row' 'line 24: Readers entry has no hit line' 'line 27: tool claim' 'line 32: "## Overlap" is empty'
 rm "$tmp/land/.10x/P1/plan.md"
 expect "plan-check exits 2 without a plan" 2 10x-plan-check P1
 expect "plan-check exits 2 without an id" 2 10x-plan-check
@@ -1859,10 +1859,10 @@ pc_cold() { # <case> — the last run printed the cold read line, last
 pc_nocold() { # <case> — the last run printed no cold read line
   ! grep -q 'cold read required' "$tmp/out" && ok "$1: prints no cold read line" || { bad "$1: prints no cold read line"; cat "$tmp/out"; }
 }
-pc_plan head files3 readers tools overlap tests
+pc_plan head files3 appendix readers tools overlap tests
 expect "plan-check needs no cold read for 3 files" 0 10x-plan-check P1
 pc_nocold "plan-check needs no cold read for 3 files"
-pc_plan head files4 readers tools overlap tests
+pc_plan head files4 appendix readers tools overlap tests
 expect "plan-check asks for a cold read of a plan binding 4 files" 1 10x-plan-check P1
 pc_cold "plan-check asks for a cold read of a plan binding 4 files"
 grep -q '^/.*plan\.md:$' "$tmp/out" && bad "plan-check: the cold read line alone has no plan header" \
@@ -1876,15 +1876,46 @@ ln -s "$tmp/cold-target" "$cold"
 expect "plan-check treats a symlinked cold-read.md as missing" 1 10x-plan-check P1
 pc_cold "plan-check treats a symlinked cold-read.md as missing"
 rm "$cold"
-pc_plan head files4 readers tools overlap tests-noac2
+pc_plan head files4 appendix readers tools overlap tests-noac2
 expect "plan-check prints the cold read line after the other refusals" 1 10x-plan-check P1
 pc_names "plan-check prints the cold read line after the other refusals" 'AC2 has no row in "## Tests"'
 pc_cold "plan-check prints the cold read line after the other refusals"
-pc_plan head files4 readers tools overlap tests
+pc_plan head files4 appendix readers tools overlap tests
 printf -- '- No guess needed.\n' >"$cold"
 expect "plan-check accepts 4 files once cold-read.md is saved" 0 10x-plan-check P1
 pc_nocold "plan-check accepts 4 files once cold-read.md is saved"
 rm "$cold"
+
+# plan-check: the "# Appendix" line splits the user-facing part from the rest
+pc_plan head readers tools overlap tests
+expect "plan-check refuses a plan without an Appendix line" 1 10x-plan-check P1
+pc_names "plan-check refuses a plan without an Appendix line" 'no "# Appendix" line'
+pc_plan head appendix appendix readers tools overlap tests
+expect "plan-check refuses a second Appendix line" 1 10x-plan-check P1
+pc_names "plan-check refuses a second Appendix line" 'line 21: a second "# Appendix" line'
+pc_plan head extra appendix readers tools overlap tests
+expect "plan-check refuses a section above the Appendix the user is not shown" 1 10x-plan-check P1
+pc_names "plan-check refuses a section above the Appendix the user is not shown" 'line 16: "## Approach" belongs below "# Appendix"'
+pc_plan head appendix risks readers tools overlap tests
+expect "plan-check refuses a user-facing section below the Appendix" 1 10x-plan-check P1
+pc_names "plan-check refuses a user-facing section below the Appendix" 'line 21: "## Risks and assumptions" belongs above "# Appendix"'
+pc_pad() { # <lines> — pad "## Goal" with <lines> text lines
+  awk -v n="$1" '{ print } /^A thing\.$/ { for (i = 0; i < n; i++) print "More." }' "$tmp/land/.10x/P1/plan.md" >"$tmp/pc" &&
+    mv "$tmp/pc" "$tmp/land/.10x/P1/plan.md"
+}
+pc_plan head appendix readers tools overlap tests
+pc_pad 27
+expect "plan-check refuses more than 40 lines above the Appendix" 1 10x-plan-check P1
+pc_names "plan-check refuses more than 40 lines above the Appendix" 'line 43: user-facing part is 41 lines, over 40'
+pc_plan head appendix readers tools overlap tests
+pc_pad 26
+expect "plan-check accepts exactly 40 lines above the Appendix" 0 10x-plan-check P1
+grep -qxF 'user-facing: lines 1-40' "$tmp/out" && ok "plan-check accepts exactly 40 lines above the Appendix: prints lines 1-40" ||
+  { bad "plan-check accepts exactly 40 lines above the Appendix: prints lines 1-40"; cat "$tmp/out"; }
+pc_plan head appendix readers tools overlap tests
+expect "plan-check prints the user-facing line range" 0 10x-plan-check P1
+[ "$(sed -n 2p "$tmp/out")" = "user-facing: lines 1-14" ] && head -n 1 "$tmp/out" | grep -q '^plan ok: ' &&
+  ok "plan-check prints the user-facing line range: second line" || { bad "plan-check prints the user-facing line range: second line"; cat "$tmp/out"; }
 
 # with the repo's own forms
 mkdir -p "$tmp/land/.github/ISSUE_TEMPLATE"
