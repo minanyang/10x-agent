@@ -179,9 +179,9 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   for (const w of ["--permission-mode auto", "-fallback"]) if (scripts === null || !scripts.includes(w)) missing.push(`docs/scripts.md: ${w}`)
   for (const w of ["## Plan boundary", "TENX_BATCH_PLAN_DIR"]) if (hooks === null || !hooks.includes(w)) missing.push(`docs/hooks.md: ${w}`)
   if (!section(hooks, "Grant").includes("10x-test")) missing.push("docs/hooks.md: 10x-test in ## Grant")
-  // The newest section: `## Unreleased` until a release renames it to the version.
-  const newest = ((log || "").split("\n").find((s) => /^##\s/.test(s)) || "").replace(/^##\s+/, "").trim()
-  if (!section(log, newest).includes("auto mode")) missing.push("CHANGELOG.md: auto mode in the newest section")
+  // The release these phrases belong to: the `## 0.2.0` section.
+  const released = ((log || "").split("\n").find((s) => /^##\s+0\.2\.0\b/.test(s)) || "").replace(/^##\s+/, "").trim()
+  if (!section(log, released).includes("auto mode")) missing.push("CHANGELOG.md: auto mode in the 0.2.0 section")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
@@ -277,12 +277,12 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   const name = "README and CHANGELOG mention batch auto mode"
   const log = read("CHANGELOG.md")
   const lines = log === null ? [] : log.split("\n")
-  // The newest section: `## Unreleased` until a release renames it to the version.
-  const at = lines.findIndex((s) => /^##\s/.test(s))
+  // The release these phrases belong to: the `## 0.2.0` section.
+  const at = lines.findIndex((s) => /^##\s+0\.2\.0\b/.test(s))
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
   const newest = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
   const missing = []
-  if (!newest.includes("/10x:batch auto")) missing.push("CHANGELOG.md: /10x:batch auto in the newest section")
+  if (!newest.includes("/10x:batch auto")) missing.push("CHANGELOG.md: /10x:batch auto in the 0.2.0 section")
   for (const [f, text, trust] of [["README.md", readme, "issues you trust"], ["README.zh-TW.md", zh, "只批次處理你信任的 issue"]]) {
     if (text === null) { missing.push(`${f}: missing`); continue }
     if (!text.includes("/10x:batch auto")) missing.push(`${f}: /10x:batch auto`)
@@ -306,6 +306,23 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   const log = read("CHANGELOG.md")
   const first = ((log || "").split("\n").find((s) => /^##\s/.test(s)) || "").trim()
   if (first !== "## Unreleased") missing.push(`CHANGELOG.md: newest section is "${first}", not "## Unreleased"`)
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
+// gh-36 AC11 — small tickets and security.paths in the docs and the Unreleased changelog section.
+{
+  const name = "docs and CHANGELOG describe Size: small and security.paths"
+  const missing = []
+  const need = (f, text, words) => { for (const w of words) if (text === null || !text.includes(w)) missing.push(`${f}: ${w}`) }
+  need("docs/loop.md", read("docs/loop.md"), ["Size: small", "security.paths"])
+  need("docs/scripts.md", read("docs/scripts.md"), ["Size: small", "size: small", "security.paths"])
+  need("docs/configuration.md", read("docs/configuration.md"), ["security.paths"])
+  need("docs/hooks.md", read("docs/hooks.md"), ["Size: small", "ticket.md"])
+  const lines = (read("CHANGELOG.md") || "").split("\n")
+  const at = lines.findIndex((s) => s.trim() === "## Unreleased")
+  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
+  const unreleased = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
+  need("CHANGELOG.md ## Unreleased", unreleased, ["Size: small", "security.paths"])
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 

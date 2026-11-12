@@ -45,6 +45,7 @@
 # --lock (refused when the main checkout's .claude/10x.json has "tdd": false, or a lock exists) runs on a branch
 # that holds only the tests half. It exits 2, naming what is wrong, when the branch changes no test file, a file that
 # is neither a test file nor a test helper, or leaves out a test file `## Tests` of .10x/<id>/plan.md names; when
+# `## Tests` names no test file, unless the ticket is small (scripts/lib.sh ticket_size: no plan.md); when
 # its added lines in a test file hold an unconditional skip (`.skip(`, `xit(`, `it.todo(`, `{ skip: true }`); or when,
 # run at HEAD, a changed test file passes or the runner reports a test skipped or todo (jest, vitest, node --test;
 # a file missing from the report has not loaded yet and counts as failing). Report: red-proof/lock.json. Otherwise it
@@ -110,8 +111,11 @@ relocks=(); accepted=""
 if [ -n "$lock" ]; then
   [ "$tdd" = on ] || die "tdd is false in $CONFIG: there is no tests half to lock"
   [ ! -f "$(lock_path "$path")" ] || die "$id is already locked; a change to a locked file goes through a relock"
-  [ ${#tests[@]} -gt 0 ] || die "$id: the branch changes no test file — write the tests ## Tests names first"
-  [ -n "$named" ] || die "$id: ## Tests of $plan names no test file"
+  [ ${#tests[@]} -gt 0 ] || die "$id: the branch changes no test file — write the failing tests first"
+  if [ -z "$named" ]; then
+    size="$(ticket_size "$id")" || exit 2
+    [ "$size" = small ] || die "$id: ## Tests of $plan names no test file"
+  fi
   # The lock record holds one path per line.
   for f in "${changed[@]}"; do
     [[ "$f" != *[[:cntrl:]]* ]] || die "$id: a changed path has a control character, which the lock cannot record: $(shown "$f")"

@@ -161,6 +161,39 @@ out="$(stop s1 "AC2 is unverified.")"
 check "one reason carries both blocks" block "$out" "AC2: pending" "Check it now"
 grep -o '"decision"' <<<"$out" | wc -l | grep -qx ' *1'; assert "one block, not two" $?
 
+# gh-36 AC4 — a small ticket has no plan.md; its criteria come from ticket.md.
+# small_ticket <id> <ticket.md text> — a worktree, a ticket.md and a session bound by `10x-worktree add`, no plan.md.
+small_ticket() {
+  mkdir -p "$repo/.10x/$1" "$repo/.worktrees/$1/.git"
+  printf '%b' "$2" >"$repo/.10x/$1/ticket.md"
+  send PostToolUse "$1" tool_name Bash tool_input "{\"command\":\"10x-worktree add $1\"}" >/dev/null
+}
+ev() { local id=$1; shift; printf '%s\n' "$@" >"$repo/.10x/$id/evidence.md"; }
+small_ticket sm1 '# T\nSize: small\n\n## Context\nx\n\n## Acceptance criteria\n- [ ] AC1 — one\n- [ ] AC2 — two\n'
+ev sm1 "- AC1 — met: x"
+check "blocks a small ticket without a plan on a pending ticket criterion" block "$(stop sm1 "Done.")" "AC2: no line"
+ev sm1 "- AC1 — met: x" "- AC2 — pending"
+check "blocks a small ticket without a plan on a pending ticket criterion (pending line)" block "$(stop sm1 "Done.")" "AC2: pending"
+ev sm1 "- AC1 — met: x" "- AC2 — met: y"
+# red until the gate reads ticket.md: the pass counts only if the pending line above blocked.
+check "passes a small ticket whose ticket criteria are all met" pass "$(stop sm1 "Done.")$(ev sm1 "- AC1 — met: x" "- AC2 — pending"; stop sm1 "Done." | grep -c '"decision":"block"' | grep -qx 1 || printf 'no block while AC2 is pending')"
+
+# a form's ticket as 10x-ticket writes it: the `- size: small` header line, `### Acceptance criteria`
+small_ticket sm2 '# T\n\n- source: GitHub issue #9 (open)\n- url: https://github.com/o/r/issues/9\n- size: small\n\n### What happens\nx\n\n### Acceptance criteria\n- [ ] AC1 — one\n- [ ] AC2 — two\n'
+ev sm2 "- AC1 — met: x"
+check "reads a form ticket's ### Acceptance criteria" block "$(stop sm2 "Done.")" "AC2: no line"
+
+# criteria under ## Comments are not the ticket's; a ticket that does not declare Size: small keeps today's rule (no plan, no gate)
+small_ticket sm3 '# T\nSize: small\n\n## Acceptance criteria\n- [ ] AC1 — one\n\n## Comments\n\n- [ ] AC7 — a comment, not a criterion\n'
+ev sm3 "- AC1 — met: x"
+small_ticket sm4 '# T\n\n## Acceptance criteria\n- [ ] AC1 — one\n'
+ev sm4 "- AC2 — pending"
+ev sm1 "- AC2 — met: y"
+check "ignores ticket.md criteria under ## Comments and of a ticket that is not small" block "$(stop sm1 "Done.")" "AC1: no line"
+out3="$(stop sm3 "Done.")"; out4="$(stop sm4 "Done.")"
+held=0; [ -z "$out3$out4" ] || held=1
+assert "ignores ticket.md criteria under ## Comments and of a ticket that is not small (nothing else held)" "$held"
+
 check "passes on a malformed payload" pass "$(printf 'garbage' | (cd "$tmp" && node "$GATE"))"
 check "passes on an empty payload" pass "$(printf '{}' | (cd "$tmp" && node "$GATE"))"
 check "passes outside a git repository" pass "$(printf '{"hook_event_name":"Stop","session_id":"s1","cwd":"%s","last_assistant_message":"unverified"}' "$tmp" | (cd "$tmp" && node "$GATE"))"

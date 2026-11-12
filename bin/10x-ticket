@@ -8,6 +8,10 @@
 // The issue is read from origin's repo only (a URL must name it), so the ticket, its branch, its PR and
 // any comment posted to it all concern the same repo.
 //
+// The header ends with `- size: small` only when the first line of the trimmed issue body, trailing whitespace and `\r`
+// dropped, is `Size: small` (what `10x-land issue` writes); the same text in a comment or lower in the body adds
+// nothing. The body is printed as written.
+//
 // --out must name this issue's .10x/gh-<number>/ticket.md in the main checkout, so a permission rule for
 // `10x-ticket *` cannot be stretched into a write anywhere else. With TENX_BATCH set (a /10x:batch worker), --out
 // exits 2 before any gh call when that directory's plan.md is approved: the worker goes to Step 2 instead.
@@ -118,6 +122,7 @@ function github(ref) {
   const out = [`# ${i.title}`, '', `- source: GitHub issue #${i.number} (${i.state.toLowerCase()})`, `- url: ${i.url}`]
   if (i.issueType) out.push(`- type: ${i.issueType.name}`)
   if (i.labels.length) out.push(`- labels: ${i.labels.map((l) => l.name).join(', ')}`)
+  if (i.body.trim().split('\n')[0].trimEnd() === 'Size: small') out.push('- size: small')
   out.push('', i.body.trim() || '(no description)')
   if (i.comments.length) {
     out.push('', '## Comments')

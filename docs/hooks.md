@@ -12,7 +12,7 @@ Refuses `/10x:work` and `/10x:close` when the session already carries more than 
 
 ## Stop gate
 
-A session owns a ticket once it runs `10x-worktree add <id>` or types `/10x:work <id>` for an approved plan (the latest session to bind it owns it). While the ticket's worktree exists, the session cannot end a turn while `.10x/<id>/evidence.md` misses a criterion, leaves one `pending`, or has an `asked` question that is not in the turn's last message. A criterion's `hand-check: <what to check>` counts as settled only when the plan's `## Tests` declares it a hand check (`| AC<n> | — | hand check: … |`); on any other criterion the gate blocks, naming that missing row.
+A session owns a ticket once it runs `10x-worktree add <id>` or types `/10x:work <id>` for an approved plan (the latest session to bind it owns it). While the ticket's worktree exists, the session cannot end a turn while `.10x/<id>/evidence.md` misses a criterion, leaves one `pending`, or has an `asked` question that is not in the turn's last message. A criterion's `hand-check: <what to check>` counts as settled only when the plan's `## Tests` declares it a hand check (`| AC<n> | — | hand check: … |`); on any other criterion the gate blocks, naming that missing row. A `Size: small` ticket with no `plan.md` takes its criteria from `.10x/<id>/ticket.md` instead: the bullets, checkbox or not, under its `## Acceptance criteria` or a form's `### Acceptance criteria`, never from `## Comments` on.
 
 In a session that typed `/10x:open`, `/10x:work`, `/10x:close`, `/10x:batch` or `/10x:roadmap`, and for `10x:code-reviewer` and `10x:security-reviewer`, it also refuses a last message that calls something unverified, unchecked or not yet confirmed (English or Chinese, outside code).
 

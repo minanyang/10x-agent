@@ -325,11 +325,53 @@ state_dir() {
 accepted_source() {
   local sb
   sb="$(state_dir)/batch" || die "could not work out the state dir"
-  if [ -n "${TENX_BATCH:-}" ] || { [ -f "$sb/tickets" ] && awk -v id="$1" '{ gsub(/^[ \t\r]+|[ \t\r]+$/, "") } $0 == id { f = 1 } END { exit !f }' "$sb/tickets"; }; then
+  if in_batch "$1"; then
     printf '%s/%s/accepted-green.md\n' "$sb" "$1"
   else
     printf '%s/accepted-green.md\n' "$(task_dir "$1")"
   fi
+}
+
+# in_batch <id> — true when TENX_BATCH is set or <id> is a line of S/batch/tickets.
+in_batch() {
+  local sb
+  [ -z "${TENX_BATCH:-}" ] || return 0
+  sb="$(state_dir)/batch" || die "could not work out the state dir"
+  [ -f "$sb/tickets" ] && awk -v id="$1" '{ gsub(/^[ \t\r]+|[ \t\r]+$/, "") } $0 == id { f = 1 } END { exit !f }' "$sb/tickets"
+}
+
+# ticket_size <id> — `small` when .10x/<id>/ticket.md is a regular, non-symlinked file that scripts/md-check.js size()
+# calls small, no .10x/<id>/plan.md exists (a symlink counts) and in_batch <id> is false, tested in that order; else
+# `normal`.
+ticket_size() {
+  local t s plan
+  t="$(task_dir "$1")/ticket.md"; plan="$(task_dir "$1")/plan.md"
+  if [ ! -L "$t" ] && [ -f "$t" ]; then
+    s="$(node -e 'console.log(require(process.argv[1]).size(require("fs").readFileSync(process.argv[2], "utf8")))' \
+      "$(dirname "${BASH_SOURCE[0]}")/md-check.js" "$t")" || die "could not read $t"
+    if [ "$s" = small ] && [ ! -e "$plan" ] && [ ! -L "$plan" ] && ! in_batch "$1"; then echo small; return 0; fi
+  fi
+  echo normal
+}
+
+# security_globs — the main checkout's security.paths, one `:(glob)<g>` pathspec per line; nothing without the key.
+# Dies unless it is an array of non-empty strings, none starting with `:` or holding a control character.
+security_globs() {
+  [ -f "$CONFIG" ] || return 0
+  # shellcheck disable=SC2016  # JavaScript, not shell
+  node -e '
+    const f = process.argv[1]
+    let c
+    try { c = JSON.parse(require("fs").readFileSync(f, "utf8")) } catch (e) { console.error(`10x: cannot read ${f}: ${e.message}`); process.exit(2) }
+    const s = c && typeof c === "object" ? c.security : undefined
+    const v = s && typeof s === "object" ? s.paths : undefined
+    if (v == null) process.exit(0)
+    if (!Array.isArray(v) || !v.every((g) => typeof g === "string" && g !== "" && !g.startsWith(":") && !/[\x00-\x1f\x7f]/.test(g))) {
+      console.error(`10x: security.paths in ${f} must be an array of git pathspec globs (non-empty strings, none starting with ":"), got ${JSON.stringify(v)}`)
+      process.exit(2)
+    }
+    for (const g of v) console.log(":(glob)" + g)
+  ' "$CONFIG" || exit 2
 }
 
 # accepted_entries <accepted-green.md> — one line per `## Accepted <n>` entry, fields split by \x1f: n, file (backticks
