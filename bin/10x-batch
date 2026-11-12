@@ -120,7 +120,10 @@
 // allow the command and reply: an implement run that leaves a criterion open with no `asked` line, and a close run
 // that did not land with no open PR. A ticket waiting on its implement session shows the
 // `asked` texts of evidence.md; each approved entry of .10x/<id>/relock.md adds `relocked: <reason>` to the evidence
-// and, until the ticket lands, under `## Needs the human`. A ticket whose latest run has a <nn>-fallback file adds
+// and, until the ticket lands, under `## Needs the human`. Each top-level `- Decided: <text>` bullet under plan.md's
+// `## Assumptions` (a question an implementation session proceeded on with its recommendation) is listed there too,
+// as `decided: <text>`, until the ticket lands; it is not added to the evidence and nothing waits on it. A dropped
+// ticket lists neither. A ticket whose latest run has a <nn>-fallback file adds
 // `auto mode unavailable: ran in <mode>` to its evidence.
 //
 // Config (.claude/10x.json): `close`, `worktreeDir`, `batch.parallel` (implement runs at once, an integer ≥ 1,
@@ -787,6 +790,8 @@ function deriveAll(ids) {
     r.relocked = r.phase === 'dropped' ? [] : relocks(r.id)
     if (r.relocked.length) r.evidence = [r.evidence, ...r.relocked.map((x) => `relocked: ${x}`)].filter(Boolean).join('; ')
   }
+  // A question an implementation session proceeded on with its recommendation: listed for the user, never waited on.
+  for (const r of rows) r.decided = r.phase === 'dropped' ? [] : decisions(readOr(path.join(tdir(r.id), 'plan.md')))
   // `loop` approved the plan, not the user: shown first in every phase but dropped.
   for (const r of rows) {
     const hash = r.phase === 'dropped' ? '' : (readOr(path.join(sdir(r.id), 'auto-approved')) || '').trim()
@@ -932,6 +937,20 @@ function relocks(id) {
   return entries.filter((e) => e.reason && /^approved\s*[—:-]/i.test(e.ruling || '')).map((e) => e.reason)
 }
 
+// The texts after `Decided:` of the top-level bullets under a plan's `## Assumptions`, outside fences, in order: the
+// questions an implementation session proceeded on with its own recommendation.
+function decisions(planText) {
+  if (!planText) return []
+  const lines = planText.split('\n'), b = md.blank(lines)
+  const out = []
+  for (const sec of md.sections(planText).filter((s) => s.name.toLowerCase() === 'assumptions'))
+    for (let k = sec.from; k < sec.to; k++) {
+      const m = b[k] !== null && /^[-*+]\s+Decided:\s*(\S.*)$/.exec(lines[k])
+      if (m) out.push(flat(m[1].trim()))
+    }
+  return out
+}
+
 // The base branch name: config `base`, else develop if origin has it, else origin's default, else main.
 function baseBranch() {
   if (typeof config.base === 'string' && config.base) return config.base
@@ -1043,6 +1062,7 @@ function board(rows) {
     else if (r.phase === 'pr-open') need.push(`- ${r.id} — merge ${flat(r.evidence)}`)
     else if (r.denied) need.push(`- ${r.id} — ${r.phase}: ${flat(r.denied)}`)
     if (r.phase !== 'landed') for (const x of r.relocked) need.push(`- ${r.id} — relocked: ${flat(x)}`)
+    if (r.phase !== 'landed') for (const x of r.decided) need.push(`- ${r.id} — decided: ${x}`)
   }
   lines.push('', '## Needs the human', ...(need.length ? need : ['- none']))
   // Landed tickets and the ids closed at init, under the first recorded version whose row lists them, then the rest.

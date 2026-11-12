@@ -79,7 +79,7 @@ One or two sentences: the outcome, not the steps.
 The files this ticket binds, each with what changes in it. Implementation stays inside this list.
 
 ## Risks and assumptions
-What could go wrong that the user should know before approving, and the grill's `## Assumptions`: decisions the grill did not settle with the user, each with the answer taken.
+What could go wrong that the user should know before approving, and the grill's `## Assumptions`: decisions the grill did not settle with the user, each with the answer taken. During implementation, `- Decided:` lines go to a `## Assumptions` section below `# Appendix` (Step 3).
 
 # Appendix
 
@@ -177,6 +177,20 @@ A question not tied to a criterion is a line `- asked: <question>`, removed once
 
 The tests are written, committed and locked before any implementation file: the tests half, then the implementation half, each on the path chosen above.
 
+### Stop or proceed
+
+A question that comes up from here on stops the session with an `asked` line only when it is one of these:
+
+- about security;
+- one whose answer a later commit on the branch cannot undo — anything that leaves the worktree, such as a push, a public comment or a deletion outside it;
+- one with no recommended answer;
+- one that changes or defers an acceptance criterion, a recommendation to add scope among them (Step 7b);
+- a stop this skill names itself: an unsupported or failed red-proof run and accepting a `GREEN` file (Step 5), a rejected relock, Step 8's security entries, an agent-memory conflict or symlink (Step 8), a plan change (Step 7b), `10x-review-packet --fixes` exit 2, an `## Out of diff` array that does not parse or is refused.
+
+Every other question proceeds on its recommended answer, in an interactive session and a batch worker alike: take the recommendation, append one line `- Decided: <question> — <answer taken>; alternative: <each option not taken>` to the `## Assumptions` section of `plan.md` (add the section below `# Appendix`, before `## Out of scope`, or at the end when the plan has none), run `10x-plan-check <id>` and reword the line if it is at fault, write no `asked` line, and go on. On the small path, which has no `plan.md`, append the same line to `.10x/<id>/decisions.md` instead, with no `10x-plan-check`. The user reads these lines in the report (Step 8) and on the batch board before the ticket is closed.
+
+A criterion is never deferred on your own recommendation: `deferred` carries the user's own words, always.
+
 ### Tests half
 
 Skipped when `tdd` is `false` in the main checkout's `.claude/10x.json`, or when every `## Tests` row has `—` as test file: go to the implementation half. Otherwise:
@@ -271,12 +285,12 @@ Write the findings, and the packet's plan checks, to `.10x/<id>/review.md` as a 
 | Severity | Default |
 |---|---|
 | `blocker`, `major`, a plan check, any confirmed security finding in the diff | fix, always |
-| `minor` | fix if it is a real bug or something the change causes; if it is only taste, answer it in `review.md` as a finding believed wrong; otherwise ask the user |
+| `minor` | fix if it is a real bug or something the change causes; if it is only taste, answer it in `review.md` as a finding believed wrong; otherwise it is a question under Step 3's stop-or-proceed rule |
 | `nit` | fix if it is a one-liner in code you already touched; otherwise it may be skipped without asking |
 
 - A finding you believe is wrong is not "fixed" to make it go away: say why in `review.md` and leave the code.
 - A problem the change causes or leaves inconsistent is fixed in this ticket, even in a file `## Files` does not list: add the file to `## Files` (no new approval; the report lists the additions).
-- Anything else — a `minor` arguing for work the change did not cause, scope beyond the ticket — is asked to the user before the report, as an `asked` line. Record the answer in the current round of `review.md` under `### Decisions`, in the user's words.
+- Anything else — a `minor` arguing for work the change did not cause, scope beyond the ticket — is a question under Step 3's stop-or-proceed rule, settled before the report. A finding settled on the recommendation is recorded under `### Fixes applied` as not changed, naming its `Decided:` line, and counts as answered in the report. An answer the user gave is recorded in the current round of `review.md` under `### Decisions`, in the user's words.
 - Small fixes in files you can name: do them yourself. Larger: one engineer agent, handed the findings verbatim and the files.
 
 Fixes are further commits on the branch. Then `10x-red-proof <id>` again if tests changed. Add `### Fixes applied` to the current round of `review.md` (per finding: what changed or why not, and the commit), never overwrite its findings.
@@ -345,6 +359,7 @@ The report has this shape, in this order, with at most three lines of prose arou
 - `Files added:` then the files added to `## Files` in Step 7 — only when there are any;
 - `Deferred:` then one line per criterion marked `deferred`, with the user's words — only when there are any;
 - `Hand checks pending:` then one line per criterion whose last state is `hand-check:`, `AC<n> — <text>` — only when there are any;
+- `Decisions taken:` then each `Decided:` bullet of `plan.md`'s `## Assumptions` (on the small path, of `.10x/<id>/decisions.md`), the whole line verbatim, in file order — only when there are any;
 - the next step, `/10x:close <id>`.
 
 Nothing else stays open: every criterion in `evidence.md` is `met`, `deferred` or a declared `hand-check` before the report. Then stop. The next step is `/10x:close <id>`.
