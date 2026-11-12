@@ -291,6 +291,24 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
+// gh-35 AC8 — the hand-check state, the board section, `10x-batch checked` and the agent-run hand check.
+{
+  const name = "docs name the hand-check state, 10x-batch checked and the agent-run hand check"
+  const missing = []
+  const need = (f, words) => {
+    const text = read(f)
+    for (const w of words) if (text === null || !text.includes(w)) missing.push(`${f}: ${w}`)
+  }
+  need("docs/loop.md", ["hand-check:", "## Hand checks pending", "10x-batch checked", "### Hand checks", "deep link", "screenshot"])
+  need("docs/scripts.md", ["## Hand checks pending", "10x-batch checked"])
+  need("docs/hooks.md", ["hand-check", "10x-batch checked"])
+  need("CHANGELOG.md", ["10x-batch checked"])
+  const log = read("CHANGELOG.md")
+  const first = ((log || "").split("\n").find((s) => /^##\s/.test(s)) || "").trim()
+  if (first !== "## Unreleased") missing.push(`CHANGELOG.md: newest section is "${first}", not "## Unreleased"`)
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 // AC4 — heading parity and cross-links.
 {
   const name = "README.zh-TW.md has the same ## and ### headings, level by level, as README.md"

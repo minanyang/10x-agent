@@ -652,9 +652,9 @@ need "a rerun is never checked again" test "$(wc -l <"$WORKER_LOG.perm" | tr -d 
 end
 
 reset; ticket t1 t2
-begin "run: every worker is denied the commands that always ask"
+begin "run: every worker is denied the commands that always ask" # gh-35: 10x-batch checked is among them
 want=""
-for c in "10x-land issue" "10x-land comment" "10x-land advisory" "10x-batch approve" "10x-batch init" "10x-batch accept-green" \
+for c in "10x-land issue" "10x-land comment" "10x-land advisory" "10x-batch approve" "10x-batch init" "10x-batch accept-green" "10x-batch checked" \
   "10x-security set" "10x-security remove" "10x-security ticket"; do
   want+="${want:+|}Bash($c:*)|Bash($c *)"
 done
@@ -1479,6 +1479,149 @@ need "with why" grep -qxF -- "- t1 — held: shares b with t2 (implemented), whi
 need "t2 closes; t1 does not implement" acts_are "close t2"
 row t2 close close 0; rmdir .worktrees/t2
 need "t1 implements once t2 landed" acts_are "implement t1"
+end
+
+# ---------------------------------------------------------------- hand checks
+
+HT='open the app and see the badge'
+# hand_md <id> <status> [<AC2's test file cell> <AC2's case cell>] — a plan whose AC2 is a hand check unless the cells say otherwise.
+hand_md() {
+  local id=$1 st=$2 file=${3:-—} kase=${4:-'`hand check: open the app and see the badge`'}
+  mkdir -p ".10x/$id"
+  printf '# %s\n\nStatus: %s\n\n## Acceptance criteria\n- AC1 — the change works\n- AC2 — the badge shows\n\n## Approach\nOne change.\n\n## Files\n- `f-%s` — changed\n\n## Readers\n- `thing` — `grep -rn thing`\n  - no hits\n\n## Overlap\n- none\n\n## Tests\n| AC | Test file | Case |\n|---|---|---|\n| AC1 | `tests/x.sh` | `works` |\n| AC2 | %s | %s |\n' "$id" "$st" "$id" "$file" "$kase" >".10x/$id/plan.md"
+}
+# hand_approved <id> [<AC2's test file cell> <AC2's case cell>] — the plan run, approved by the user, then marked approved.
+hand_approved() {
+  local id=$1; shift
+  row "$id" plan plan 0; hand_md "$id" draft "$@"; 10x-batch approve "$id" >/dev/null; rm -f "$B/$id/reply.md"
+  hand_md "$id" approved "$@"
+}
+# hand_implemented <id> [<AC2's test file cell> <AC2's case cell>] — implemented, AC2 recorded as a hand check.
+hand_implemented() {
+  hand_approved "$@"; row "$1" implement implement 0
+  evidence "$1" "- AC1 — met: \`bash tests/x.sh\`" "- AC2 — hand-check: $HT"; mkdir -p ".worktrees/$1"
+}
+hand_landed() { hand_implemented "$@"; row "$1" close close 0; rmdir ".worktrees/$1"; } # <id>
+
+reset; ticket t1
+begin "hand check: a declared hand-check criterion implements and lands"
+vb init t1
+hand_implemented t1
+need "implemented after its implement run" phase_is t1 implemented
+need "the next action is its close" acts_are "close t1"
+row t1 close close 0; rmdir .worktrees/t1
+need "landed after its close" phase_is t1 landed
+need "never failed" not grep -q '^| 1 | t1 | failed' "$B/board.md"
+end
+
+reset; ticket t1
+begin "hand check: an undeclared hand-check criterion is an open criterion"
+vb init t1
+hand_implemented t1 '`tests/y.sh`' '`two`'
+need "failed" phase_is t1 failed
+need "naming the criterion and its state" grep -qF "| t1 | failed | s-t1-2 | failed | open criterion: AC2 — hand-check: $HT |" "$B/board.md"
+need "under Needs the human" grep -qxF -- "- t1 — failed: open criterion: AC2 — hand-check: $HT" "$B/board.md"
+end
+
+reset; ticket t1 t2 t3
+roadmap '| v1 | a `t1`; b `gh-6` | base | Planned |' '| v2 | c `t2` | after | Planned |'
+begin "status: lists pending hand checks per version"
+vb init t1 t2 t3
+printf 'v1\nv2\n' >"$SB/versions"
+hand_landed t1; hand_landed t2; hand_landed t3
+hand_md gh-6 approved; evidence gh-6 "- AC1 — met: x" "- AC2 — hand-check: $HT"
+printf 'gh-6\n' >"$SB/versions.closed"
+need "status exits 0" exits 0 status
+need "the section" line "## Hand checks pending"
+need "t1 under v1" line "- v1 — t1 AC2: $HT"
+need "a closed id of v1" line "- v1 — gh-6 AC2: $HT"
+need "t2 under v2" line "- v2 — t2 AC2: $HT"
+need "a ticket in no version" line "- (no version) — t3 AC2: $HT"
+need "in version order, each row's ids in row order, then the rest" test "$(grep -- '^- .* AC2: ' "$tmp/out" | sed -E 's/^- (.*) AC2: .*/\1/' | tr '\n' ',')" = "v1 — t1,v1 — gh-6,v2 — t2,(no version) — t3,"
+need "after Needs the human" test "$(grep -nx '## Needs the human' "$tmp/out" | cut -d: -f1)" -lt "$(grep -nx '## Hand checks pending' "$tmp/out" | cut -d: -f1)"
+need "the board holds it too" grep -qxF -- "- v1 — t1 AC2: $HT" "$B/board.md"
+evidence t1 "- AC1 — met: x" "- AC2 — met: hand check by the user on 2026-01-01: saw it"
+need "a cleared one is gone" eval 'vb status && not has "- v1 — t1 AC2"'
+for id in t2 t3; do evidence "$id" "- AC1 — met: x" "- AC2 — met: seen"; done
+evidence gh-6 "- AC1 — met: x" "- AC2 — met: seen"
+need "no section when nothing is pending" eval 'vb status && not has "## Hand checks pending"'
+end
+
+reset; ticket t1 t2
+begin "status: a ticket not yet landed lists no hand check"
+vb init t1 t2
+hand_implemented t1
+need "implemented, not landed: not listed" eval 'vb status && not has "## Hand checks pending"'
+end
+
+reset; ticket t1
+roadmap '| v1 | a `t1` | base | Planned |'
+begin "status: a version with a pending hand check is not Done until it is cleared"
+vb init v1
+hand_landed t1
+today="$(date +%Y-%m-%d)"
+need "status exits 0" exits 0 status
+need "no roadmap line" not has "roadmap: "
+need "v1 keeps its State" grep -qxF '| v1 | a `t1` | base | Planned |' .10x/roadmap.md
+need "the check is listed" line "- v1 — t1 AC2: $HT"
+need "checked exits 0" exits 0 checked t1 AC2 "saw the badge"
+need "the next status marks it Done" eval 'vb status && line "roadmap: v1 Done $today"'
+need "v1 reads Done <date>" grep -qxF "| v1 | a \`t1\` | base | Done $today |" .10x/roadmap.md
+end
+
+reset; ticket t1
+begin "checked: records the user's words as met"
+vb init t1
+hand_landed t1
+hand_md t9 approved
+evidence t9 "- AC1 — met: x"
+printf '%s' '- AC2 — hand-check: tail without a newline' >>.10x/t9/evidence.md
+today="$(date +%Y-%m-%d)"
+need "exit 0" exits 0 checked t1 AC2 "saw the badge
+on two lines"
+need "prints checked:" line "checked: t1 AC2"
+need "the line, newlines flattened" test "$(tail -n 1 .10x/t1/evidence.md)" = "- AC2 — met: hand check by the user on $today: saw the badge on two lines"
+need "the old lines stay" test "$(grep -c 'hand-check:' .10x/t1/evidence.md)" = 1
+need "it settles the criterion" eval 'vb status && not has "- v1 — t1 AC2" && not has "(no version) — t1 AC2"'
+need "a ticket outside the batch, AC02 read as AC2: exit 0" exits 0 checked t9 AC02 "fine"
+need "prints the normalised id" line "checked: t9 AC2"
+need "a missing final newline is added" test "$(tail -n 2 .10x/t9/evidence.md)" = "- AC2 — hand-check: tail without a newline
+- AC2 — met: hand check by the user on $today: fine"
+end
+
+reset; ticket t1
+begin "checked: refuses what is not a pending hand check"
+vb init t1
+mkdir -p .10x/t1 .10x/t2 .10x/t3 .10x/t6 .10x/t7
+hand_md t1 approved; evidence t1 "- AC1 — met: x" "- AC2 — hand-check: $HT"
+hand_md t2 approved; evidence t2 "- AC1 — met: x" "- AC2 — hand-check: $HT" "- AC2 — met: seen"
+hand_md t3 approved '`tests/y.sh`' '`two`'; evidence t3 "- AC1 — met: x" "- AC2 — hand-check: $HT"
+hand_md t6 approved
+hand_md t7 approved; evidence t7 "- AC1 — met: x" "- AC2 — hand-check: $HT"
+mv .10x/t7 "$tmp/real7"; ln -s "$tmp/real7" .10x/t7
+evidence_t6="$tmp/ev6"; evidence t6 "- AC1 — met: x" "- AC2 — hand-check: $HT"
+mv .10x/t6/evidence.md "$evidence_t6"; ln -s "$evidence_t6" .10x/t6/evidence.md
+cp "$evidence_t6" "$tmp/ev6.before"
+before="$(snap)"
+need "empty words: exit 2" exits 2 checked t1 AC2 ""
+need "empty words: the refusal line" has "checked t1 refused: "
+need "blank words: exit 2" exits 2 checked t1 AC2 "  "
+need "the criterion's last state is met: exit 2" exits 2 checked t2 AC2 "again"
+need "the plan does not declare it: exit 2" exits 2 checked t3 AC2 "x"
+need "a criterion with no evidence line: exit 2" exits 2 checked t1 AC1 "x"
+need "no .10x/<id>: exit 2" exits 2 checked t4 AC2 "x"
+need "no evidence.md: exit 2" eval 'mkdir -p .10x/t5 && hand_md t5 approved && exits 2 checked t5 AC2 "x"'
+need "a symlinked evidence.md: exit 2" exits 2 checked t6 AC2 "x"
+need "its target is untouched" cmp -s "$evidence_t6" "$tmp/ev6.before"
+need "a symlinked .10x/<id>: exit 2" exits 2 checked t7 AC2 "x"
+need "its target is untouched" test "$(tail -n 1 "$tmp/real7/evidence.md")" = "- AC2 — hand-check: $HT"
+need "not an AC id: exit 2" exits 2 checked t1 2 "x"
+need "too few arguments: exit 2" exits 2 checked t1 AC2
+need "nothing was written" test "$(snap)" = "$before"
+TENX_BATCH=1 vb checked t1 AC2 "x"
+need "inside a batch worker: exit 2" test $? -eq 2
+need "inside a batch worker: the refusal line" line "10x-batch: refused inside a batch worker"
+need "still nothing written" test "$(snap)" = "$before"
 end
 
 # ---------------------------------------------------------------- failed and held

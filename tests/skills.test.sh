@@ -26,7 +26,7 @@ const userOwn = {
   close: [],
   work: ["git -C X add ", "git -C X commit ", "10x-land comment ", "10x-security set ", "10x-security remove "],
   open: ["10x-land issue "],
-  batch: ["10x-land comment ", "10x-batch approve ", "10x-batch accept-green "],
+  batch: ["10x-land comment ", "10x-batch approve ", "10x-batch accept-green ", "10x-batch checked "],
   roadmap: ["10x-land issue ", "10x-land advisory "],
   audit: ["10x-security set ", "10x-security ticket "],
 }
@@ -49,7 +49,7 @@ const forbidden = ["git push", "git rebase", "git merge", "git log", "gh pr merg
 const bareGrants = ["10x-worktree *", "10x-land *", "git *"]
 // Commands that must always ask: the public writes, and a batch's plan approval, which text a worker wrote must
 // never be able to give.
-const publicWrites = ["10x-land issue", "10x-land comment", "10x-batch approve", "10x-batch accept-green", "10x-land advisory"]
+const publicWrites = ["10x-land issue", "10x-land comment", "10x-batch approve", "10x-batch accept-green", "10x-batch checked", "10x-land advisory"]
 
 const norm = (s) => s.replace(/<[^>]*>/g, "X")
 
@@ -559,6 +559,31 @@ for (const skill of ["open", "work", "close", "batch", "roadmap", "audit"])
   const t = fs.existsSync(`${dir}/batch/SKILL.md`) ? fs.readFileSync(`${dir}/batch/SKILL.md`, "utf8") : ""
   const fm = /^---\n([\s\S]*?)\n---/.exec(t)
   fm && !fm[1].includes("accept-green") && t.slice(fm[0].length).includes("10x-batch accept-green") ? ok(name) : bad(name)
+}
+{
+  const name = "batch: 10x-batch checked is named in the prose and not granted in allowed-tools"
+  const t = fs.existsSync(`${dir}/batch/SKILL.md`) ? fs.readFileSync(`${dir}/batch/SKILL.md`, "utf8") : ""
+  const fm = /^---\n([\s\S]*?)\n---/.exec(t)
+  fm && !fm[1].includes("10x-batch checked") && t.slice(fm[0].length).includes("`10x-batch checked ") ? ok(name) : bad(name)
+}
+
+// gh-35 AC7 — the skills say how hand checks work; only batch names the command that records one.
+{
+  const name = "skills: work, close, batch and roadmap describe hand checks"
+  const read = (s) => (fs.existsSync(`${dir}/${s}/SKILL.md`) ? fs.readFileSync(`${dir}/${s}/SKILL.md`, "utf8") : "")
+  const work = read("work"), close = read("close"), batch = read("batch"), roadmap = read("roadmap")
+  const step8 = work.slice(work.search(/^## Step 8\b/m), work.search(/^## Replies$/m))
+  const missing = [
+    [work.includes("hand check:"), "work: `hand check:`"],
+    [work.includes("hand-check:"), "work: `hand-check:`"],
+    [step8.includes("Deferred:") && step8.indexOf("Deferred:") < step8.indexOf("Hand checks pending:"), "work: Step 8 reports `Hand checks pending:` after `Deferred:`"],
+    [close.includes("(hand check pending)"), "close: `(hand check pending)`"],
+    [batch.includes("## Hand checks pending"), "batch: `## Hand checks pending`"],
+    [batch.includes("10x-batch checked"), "batch: `10x-batch checked`"],
+    [roadmap.includes("hand check"), "roadmap: `hand check`"],
+    [!work.includes("10x-batch checked") && !close.includes("10x-batch checked") && !roadmap.includes("10x-batch checked"), "work, close and roadmap do not name `10x-batch checked`"],
+  ].filter(([c]) => !c).map(([, w]) => w)
+  missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
 }
 process.exit(fail)
 JS

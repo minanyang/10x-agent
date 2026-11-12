@@ -99,6 +99,25 @@ evidence "- AC1 — met: x" "- AC2 — met: y" "- asked: Keep the old name?"
 check "passes on a free asked line quoted in the last message" pass "$(stop s1 "Keep the old name?")"
 check "blocks on a free asked line not in the last message" block "$(stop s1 "Done.")" 'asked \"Keep the old name?\"'
 
+# shellcheck disable=SC2016  # backticks are the Markdown under test
+plan_tests() { # <AC2's test file cell> <AC2's case cell> — t1's plan with a ## Tests table
+  plan t1 approved
+  printf '\n## Tests\n| AC | Test file | Case |\n|---|---|---|\n| AC1 | `tests/x.sh` | `one` |\n| AC2 | %s | %s |\n' "$1" "$2" >>"$repo/.10x/t1/plan.md"
+}
+# shellcheck disable=SC2016
+plan_tests '—' '`hand check: open the page and see the badge`'
+evidence "- AC1 — met: x" "- AC2 — hand-check: open the page and see the badge"
+check "passes on a hand-check criterion the plan declares" pass "$(stop s1 "Done.")"
+evidence "- AC1 — met: x" "- AC2 — hand-check:"
+check "blocks on an empty hand-check line" block "$(stop s1 "Done.")" "AC2:" "hand-check: <what to check>"
+# shellcheck disable=SC2016
+plan_tests '`tests/y.sh`' '`two`'
+evidence "- AC1 — met: x" "- AC2 — hand-check: open the page and see the badge"
+check "blocks on a hand-check criterion the plan does not declare" block "$(stop s1 "Done.")" "AC2: hand-check, but its \`## Tests\` row is not a hand check" "| AC2 | — | hand check: … |"
+plan t1 approved
+evidence "- AC1 — met: x" "- AC2 — hand-check: open the page"
+check "blocks on hand-check when the plan has no ## Tests" block "$(stop s1 "Done.")" "AC2: hand-check, but its"
+
 evidence "- AC1 — met: x" "- AC2 — pending"
 check "passes when stop_hook_active" pass "$(stop s1 "Done." stop_hook_active true)"
 check "passes while background tasks run" pass "$(stop s1 "Done." background_tasks '[{"id":"b1","type":"shell","status":"running"}]')"
