@@ -698,7 +698,8 @@ for (const skill of ["open", "work", "close", "batch", "roadmap", "audit"])
 {
   const work = fs.existsSync(`${dir}/work/SKILL.md`) ? fs.readFileSync(`${dir}/work/SKILL.md`, "utf8") : ""
   const at = work.search(/^### Stop or proceed$/m)
-  const rule = at < 0 ? "" : work.slice(at, at + 1 + work.slice(at + 1).search(/^##+ /m)).replace(/\s+/g, " ")
+  const end = at < 0 ? -1 : work.slice(at + 1).search(/\n##+ /)
+  const rule = at < 0 ? "" : work.slice(at, end < 0 ? undefined : at + 1 + end).replace(/\s+/g, " ")
   const step8 = work.slice(work.search(/^## Step 8\b/m), work.search(/^## Replies$/m)).replace(/\s+/g, " ")
   const report = (n, checks) => {
     const missing = checks.filter(([c]) => !c).map(([, w]) => w)
