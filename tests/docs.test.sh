@@ -106,6 +106,37 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
+// gh-44 AC7 — both READMEs list /10x:feedback: the last line of the commands fence, `→` aligned with the roadmap line,
+// and the Skills table row right after the /10x:roadmap row.
+{
+  const name = "README.md and README.zh-TW.md list /10x:feedback"
+  const missing = []
+  for (const [f, text] of [["README.md", readme], ["README.zh-TW.md", zh]]) {
+    if (text === null) { missing.push(`${f}: missing`); continue }
+    const lines = text.split("\n"), fenced = unfenced(text)
+    const k = lines.findIndex((s, i) => fenced[i] === null && s.startsWith("/10x:feedback "))
+    const r = lines.findIndex((s, i) => fenced[i] === null && s.startsWith("/10x:roadmap "))
+    if (k < 0) missing.push(`${f}: a commands-fence line for /10x:feedback`)
+    else {
+      if (!/^\s*`{3,}\s*$/.test(lines[k + 1] || "")) missing.push(`${f}: the /10x:feedback line is not last in the commands fence`)
+      if (r < 0 || lines[k].indexOf("→") !== lines[r].indexOf("→")) missing.push(`${f}: the → of the /10x:feedback line is not aligned with /10x:roadmap's`)
+    }
+    const row = lines.findIndex((s) => s.startsWith("| `/10x:roadmap` |"))
+    if (!(row >= 0 && (lines[row + 1] || "").startsWith("| `/10x:feedback` |"))) missing.push(`${f}: a Skills table row for /10x:feedback right after the /10x:roadmap row`)
+  }
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
+// gh-44 AC6 — SECURITY.md gives the private vulnerability reporting URL and says no public issue is opened.
+{
+  const name = "SECURITY.md names the private vulnerability reporting URL"
+  const text = read("SECURITY.md")
+  text === null ? bad(name, "SECURITY.md is missing")
+    : !text.includes("https://github.com/minanyang/10x-agent/security/advisories/new") ? bad(name, "SECURITY.md lacks the URL")
+      : !/public issue/i.test(text) ? bad(name, "SECURITY.md does not say that no public issue is opened")
+        : ok(name)
+}
+
 // gh-87 AC10 — the tests half, the lock, the relock arbiter and `tdd: false`.
 {
   const name = "docs describe the tests half, the lock, the relock arbiter and tdd: false"
