@@ -35,7 +35,7 @@ line() {
   node -e '
     const fs = require("fs")
     const [file, id, kind, text] = process.argv.slice(1)
-    const typed = /^\s*\/10x:(open|work|close|batch|roadmap|audit)(?=\s|$)\s*([\s\S]*)$/.exec(text)
+    const typed = /^\s*\/10x:(open|work|close|batch|roadmap|audit|feedback)(?=\s|$)\s*([\s\S]*)$/.exec(text)
     let l
     const expanded = typed
       ? `<command-message>10x:${typed[1]}</command-message>\n<command-name>/10x:${typed[1]}</command-name>\n<command-args>${typed[2]}</command-args>`
@@ -311,6 +311,32 @@ check "$T: ticket asks with two spaces" nothing "$(bash_ s45 "10x-security  tick
 check "$T: set asks" nothing "$(bash_ s45 "10x-security set abc sha256:0 later")"
 check "$T: remove asks" nothing "$(bash_ s45 "10x-security remove abc sha256:0")"
 [ ! -f "$ROOT/skills/audit/SKILL.md" ] || cp "$ROOT/skills/audit/SKILL.md" "$plugin/skills/audit/SKILL.md"
+
+T="feedback: check is granted for the session, issue and comment always ask"
+check "$T: nothing before" nothing "$(bash_ s60 "10x-feedback check my-report")"
+prompt s60 "/10x:feedback the worker stops on a stale lock" >/dev/null
+check "$T: init" allow "$(bash_ s60 "10x-feedback init")" "granted by /10x:feedback"
+check "$T: check" allow "$(bash_ s60 "10x-feedback check my-report")" "granted by /10x:feedback"
+check "$T: check of another slug" allow "$(bash_ s60 "10x-feedback check other-report")" "granted by /10x:feedback"
+check "$T: the duplicate search" allow "$(bash_ s60 'gh issue list --repo minanyang/10x-agent --state all --search "lock" --limit 10')" "granted by /10x:feedback"
+check "$T: issue asks" nothing "$(bash_ s60 "10x-feedback issue my-report")"
+check "$T: comment asks" nothing "$(bash_ s60 "10x-feedback comment my-report")"
+check "$T: not another skill's grant" nothing "$(bash_ s60 "10x-land merge gh-5")"
+prompt s61 "/10x:feedback gh-5" >/dev/null
+check "$T: a word typed with it binds nothing" allow "$(bash_ s61 "10x-feedback check my-report")" "granted by /10x:feedback"
+# A copy of feedback's SKILL.md given a broad grant: the refusals below are the hook's ALWAYS_ASK and not a missing grant,
+# whatever feedback's own allowed-tools say.
+[ ! -f "$plugin/skills/feedback/SKILL.md" ] ||
+  node -e '
+    const fs = require("fs"), f = process.argv[1]
+    fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace("allowed-tools:\n", "allowed-tools:\n  - Bash(10x-feedback *)\n"))
+  ' "$plugin/skills/feedback/SKILL.md"
+prompt s62 "/10x:feedback" >/dev/null
+check "$T: with a broad grant, check is allowed" allow "$(bash_ s62 "10x-feedback check my-report")" "granted by /10x:feedback"
+check "$T: with a broad grant, issue asks" nothing "$(bash_ s62 "10x-feedback issue my-report")"
+check "$T: with a broad grant, comment asks" nothing "$(bash_ s62 "10x-feedback comment my-report")"
+check "$T: with two spaces" nothing "$(bash_ s62 "10x-feedback  issue my-report")"
+[ ! -f "$ROOT/skills/feedback/SKILL.md" ] || cp "$ROOT/skills/feedback/SKILL.md" "$plugin/skills/feedback/SKILL.md"
 
 T="does not allow a skill named by a scheduled prompt"
 scheduled s20 "/10x:close gh-5"

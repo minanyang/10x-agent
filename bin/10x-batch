@@ -56,7 +56,7 @@
 // no 10x:work among its slash_commands is stopped, writes <nn>-plugin, is never rerun, and its ticket fails with
 // `10x plugin missing`. Every run gets
 // --disallowedTools for the commands hooks/grant.js always asks for (10x-land issue/comment/advisory, 10x-batch
-// approve/init/accept-green/checked, 10x-security set/remove/ticket), Edit of S and of the settings files (the main
+// approve/init/accept-green/checked, 10x-security set/remove/ticket, 10x-feedback issue/comment), Edit of S and of the settings files (the main
 // checkout's .claude/, ~/.claude/ and, when set, $CLAUDE_CONFIG_DIR's settings.json and settings.local.json, each also
 // as a real path and its symlink target), and Edit of what
 // a process outside the sandbox runs (writeDeny(): the git common dir, every <worktree dir>/*/.git, the main checkout's
@@ -1219,6 +1219,8 @@ async function run(argv, replan = false) {
     '10x-security set',
     '10x-security remove',
     '10x-security ticket',
+    '10x-feedback issue',
+    '10x-feedback comment',
   ]
     .flatMap((c) => [`Bash(${c}:*)`, `Bash(${c} *)`])
     // The sandbox wraps only Bash: Write and Edit would otherwise reach the records, settings that widen the sandbox,

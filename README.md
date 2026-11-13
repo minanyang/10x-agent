@@ -38,6 +38,7 @@ Left to itself, a coding agent:
 /10x:roadmap [reqs]  →  order requirements into versions; /10x:batch <version> runs one
 /10x:audit           →  run the installed security-audit skill on a scope; merge its findings into .10x/security.md and settle each one
 /10x:batch <tickets> →  work and close many tickets from one terminal, each in a background worker
+/10x:feedback <what> →  draft a bug report or feature request for 10x Agent ─(you approve)→ issue on minanyang/10x-agent
 ```
 
 **`/10x:open <idea>`** turns an idea, a bug or an improvement into a GitHub issue in the repo's own issue forms, labels and types — or, with `tickets: files`, into a ticket file under `.10x/` that stays on your machine. It asks the product questions the idea leaves open, shows the draft, and creates the ticket only on approval.
@@ -105,6 +106,7 @@ Invoke as `10x:<name>` (the Agent tool needs the prefix).
 | `/10x:close` | Rebase, verify, land and clean up |
 | `/10x:audit` | Run the installed Cloudflare `security-audit` skill on a scope (a diff, paths or the whole repo) and merge its findings into `.10x/security.md`, so a re-run never triages the same issue twice; then settle each new or deferred entry with you and open a local ticket for each `fix-now` |
 | `/10x:roadmap` | Order requirements into versions in `.10x/roadmap.md`, each with the reason for its place, once you approve; turn a version into one ticket per item, which `/10x:batch <version>` works and marks `Done`. Offers deferred `confirmed` entries of `.10x/security.md` as requirements; `10x-security route` picks how each security ticket is opened: a local ticket with `tickets: files`, an issue for a private repo or an unreleased or minor entry, and for a released `medium`-or-worse entry in a public repo a draft security advisory plus a local ticket, never a public issue. `show` ends by suggesting a pre-release `/10x:audit <tag>..HEAD` |
+| `/10x:feedback` | From any project, draft a bug report or feature request for `minanyang/10x-agent` in its issue forms, with a generated environment and without the project's name or paths; file it, or a comment on a matching issue, on approval. A vulnerability goes to private reporting, never a public issue |
 | `/10x:batch` | Work and close many tickets from one terminal, each in a background worker |
 | `/10x:commit` | Commit what this session changed — only those paths, in the repo's own message style. Commits straight away; stops to ask only on a likely secret, unclear scope or unrelated changes. Say "message only" for a draft |
 | `/10x:code-review` | Review pending (uncommitted) changes |

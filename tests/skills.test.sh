@@ -29,6 +29,7 @@ const userOwn = {
   batch: ["10x-land comment ", "10x-batch approve ", "10x-batch accept-green ", "10x-batch checked "],
   roadmap: ["10x-land issue ", "10x-land advisory "],
   audit: ["10x-security set ", "10x-security ticket "],
+  feedback: ["10x-feedback issue ", "10x-feedback comment "],
 }
 const ownedBy = (skill, line) => userOwn[skill].some((p) => line === p.trimEnd() || line.startsWith(p))
 // Exact prose commands Claude Code runs without a grant (checked with `claude -p` in default mode). Granting
@@ -43,13 +44,14 @@ const notRun = {
   batch: [],
   roadmap: ["gh auth login"],
   audit: [],
+  feedback: ["gh auth login"],
 }
 const forbidden = ["git push", "git rebase", "git merge", "git log", "gh pr merge", "glab mr merge", "gh api",
   "gh issue create", "gh pr create", "gh pr edit", "glab mr create", "glab mr update"]
 const bareGrants = ["10x-worktree *", "10x-land *", "git *"]
 // Commands that must always ask: the public writes, and a batch's plan approval, which text a worker wrote must
 // never be able to give.
-const publicWrites = ["10x-land issue", "10x-land comment", "10x-batch approve", "10x-batch accept-green", "10x-batch checked", "10x-land advisory"]
+const publicWrites = ["10x-land issue", "10x-land comment", "10x-batch approve", "10x-batch accept-green", "10x-batch checked", "10x-land advisory", "10x-feedback issue", "10x-feedback comment"]
 
 const norm = (s) => s.replace(/<[^>]*>/g, "X")
 
@@ -182,7 +184,7 @@ for (const skill of ["open", "work", "roadmap"]) {
 
 const rule = "Never reply that something is unverified, unchecked or not yet confirmed: check it first. " +
   "Only when a check is impossible, say so, naming what was tried and why it cannot be checked."
-for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/SKILL.md", "skills/batch/SKILL.md", "skills/roadmap/SKILL.md", "skills/audit/SKILL.md", "skills/code-review/SKILL.md",
+for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/SKILL.md", "skills/batch/SKILL.md", "skills/roadmap/SKILL.md", "skills/audit/SKILL.md", "skills/feedback/SKILL.md", "skills/code-review/SKILL.md",
   "skills/code-review-branch/SKILL.md", "agents/code-reviewer.md", "agents/security-reviewer.md"]) {
   const file = `${dir}/../${f}`
   fs.existsSync(file) && fs.readFileSync(file, "utf8").includes(rule)
@@ -613,7 +615,7 @@ for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/S
     : owner.length ? bad(`${name} (the check is not in bin/10x-batch: lacks ${owner.join(", ")})`) : ok(name)
 }
 
-for (const skill of ["open", "work", "close", "batch", "roadmap", "audit"])
+for (const skill of ["open", "work", "close", "batch", "roadmap", "audit", "feedback"])
   fs.existsSync(`${dir}/${skill}/SKILL.md`) && /^## Replies$/m.test(fs.readFileSync(`${dir}/${skill}/SKILL.md`, "utf8"))
     ? ok(`${skill}: has a ## Replies section`) : bad(`${skill}: lacks a ## Replies section`)
 {
@@ -754,6 +756,60 @@ for (const skill of ["open", "work", "close", "batch", "roadmap", "audit"])
     [rule.includes("never deferred on your own recommendation"), `the rule says "never deferred on your own recommendation"`],
     [step8.includes("with the user's words"), `Step 8 keeps "with the user's words"`],
   ])
+}
+
+// gh-44 — /10x:feedback: init first, a granted check and an ungranted issue and comment, a duplicate search before the
+// draft, a draft checked before it is shown, and a vulnerability that files nothing public.
+{
+  const file = `${dir}/feedback/SKILL.md`
+  const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : ""
+  const front = (/^---\n([\s\S]*?)\n---/.exec(text) || ["", ""])[1].split("\n")
+  const flat = (s) => s.replace(/\s+/g, " ")
+  const step = (n) => flat((new RegExp(`^## Step ${n}\\b[\\s\\S]*?(?=^## (?:Step |Replies|Never)|(?![\\s\\S]))`, "m").exec(text) || [""])[0])
+  const never = flat((/^## Never$[\s\S]*/m.exec(text) || [""])[0])
+  const missing = (pairs) => pairs.filter(([c]) => !c).map(([, w]) => w)
+  const verdict = (name, miss) => !text ? bad(`${name} (skills/feedback/SKILL.md is missing)`)
+    : miss.length ? bad(`${name} (missing: ${miss.join("; ")})`) : ok(name)
+  const granted = front.filter((l) => /^ {2}- /.test(l))
+  const s1 = text.search(/^## Step 1\b/m)
+  const pre = s1 === -1 ? "" : text.slice(0, s1)
+  const firstBlock = (/```bash\n([\s\S]*?)```/.exec(pre) || ["", ""])[1].split("\n").map((l) => l.trim()).filter(Boolean)
+
+  verdict("feedback: runs 10x-feedback init first and never grants issue or comment", missing([
+    [front.includes("disable-model-invocation: true"), "disable-model-invocation: true"],
+    [["  - Bash(10x-feedback init)", "  - Bash(10x-feedback check *)", "  - Bash(gh issue list --repo minanyang/10x-agent *)", "  - Bash(gh issue view *)"].every((g) => granted.includes(g)) && granted.length === 4,
+      "exactly the four granted commands"],
+    [!granted.some((l) => /10x-feedback (issue|comment|\*)/.test(l)) && !front.includes("  - Bash"), "no grant for issue or comment"],
+    [firstBlock[0] === "10x-feedback init", "10x-feedback init as the first command, before Step 1"],
+    [s1 !== -1 && /non-zero exit/.test(flat(pre)), "a non-zero exit of init stops the skill"],
+    [step(4).includes("`10x-feedback issue <slug>`") && step(4).includes("`10x-feedback comment <slug>`") && /always ask/.test(step(4)), "Step 4 runs issue and comment, which always ask"],
+  ]))
+
+  const s3 = step(3)
+  verdict("feedback: checks the draft before showing it", missing([
+    [s3.includes("`10x-feedback check <slug>`"), "Step 3 runs 10x-feedback check <slug>"],
+    [/show the draft once/i.test(s3) && s3.indexOf("`10x-feedback check <slug>`") < s3.search(/show the draft once/i), "check runs before the draft is shown once"],
+    [/never show a draft/i.test(s3), "never show a draft check refused"],
+    [s3.includes("verbatim") && s3.includes("`environment:`"), "the environment: lines verbatim"],
+  ]))
+
+  const s2 = step(2)
+  verdict("feedback: searches open and closed issues before drafting and offers a comment", missing([
+    [s2.includes("gh issue list --repo minanyang/10x-agent --state all --search") && s2.includes("--limit 10"), "Step 2 searches --state all with --limit 10"],
+    [s2.includes("gh issue view <n> --repo minanyang/10x-agent"), "a match is shown with gh issue view"],
+    [/comment on it instead/.test(s2), "a match is offered as a comment instead"],
+    [s2.includes("`search:`") && s2.includes("`gh:`"), "skipped, with the search: URL, when gh: is not ok"],
+    [/never the project's name/.test(s2), "the key words are never the project's name"],
+    [text.search(/^## Step 2\b/m) < text.search(/^## Step 3\b/m) && text.search(/^## Step 3\b/m) !== -1, "the search is Step 2, before the draft"],
+  ]))
+
+  const s4 = step(4)
+  verdict("feedback: a vulnerability files nothing public", missing([
+    [/vulnerability/i.test(step(1)) && /security boundary/.test(step(1)), "Step 1 classifies a vulnerability"],
+    [/vulnerability/.test(s2) && /skipped/i.test(s2), "Step 2 skips the search for a vulnerability"],
+    [/vulnerability files nothing/.test(s4) && s4.includes("`security:`") && /leave the draft where it is/.test(s4), "Step 4: nothing is filed, the security: URL is given, the draft stays"],
+    [never.includes("attach logs, transcripts or `.10x/` files") && /file to another repository/.test(never), "Never: attach logs, transcripts or .10x/ files; file to another repository"],
+  ]))
 }
 process.exit(fail)
 JS

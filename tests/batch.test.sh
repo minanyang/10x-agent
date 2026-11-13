@@ -664,7 +664,7 @@ reset; ticket t1 t2
 begin "run: every worker is denied the commands that always ask" # gh-35: 10x-batch checked is among them
 want=""
 for c in "10x-land issue" "10x-land comment" "10x-land advisory" "10x-batch approve" "10x-batch init" "10x-batch accept-green" "10x-batch checked" \
-  "10x-security set" "10x-security remove" "10x-security ticket"; do
+  "10x-security set" "10x-security remove" "10x-security ticket" "10x-feedback issue" "10x-feedback comment"; do
   want+="${want:+|}Bash($c:*)|Bash($c *)"
 done
 edits="Edit(/$S/**)|Edit(/$root/.claude/settings.json)|Edit(/$root/.claude/settings.local.json)|Edit(/$HOME/.claude/settings.json)|Edit(/$HOME/.claude/settings.local.json)"

@@ -4,7 +4,7 @@
 // the skill was invoked in, not to a background wake-up, a later approval turn or a `--resume` turn.
 //
 // UserPromptSubmit: a prompt that starts with `/10x:open`, `/10x:work`, `/10x:close`, `/10x:batch`,
-// `/10x:roadmap` or `/10x:audit` records that skill's `Bash(...)` grants, as its SKILL.md lists them now (but TYPED_ONLY), as pending, in
+// `/10x:roadmap`, `/10x:audit` or `/10x:feedback` records that skill's `Bash(...)` grants, as its SKILL.md lists them now (but TYPED_ONLY), as pending, in
 //   ${CLAUDE_PLUGIN_DATA}/sessions/<session_id>.json
 //   { "skills": { "<skill>": { "confirmed": { "prompt_id", "grants", "id"?, "at" }, "pending": { "prompt_id", "grants", "id"?, "at" } } } }
 // outside the working directory, so the agent cannot write itself a record without being asked.
@@ -26,7 +26,7 @@ const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 
 const SID = /^[A-Za-z0-9-]+$/
-const TYPED = /^\s*\/10x:(open|work|close|batch|roadmap|audit)(?=\s|$)/
+const TYPED = /^\s*\/10x:(open|work|close|batch|roadmap|audit|feedback)(?=\s|$)/
 // Skills whose entry is not bound to one ticket id: /10x:roadmap runs `10x-land ticket <slug>` once per item, and
 // /10x:audit runs `10x-security import run-<n>` on a new run each time.
 const UNBOUND = new Set(['roadmap', 'audit'])
@@ -35,12 +35,12 @@ const META = /[;&|<>$`\n\r]/
 // later turn cannot start a new batch the user never named.
 const TYPED_ONLY = new Set(['10x-batch init *'])
 // Commands that always ask, whatever a session's record holds — one saved by an older SKILL.md included: the public
-// writes (a security advisory included), a batch's plan approval, starting a batch, accepting a GREEN test file for a
+// writes (a security advisory and `10x-feedback issue` and `comment` included), a batch's plan approval, starting a batch, accepting a GREEN test file for a
 // batch ticket, recording the user's hand check, and settling, removing or opening a
 // ticket for a security entry (a session can put its own ticket into any entry's `seen in` with `10x-security add`, so
 // the ticket binding alone does not protect them). Every command here is also passed to batch workers as
 // --disallowedTools and refuses on its own under TENX_BATCH.
-const ALWAYS_ASK = /^(10x-land (issue|comment|advisory)|10x-batch (approve|init|accept-green|checked)|10x-security (set|remove|ticket))(\s|$)/
+const ALWAYS_ASK = /^(10x-land (issue|comment|advisory)|10x-feedback (issue|comment)|10x-batch (approve|init|accept-green|checked)|10x-security (set|remove|ticket))(\s|$)/
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 // The word that carries the ticket id: `10x-land <sub> <id>`, `10x-verify <id>`, ….
 const ID_WORD = {
