@@ -37,7 +37,7 @@ printf '#!/bin/bash\necho "9.9.9 (Claude Code)"\n' >"$tmp/stub/claude"
 chmod +x "$tmp/stub/gh" "$tmp/stub/claude"
 # "gh missing": a PATH of symlinks to the commands the script needs, gh left out.
 mkdir "$tmp/nogh"
-for c in bash env git node sed grep awk uname dirname basename readlink mktemp rm cat tail head tr sort cut mkdir cp mv ls wc cmp tee find xargs date id chmod ln realpath uniq comm stat; do
+for c in bash env git node sed grep awk uname dirname basename readlink mktemp rm cat tail head tr sort cut mkdir cp mv ls wc cmp tee find xargs date id chmod ln realpath uniq comm stat touch; do
   p="$(command -v "$c" 2>/dev/null)" && [ -x "$p" ] && ln -s "$p" "$tmp/nogh/$c"
 done
 ln -s "$tmp/stub/claude" "$tmp/nogh/claude"
@@ -140,8 +140,8 @@ tail4() { printf '%s' "$1" | sed 's/^.*- close:/- close:/'; }
 [ "$(tail4 "$got_a")" = "- close: invalid - tickets: invalid - tdd: false - batch.parallel: invalid " ] &&
   [ "$(tail4 "$got_b")" = "- close: pr-merge - tickets: github - tdd: true - batch.parallel: invalid " ] &&
   [ "$(tail4 "$got_c")" = "- close: pr (default) - tickets: files (default) - tdd: true (default) - batch.parallel: invalid " ] &&
-  [ "$(tail4 "$got_d")" = "- close: pr (default) - tickets: files (default) - tdd: true (default) - batch.parallel: 1 (default) " ] &&
-  [ "$(tail4 "$got_e")" = "- close: pr (default) - tickets: github (default) - tdd: true (default) - batch.parallel: 1 (default) " ] &&
+  [ "$(tail4 "$got_d")" = "- close: pr (default) - tickets: files (default) - tdd: true (default) - batch.parallel: 2 (default) " ] &&
+  [ "$(tail4 "$got_e")" = "- close: pr (default) - tickets: github (default) - tdd: true (default) - batch.parallel: 2 (default) " ] &&
   ok "init: a setting outside its closed set prints invalid" ||
   { bad "init: a setting outside its closed set prints invalid"; printf '      %s\n' "$got_a" "$got_b" "$got_c" "$got_d" "$got_e"; }
 
