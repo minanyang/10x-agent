@@ -62,4 +62,52 @@ rm "$wt/l"
 [ "$rc" -eq 0 ] && grep -qxF "clean: $wt" "$tmp/out" &&
   ok "the worktree with its own links restored is clean" || { bad "the worktree with its own links restored is clean (exit $rc)"; cat "$tmp/out"; }
 
+# The race: a git shim redirects <admin>/commondir to the planted $tmp/x/.git right before it execs the real git, after
+# the link-file check has passed. 10x must then pin git so the planted core.fsmonitor never runs.
+real_git="$(command -v git)"
+mkdir "$tmp/shim"
+cat >"$tmp/shim/git" <<'STUB'
+#!/bin/bash
+prev=""
+for a in "$@"; do
+  [ "$prev" = -C ] && [ "$a" = "$SHIM_WT" ] && printf '%s\n' "$SHIM_EVIL" >"$SHIM_ADMIN/commondir"
+  prev="$a"
+done
+exec "$SHIM_REAL_GIT" "$@"
+STUB
+chmod +x "$tmp/shim/git"
+# raced <worktree> <admin> <10x command...> — runs it with the shim first on PATH, aimed at <worktree>
+raced() {
+  local w=$1 a=$2; shift 2
+  SHIM_WT="$w" SHIM_ADMIN="$a" SHIM_EVIL="$tmp/x/.git" SHIM_REAL_GIT="$real_git" PATH="$tmp/shim:$PATH" "$@"
+}
+
+raced "$wt" "$admin" 10x-land check A >"$tmp/out" 2>&1; rc=$?
+[ "$rc" -eq 0 ] && grep -qxF "clean: $wt" "$tmp/out" && [ ! -e "$marker" ] &&
+  ok "10x-land check runs no planted fsmonitor when commondir is redirected after the check" ||
+  { bad "10x-land check runs no planted fsmonitor when commondir is redirected after the check (exit $rc)"; cat "$tmp/out"; }
+restore
+
+raced "$wt" "$admin" 10x-worktree list >"$tmp/out" 2>&1; rc=$?
+[ "$rc" -eq 0 ] && grep -q '^A ' "$tmp/out" && [ ! -e "$marker" ] &&
+  ok "10x-worktree list runs no planted fsmonitor when commondir is redirected after the check" ||
+  { bad "10x-worktree list runs no planted fsmonitor when commondir is redirected after the check (exit $rc)"; cat "$tmp/out"; }
+restore
+
+10x-worktree add B --no-setup >/dev/null || { echo "worktree add B failed"; exit 2; }
+wtb="$tmp/repo/.worktrees/B"; adminb="$tmp/repo/.git/worktrees/B"
+raced "$wtb" "$adminb" 10x-worktree rm B >"$tmp/out" 2>&1; rc=$?
+[ "$rc" -eq 0 ] && grep -qF "removed: $wtb" "$tmp/out" && [ ! -e "$wtb" ] && [ ! -e "$marker" ] &&
+  ok "10x-worktree rm removes the worktree and runs no planted fsmonitor when commondir is redirected after the check" ||
+  { bad "10x-worktree rm removes the worktree and runs no planted fsmonitor when commondir is redirected after the check (exit $rc)"; cat "$tmp/out"; }
+restore
+
+# AC2: a script sourcing lib.sh cannot run git on a directory it has not checked.
+printf '%s\n' "$tmp/x/.git" >"$admin/commondir"
+( cd "$tmp/repo" && . "$ROOT_DIR/scripts/lib.sh" && git -C "$wt" status --porcelain ) >"$tmp/out" 2>&1; rc=$?
+[ "$rc" -eq 2 ] && grep -qF "refusing to run git in $wt: " "$tmp/out" && [ ! -e "$marker" ] &&
+  ok "git -C on an unchecked worktree is checked first and refused when redirected" ||
+  { bad "git -C on an unchecked worktree is checked first and refused when redirected (exit $rc)"; cat "$tmp/out"; }
+restore
+
 exit "$fail"
