@@ -1,0 +1,268 @@
+#!/bin/bash
+# The writes /10x:feedback needs: a bug report or feature request for minanyang/10x-agent, from any git project, in
+# that repository's own issue forms (read from this plugin's .github/ISSUE_TEMPLATE/, never from the current project),
+# or a comment on one of its issues. The target is pinned here; origin is never read for it.
+#
+#   10x-feedback init
+#   10x-feedback check   <slug>
+#   10x-feedback issue   <slug>
+#   10x-feedback comment <slug>
+#
+# Drafts live in <main checkout>/.10x/drafts/feedback/<slug>.md, apart from /10x:open's. A draft is `# <title>`, then
+# header lines (`Form: <file>` or `Comment: <n>`, optional `Vulnerability: yes`), then the body, whose last section is
+# `### Environment` holding exactly the seven lines `init` prints after `environment:`.
+# `init` creates the drafts directory and prints the target repo, `gh: ok|missing|logged-out`, the drafts path, the
+# plugin's forms and banned phrases (scripts/issue-form.js), the new-issue, search and private vulnerability reporting
+# URLs, and the environment: the 10x and Claude Code versions, the OS, and close, tickets, tdd and batch.parallel, each
+# printed only as a value of its closed set (`invalid` otherwise, `<default> (default)` when unset).
+# `check` refuses, in this order: a header error; for a Form: draft, what 10x-land's body checks refuse; an Environment
+# section that is missing, not last or not exactly init's; a comment with no text; and every occurrence, in the title or
+# the body above the Environment section, of the project's directory name, its origin's owner or repo name (whole
+# tokens, any case; skipped when origin is github.com/minanyang/10x-agent) or its absolute path, one stderr line each.
+# `issue` and `comment` run the same checks, refuse a draft of the other kind and a `Vulnerability: yes` draft (nothing
+# is filed publicly), and with gh missing or logged out print the URL, the title and the body and exit 3. Otherwise
+# `issue` runs `gh issue create` with the form's labels and `comment` runs `gh issue comment <n>`, both on
+# github.com/minanyang/10x-agent, and the draft is deleted once gh succeeds; when gh fails the draft stays and the
+# script exits with gh's code.
+# With TENX_BATCH set (every /10x:batch worker has it), `issue` and `comment` print `10x: refused inside a batch worker`
+# and exit 2 before checking their arguments or reading anything.
+
+set -euo pipefail
+# shellcheck source=../scripts/lib.sh
+source "$(dirname "$(readlink -f "$0")")/../scripts/lib.sh"
+BIN_DIR="$(dirname "$(readlink -f "$0")")"
+PLUGIN="$(cd "$BIN_DIR/.." && pwd)"
+REPO=github.com/minanyang/10x-agent
+URL="https://$REPO"
+SECURITY_URL="$URL/security/advisories/new"
+FORMS_DIR="$PLUGIN/.github/ISSUE_TEMPLATE"
+DRAFTS="$ROOT/.10x/drafts/feedback"
+
+usage="usage: 10x-feedback init | check|issue|comment <slug>"
+cmd="${1:-}"
+if [ -n "${TENX_BATCH:-}" ]; then
+  case "$cmd" in issue|comment) die "refused inside a batch worker" ;; esac
+fi
+case "$cmd" in
+  init) [ $# -eq 1 ] || die "$usage" ;;
+  check|issue|comment)
+    [ $# -eq 2 ] || die "$usage"
+    slug="$2"
+    [[ "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "invalid draft slug '$(shown "$slug")' (lowercase letters, digits, -)"
+    draft="$DRAFTS/$slug.md" ;;
+  *) die "$usage" ;;
+esac
+
+gh_state() {
+  if ! command -v gh >/dev/null 2>&1; then echo missing
+  elif ! gh auth status --hostname github.com >/dev/null 2>&1; then echo logged-out
+  else echo ok
+  fi
+}
+
+# The seven environment lines, as init prints them now.
+env_lines() {
+  local pj ver out cc settings tdflt=files url
+  pj="$PLUGIN/.claude-plugin/plugin.json"
+  ver="$(node -e '
+    let v
+    try { v = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).version } catch { process.exit(1) }
+    if (typeof v !== "string") process.exit(1)
+    process.stdout.write(v)
+  ' "$pj")" || die "cannot read a string version from $pj"
+  cc=unknown
+  if command -v claude >/dev/null 2>&1 && out="$(claude --version 2>/dev/null)"; then
+    out="${out%%$'\n'*}"; out="${out% (Claude Code)}"
+    [[ "$out" =~ ^[0-9A-Za-z.+-]+$ ]] && cc="$out"
+  fi
+  if url="$(git -C "$ROOT" remote get-url origin 2>/dev/null)"; then
+    url_parts "$url"
+    [ "$o_host" != github.com ] || tdflt=github
+  fi
+  # Each setting printed only as a value of its closed set, so no free text of the config reaches a draft.
+  # shellcheck disable=SC2016
+  settings="$(node -e '
+    const fs = require("fs"), [f, ticketsDefault] = process.argv.slice(1)
+    let c = {}
+    try { if (fs.existsSync(f)) c = JSON.parse(fs.readFileSync(f, "utf8")) } catch (e) { console.error(`10x: cannot read ${f}: ${e.message}`); process.exit(2) }
+    if (!c || typeof c !== "object") c = {}
+    const pick = (v, dflt, ok) => (v == null ? dflt + " (default)" : ok(v) ? String(v) : "invalid")
+    const oneOf = (...set) => (v) => typeof v === "string" && set.includes(v)
+    const parallel = c.batch && typeof c.batch === "object" ? c.batch.parallel : undefined
+    console.log([
+      "- close: " + pick(c.close, "pr", oneOf("pr", "pr-merge", "local")),
+      "- tickets: " + pick(c.tickets, ticketsDefault, oneOf("github", "files")),
+      "- tdd: " + (c.tdd == null ? "true (default)" : c.tdd === false || c.tdd === "false" ? "false" : "true"),
+      "- batch.parallel: " + pick(parallel, "1", (v) => Number.isInteger(v) && v >= 1),
+    ].join("\n"))
+  ' "$CONFIG" "$tdflt")" || exit 2
+  say "- 10x: $(shown "$ver")"
+  say "- Claude Code: $cc"
+  say "- OS: $(uname -srm)"
+  say "$settings"
+}
+
+trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[![:space:]]}"}"; }
+
+# parse_feedback — sets title, form, formfile, comment, vuln and body_from (the first body line) from $draft's header.
+parse_feedback() {
+  local first line key val n=2 form_line=0 comment_line=0 vuln_line=0
+  { IFS= read -r first || true; } <"$draft"
+  [[ "$first" == "# "* ]] || die "$draft: line 1 must be '# <title>'"
+  title="${first#\# }"
+  [ -n "${title//[[:space:]]/}" ] || die "$draft: empty title"
+  form=""; formfile=""; comment=""; vuln=""
+  while IFS= read -r line; do
+    case "$line" in Form:*|Comment:*|Vulnerability:*|Labels:*|Type:*|Security:*) ;; *) break ;; esac
+    key="${line%%:*}"; val="$(trim "${line#*:}")"
+    case "$key" in
+      Labels|Type|Security) die "$draft: line $n: a $key: line has no place in a feedback draft" ;;
+      Form)
+        [ "$form_line" -eq 0 ] || die "$draft: line $n: Form: given twice (first on line $form_line)"
+        [ -n "$val" ] || die "$draft: line $n: empty Form:"
+        [[ "$val" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$ ]] || die "$draft: line $n: invalid Form '$(shown "$val")' (a .yml or .yaml file name in the plugin's .github/ISSUE_TEMPLATE/)"
+        case "$val" in config.yml|config.yaml) die "$draft: line $n: Form '$val' is not an issue form" ;; esac
+        [ ! -L "$FORMS_DIR/$val" ] && [ -f "$FORMS_DIR/$val" ] || die "$draft: line $n: Form '$val' is not a file in the plugin's .github/ISSUE_TEMPLATE/"
+        form="$val"; formfile="$FORMS_DIR/$val"; form_line=$n ;;
+      Comment)
+        [ "$comment_line" -eq 0 ] || die "$draft: line $n: Comment: given twice (first on line $comment_line)"
+        [ -n "$val" ] || die "$draft: line $n: empty Comment:"
+        [[ "$val" =~ ^[1-9][0-9]*$ ]] || die "$draft: line $n: invalid Comment '$(shown "$val")' (an issue number of $REPO)"
+        comment="$val"; comment_line=$n ;;
+      Vulnerability)
+        [ "$vuln_line" -eq 0 ] || die "$draft: line $n: Vulnerability: given twice (first on line $vuln_line)"
+        [ -n "$val" ] || die "$draft: line $n: empty Vulnerability:"
+        [ "$val" = yes ] || die "$draft: line $n: invalid Vulnerability '$(shown "$val")' (want yes)"
+        vuln=yes; vuln_line=$n ;;
+    esac
+    n=$((n + 1))
+  done < <(tail -n +2 "$draft")
+  body_from=$n
+  [ $((form_line > 0)) -ne $((comment_line > 0)) ] || die "$draft: needs exactly one of a Form: and a Comment: line"
+}
+
+# check_draft — every refusal of `check`, in its order; on success the draft's fields are set.
+check_draft() {
+  local envl dir="" owner="" repo="" self=0 url o r
+  need_file "$draft"
+  parse_feedback
+  [ -z "$form" ] || check_body "$draft" "$body_from" "$formfile"
+  envl="$(env_lines)"
+  if url="$(git -C "$ROOT" remote get-url origin 2>/dev/null)"; then
+    url_parts "$url"
+    if [[ "$o_path" == */* ]]; then
+      r="${o_path##*/}"; o="${o_path%/*}"; o="${o##*/}"
+      [ "$o_host" = github.com ] && [ "$(printf '%s' "$o/$r" | LC_ALL=C tr '[:upper:]' '[:lower:]')" = minanyang/10x-agent ] && self=1
+      owner="$o"; repo="$r"
+    fi
+  fi
+  if [ "$self" -eq 0 ]; then dir="$(basename "$ROOT")"; else owner=""; repo=""; fi
+  # shellcheck disable=SC2016
+  node -e '
+    const fs = require("fs")
+    const [draft, from, envText, mdCheck, slug, kind, dir, owner, repo, root, realRoot] = process.argv.slice(1)
+    const fail = (m) => { console.error("10x: " + m); process.exit(2) }
+    const dl = fs.readFileSync(draft, "utf8").split("\n")
+    const start = Number(from) - 1
+    const text = require(mdCheck).blank(dl, start)
+    let env = -1
+    for (let k = start; k < dl.length && env < 0; k++) {
+      const m = text[k] !== null && text[k].match(/^(#+)\s+(.*?)\s*#*\s*$/)
+      if (m && m[1].length === 3 && m[2].trim().toLowerCase() === "environment") env = k
+    }
+    if (env < 0) fail(draft + ": no \"### Environment\" section")
+    for (let k = env + 1; k < dl.length; k++)
+      if (text[k] !== null && /^#+\s/.test(text[k])) fail(draft + ": line " + (env + 1) + ": \"### Environment\" is not the last section")
+    const got = dl.slice(env + 1).map((s) => s.replace(/\s+$/, "")).filter((s) => s !== "")
+    const want = envText.split("\n")
+    if (got.length !== want.length || got.some((s, i) => s !== want[i]))
+      fail(draft + ": line " + (env + 1) + ": \"### Environment\" differs from 10x-feedback init")
+    if (kind === "comment" && dl.slice(start, env).join("").trim() === "") fail(draft + ": the comment has no text")
+    const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    const token = (s) => new RegExp("(?<![A-Za-z0-9_-])" + esc(s) + "(?![A-Za-z0-9_-])", "i")
+    const kinds = [["directory name", dir], ["origin owner", owner], ["origin repo", repo]].filter(([, s]) => s !== "")
+    const roots = [...new Set([realRoot, root])]
+    const shown = (s) => s.replace(/[\x00-\x1f\x7f]/g, "?")
+    const hits = []
+    const scan = (k) => {
+      for (const [name, s] of kinds) {
+        const m = dl[k].match(token(s))
+        if (m) hits.push("10x: draft " + slug + " line " + (k + 1) + ": " + name + " \"" + shown(m[0]) + "\"")
+      }
+      const r = roots.find((p) => dl[k].includes(p))
+      if (r) hits.push("10x: draft " + slug + " line " + (k + 1) + ": absolute path \"" + shown(r) + "\"")
+    }
+    scan(0)
+    for (let k = start; k < env; k++) scan(k)
+    if (hits.length) { console.error(hits.join("\n")); process.exit(2) }
+  ' "$draft" "$body_from" "$envl" "$BIN_DIR/../scripts/md-check.js" "$slug" "${form:+issue}${comment:+comment}" \
+    "$dir" "$owner" "$repo" "$ROOT" "$(readlink -f "$ROOT")" || exit 2
+}
+
+# print_unfiled <url line> — what gh would have filed, for the user to paste.
+print_unfiled() {
+  say "10x: gh is $1: nothing created" >&2
+  say "$2"
+  say "# $title"
+  say ""
+  cat "$bodyfile"
+}
+
+case "$cmd" in
+  init)
+    envl="$(env_lines)"
+    forms="$(node "$PLUGIN/scripts/issue-form.js" "$PLUGIN" "$PLUGIN/references/banned-phrases.txt")" || exit 2
+    forms="$(printf '%s\n' "$forms" | grep -v '^drafts: ')" || true
+    bad="$(printf '%s\n' "$forms" | grep -E -m 1 '^forms: none$|^form: ("([^"\\]|\\.)*"|[^ ]*) error: ')" || true
+    [ -z "$bad" ] || die "the plugin's issue forms cannot be read: $bad"
+    ensure_excluded
+    mkdir -p "$DRAFTS"
+    say "repo: ${REPO#github.com/}"
+    say "gh: $(gh_state)"
+    say "drafts: $(shown "$DRAFTS")"
+    say "$forms"
+    say "new issue: $URL/issues/new?template=<form>"
+    say "search: $URL/issues?q=is%3Aissue"
+    say "security: $SECURITY_URL"
+    say "environment:"
+    say "$envl"
+    ;;
+
+  check)
+    check_draft
+    if [ -n "$form" ]; then say "ok: $slug issue $form"; else say "ok: $slug comment $comment"; fi
+    [ -z "$vuln" ] || say "vulnerability: report privately at $SECURITY_URL"
+    ;;
+
+  issue|comment)
+    check_draft
+    if [ "$cmd" = issue ]; then
+      [ -z "$comment" ] || die "draft $slug is a comment: use 10x-feedback comment $slug"
+    else
+      [ -n "$comment" ] || die "draft $slug is not a comment: use 10x-feedback issue $slug"
+    fi
+    [ -z "$vuln" ] || die "draft $slug is a vulnerability: nothing is filed publicly; report it at $SECURITY_URL"
+    bodyfile="$(mktemp)"; trap 'rm -f "$bodyfile"' EXIT
+    tail -n +"$body_from" "$draft" | sed '1{/^[[:space:]]*$/d;}' >"$bodyfile"
+    state="$(gh_state)"
+    if [ "$cmd" = issue ]; then
+      if [ "$state" != ok ]; then print_unfiled "$state" "new issue: $URL/issues/new?template=$form"; exit 3; fi
+      args=(issue create --repo "$REPO" --title "$title" --body-file "$bodyfile")
+      # The form's own labels, the rule of scripts/issue-form.js describe: they are the target repository's.
+      # shellcheck disable=SC2016
+      labels="$(node -e '
+        const doc = require(process.argv[1]).parseForm(require("fs").readFileSync(process.argv[2], "utf8"))
+        const l = Array.isArray(doc.labels) ? doc.labels.filter((s) => typeof s === "string")
+          : typeof doc.labels === "string" ? doc.labels.split(",").map((s) => s.trim()).filter(Boolean) : []
+        for (const s of l) if (!/[\x00-\x1f\x7f]/.test(s)) console.log(s)
+      ' "$PLUGIN/scripts/issue-form.js" "$formfile")" || die "cannot read the labels of $formfile"
+      while IFS= read -r l; do [ -z "$l" ] || args+=(--label "$l"); done <<<"$labels"
+    else
+      if [ "$state" != ok ]; then print_unfiled "$state" "issue: $URL/issues/$comment"; exit 3; fi
+      args=(issue comment "$comment" --repo "$REPO" --body-file "$bodyfile")
+    fi
+    gh "${args[@]}"
+    need_file "$draft"
+    rm -f "$draft"
+    ;;
+esac
