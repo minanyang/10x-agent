@@ -93,7 +93,7 @@ env_lines() {
       "- close: " + pick(c.close, "pr", oneOf("pr", "pr-merge", "local")),
       "- tickets: " + pick(c.tickets, ticketsDefault, oneOf("github", "files")),
       "- tdd: " + (c.tdd == null ? "true (default)" : c.tdd === false || c.tdd === "false" ? "false" : "true"),
-      "- batch.parallel: " + pick(parallel, "1", (v) => Number.isInteger(v) && v >= 1),
+      "- batch.parallel: " + pick(parallel, "2", (v) => Number.isInteger(v) && v >= 1),
     ].join("\n"))
   ' "$CONFIG" "$tdflt")" || exit 2
   say "- 10x: $(shown "$ver")"

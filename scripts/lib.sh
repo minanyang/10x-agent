@@ -228,7 +228,7 @@ ensure_excluded() {
   local exclude entry
   exclude="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)/info/exclude"
   mkdir -p "$(dirname "$exclude")"
-  : >>"$exclude"
+  touch "$exclude"
   for entry in "/.10x/" "/$(cfg worktreeDir .worktrees)/"; do
     grep -qxF "$entry" "$exclude" || printf '%s\n' "$entry" >>"$exclude"
   done
