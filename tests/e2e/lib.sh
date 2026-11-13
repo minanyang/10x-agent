@@ -105,6 +105,7 @@ new_run() {
   : >"$dir/gh/calls.log"
   echo '{}' >"$dir/gh/canned.json"
   echo "$fake" >"$dir/fake"
+  echo "$mode" >"$dir/mode"
   build_path "$fake" "$dir/shadow" "$dir/fakebin" "$dir/sshbin" >"$dir/path"
   printf '[user]\n\tname = E2E\n\temail = e2e@example.com\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n' >"$dir/gitconfig"
   echo "$dir" >>"$FLOW_ROOT/runs"
@@ -191,7 +192,10 @@ turn() {
 run_aborted() {
   local tool cmd
   [ ! -f "$RUN/preflight-err" ] || return 0
-  while IFS=$'\t' read -r tool cmd; do in_skill_scope "$tool" "$cmd" && return 0; done < <(run_denials)
+  while IFS=$'\t' read -r tool cmd; do
+    local_denial "$tool" "$cmd" && continue
+    in_skill_scope "$tool" "$cmd" && return 0
+  done < <(run_denials)
   return 1
 }
 
@@ -272,9 +276,17 @@ in_skill_scope() {
   return 1
 }
 
+# local_denial <tool> <command> — a gh or glab command denied in a local-mode run of a close flow: the grant hook
+# refuses those while /10x:close runs in local mode, so the denial is the hook working, not the skill failing.
+local_denial() {
+  [ "$1" = Bash ] && [ "$(cat "$RUN/mode" 2>/dev/null)" = local ] || return 1
+  case "$FLOW" in close-*) ;; *) return 1 ;; esac
+  case "$2" in gh | "gh "* | glab | "glab "*) return 0 ;; *) return 1 ;; esac
+}
+
 # flow_failure — why every scenario of the flow fails, or nothing: a preflight failure, a denied command in the
-# skills' scope, or an executed `gh <sub> <sub2>` the fake never saw (runs with the fake only). Other denials go to
-# $FLOW_ROOT/notes, which run.sh prints on stderr.
+# skills' scope (local_denial aside), or an executed `gh <sub> <sub2>` the fake never saw (runs with the fake only).
+# Other denials go to $FLOW_ROOT/notes, which run.sh prints on stderr.
 flow_failure() {
   local why="" dir den n a b have cur="$RUN" tool cmd
   while IFS= read -r dir; do
@@ -283,7 +295,8 @@ flow_failure() {
     den=""
     while IFS=$'\t' read -r tool cmd; do
       [ -n "${tool:-}" ] || continue
-      if in_skill_scope "$tool" "$cmd"; then den="${den:+$den; }$cmd"
+      if local_denial "$tool" "$cmd"; then printf 'note: %s denied (local mode): %s\n' "$FLOW" "$cmd" >>"$FLOW_ROOT/notes"
+      elif in_skill_scope "$tool" "$cmd"; then den="${den:+$den; }$cmd"
       else printf 'note: %s denied (not the skill'"'"'s): %s\n' "$FLOW" "$cmd" >>"$FLOW_ROOT/notes"; fi
     done < <(run_denials)
     [ -z "$den" ] || why="${why:+$why; }permission denied: $den"
@@ -452,7 +465,7 @@ TEST
 Verdict: changes requested
 Criteria: AC1, AC2
 
-#### Finding 1 — blocker: `greet` still prints `Hello, !` for an empty name
+#### F1 — [blocker] `greet` still prints `Hello, !` for an empty name
 
 `bin/greet ""` prints a greeting with no name; the fix must handle it.
 

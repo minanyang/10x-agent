@@ -72,13 +72,14 @@ bash_() { # <session_id> <command> [<key> <value>]...
   send PreToolUse "$1" tool_name Bash tool_input "$(node -e 'process.stdout.write(JSON.stringify({ command: process.argv[1] }))' "$2")" \
     transcript_path "$(transcript "$1")" "${@:3}"
 }
-check() { # <description> <want: allow|nothing> <output> [text the output must carry]...
+check() { # <description> <want: allow|deny|nothing> <output> [text the output must carry]...
   local got=other out=$3
   case "$out" in
     '') got=nothing ;;
     '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"'*) got=allow ;;
+    '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"'*) got=deny ;;
   esac
-  for want in "${@:4}"; do [[ "$out" == *"$want"* ]] || got="allow without \"$want\""; done
+  for want in "${@:4}"; do [[ "$out" == *"$want"* ]] || got="$got without \"$want\""; done
   if [ "$got" = "$2" ]; then
     echo "ok    $1"
   else
@@ -436,6 +437,48 @@ check "$T: *" nothing "$(bash_ s36 "touch x")"
 check "$T: * --help" nothing "$(bash_ s36 "touch --help")"
 check "$T: the other grants hold" allow "$(bash_ s36 "10x-land merge gh-5")"
 cp "$ROOT/skills/close/SKILL.md" "$plugin/skills/close/SKILL.md"
+
+# gh and glab in local mode: the main checkout's close value decides, so only these cases have a .claude/10x.json
+mkdir -p "$repo/.claude"
+echo '{"close":"local"}' >"$repo/.claude/10x.json"
+T="refuses gh and glab during /10x:close in local mode"
+prompt s40 "/10x:close gh-5" >/dev/null
+check "$T: gh" deny "$(bash_ s40 "gh pr view 5")"
+check "$T: a granted gh command" deny "$(bash_ s40 "gh auth status")"
+check "$T: glab" deny "$(bash_ s40 "glab mr view 5")"
+check "$T: a subagent too" deny "$(bash_ s40 "gh pr view 5" agent_id a1 agent_type 10x:backend-engineer)"
+check "$T: other commands are as before" allow "$(bash_ s40 "10x-land merge gh-5")" "granted by /10x:close"
+
+T="the refusal names the local mode"
+check "$T" deny "$(bash_ s40 "gh pr view 5")" "10x: close is local in .claude/10x.json" "runs no gh or glab command in local mode"
+
+T="does not refuse gh in pr mode"
+echo '{"close":"pr"}' >"$repo/.claude/10x.json"
+check "$T" allow "$(bash_ s40 'gh pr view "feat/gh-5"')" "granted by /10x:close"
+echo '{"close":"pr-merge"}' >"$repo/.claude/10x.json"
+check "$T: pr-merge" allow "$(bash_ s40 'gh pr view "feat/gh-5"')" "granted by /10x:close"
+rm "$repo/.claude/10x.json"
+check "$T: no config" allow "$(bash_ s40 'gh pr view "feat/gh-5"')" "granted by /10x:close"
+echo '{"close":"local"}' >"$repo/.claude/10x.json"
+
+T="does not refuse gh once another skill is typed after /10x:close"
+prompt s41 "/10x:close gh-5" >/dev/null
+prompt s41 "/10x:work gh-5" >/dev/null
+check "$T" allow "$(bash_ s41 'gh pr view "feat/gh-5"')" "granted by /10x:close"
+prompt s41 "/10x:close gh-5" >/dev/null
+check "$T: close typed again is the latest" deny "$(bash_ s41 'gh pr view "feat/gh-5"')"
+
+T="refuses gh behind a pipe, an assignment or a path"
+for c in "git log | gh pr view 5" "FOO=1 gh pr view 5" "/opt/homebrew/bin/gh pr view 5" "./gh pr view 5" "env gh pr view 5" \
+  "git fetch && gh pr view 5" "echo \$(gh pr view 5)" "glab mr view 5"; do
+  check "$T: $(printf '%q' "$c")" deny "$(bash_ s40 "$c")"
+done
+
+T="does not refuse a command that only mentions gh"
+for c in "ghq list" "gh-foo pr view 5" "command -v gh" "env -i gh pr view 5" "then gh pr view 5" '"gh" pr view 5' 'git commit -m "gh"'; do
+  check "$T: $(printf '%q' "$c")" nothing "$(bash_ s40 "$c")"
+done
+rm -r "$repo/.claude"
 
 check "passes on a malformed payload" nothing "$(printf 'garbage' | (cd "$repo" && node "$HOOK"))"
 check "passes on an empty payload" nothing "$(printf '{}' | (cd "$repo" && node "$HOOK"))"

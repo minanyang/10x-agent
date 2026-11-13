@@ -32,6 +32,8 @@ A 10x Agent script run on a ticket (`10x-land`, `10x-worktree`, `10x-verify`, `1
 
 "Typed" means what the transcript records as your input: a prompt another program types into the session's terminal, or the opening prompt of a teammate session a model starts, counts as typed if Claude Code records it so.
 
+While `/10x:close` is the latest 10x skill typed in the session and the main checkout's `.claude/10x.json` has `"close": "local"`, the hook denies any Bash command that runs `gh` or `glab` — at the start, after `;`, `&`, `|`, `(`, `$(` or a backtick, behind `env`, `command`, `exec` or variable assignments, or by a path such as `/opt/homebrew/bin/gh` — with the reason `10x: close is local in .claude/10x.json: /10x:close runs no gh or glab command in local mode`, in a subagent too and whatever the skill grants. It matches the text and is best-effort. Typing another 10x skill ends it; a later `gh` request in the same session is still refused until then, and you can run it yourself with `!gh …`. A record written before this check existed refuses nothing, and so does a missing config or a failing `git` call.
+
 Records live in `${CLAUDE_PLUGIN_DATA}/sessions/`, outside the repo, so the agent cannot write itself one without asking. For the loop to finish unattended you need to allow nothing for the skills' grants; `10x-land issue`, `10x-land comment`, `10x-land advisory`, `10x-batch approve`, `10x-batch accept-green`, `10x-batch checked` and `10x-security set`/`remove` still ask by design.
 
 ## Plan boundary

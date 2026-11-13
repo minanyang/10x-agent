@@ -255,6 +255,20 @@ for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/S
     : bad("close: runs check first and resolves .10x paths against ticket dir:")
 }
 
+// close stops on the script's review verdict instead of reading review.md itself; work writes findings with ids and answers by id.
+{
+  const close = fs.readFileSync(`${dir}/close/SKILL.md`, "utf8")
+  const step0 = (/^## Step 0\b[\s\S]*?(?=^## Step )/m.exec(close) || [""])[0]
+  step0.includes("`review finding open: ") && step0.includes("`review: missing`") && !close.includes("neither a fix nor a reason")
+    ? ok("close: Step 0 stops on check's review finding open: lines")
+    : bad("close: Step 0 stops on check's review finding open: lines")
+  const work = fs.readFileSync(`${dir}/work/SKILL.md`, "utf8")
+  const step = (n) => (new RegExp(`^## Step ${n}\\b[\\s\\S]*?(?=^## Step )`, "m").exec(work) || [""])[0]
+  step(6).includes("#### F<n> — [<severity>] <title>") && step(7).includes("- F<n> —")
+    ? ok("work: findings carry an id and Fixes applied answers by id")
+    : bad("work: findings carry an id and Fixes applied answers by id")
+}
+
 // work's Step 0 only names the ticket: a typed gh-<n> is its id, and an approved plan is read before Step 1 fetches
 // any ticket text, so a new session never re-plans an approved ticket.
 {

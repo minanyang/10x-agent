@@ -6,7 +6,7 @@
 // UserPromptSubmit: a prompt that starts with `/10x:open`, `/10x:work`, `/10x:close`, `/10x:batch`,
 // `/10x:roadmap` or `/10x:audit` records that skill's `Bash(...)` grants, as its SKILL.md lists them now (but TYPED_ONLY), as pending, in
 //   ${CLAUDE_PLUGIN_DATA}/sessions/<session_id>.json
-//   { "skills": { "<skill>": { "confirmed": { "prompt_id", "grants", "id"? }, "pending": { "prompt_id", "grants", "id"? } } } }
+//   { "skills": { "<skill>": { "confirmed": { "prompt_id", "grants", "id"?, "at" }, "pending": { "prompt_id", "grants", "id"?, "at" } } } }
 // outside the working directory, so the agent cannot write itself a record without being asked.
 // The hook input does not say who sent the prompt (a scheduled prompt looks the same), so a pending
 // entry is confirmed only when the transcript line of that prompt_id is the user's typed skill.
@@ -17,10 +17,13 @@
 // first one the hook allows (`10x-security list` and `route` take none); an UNBOUND skill's entry (/10x:roadmap creates a ticket per roadmap item,
 // /10x:audit works on audit runs) binds none. Inside a subagent only `10x-test <id>…` is allowed, on the id a confirmed
 // entry has already bound; a subagent never binds an id or confirms an entry.
+// Before all that, while /10x:close is the session's latest typed skill (by `at`, the time of its prompt) and the main
+// checkout's `.claude/10x.json` has `close: local`, a command that runs gh or glab is denied, in a subagent too.
 // Anything else, and any error of its own, prints nothing: Claude Code decides as usual.
 
 const fs = require('node:fs')
 const path = require('node:path')
+const { execFileSync } = require('node:child_process')
 
 const SID = /^[A-Za-z0-9-]+$/
 const TYPED = /^\s*\/10x:(open|work|close|batch|roadmap|audit)(?=\s|$)/
@@ -50,6 +53,10 @@ const ID_WORD = {
   '10x-plan-check': 1,
   '10x-security': 2,
 }
+// A command that runs gh or glab: at the start, after a separator, `$(` or a backtick, behind `env`/`command`/`exec`,
+// assignments or a path. Matched on the text, best-effort, like the guard.
+const RUNS_FORGE = /(?:^|[;&|(\n\r]|\$\(|`)\s*(?:(?:env|command|exec)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:\S*\/)?(?:gh|glab)(?=\s|$)/
+const LOCAL_REASON = '10x: close is local in .claude/10x.json: /10x:close runs no gh or glab command in local mode'
 const CHUNK = 1 << 20
 const MAX_SCAN = 16 << 20
 
@@ -79,9 +86,10 @@ function main() {
   if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash') pass()
   const raw = input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : ''
   const command = raw.trim()
+  const skills = readSkills(file)
+  if (closeIsLatest(skills) && RUNS_FORGE.test(command) && closeMode(input.cwd) === 'local') deny(LOCAL_REASON)
   if (!command || META.test(command)) pass()
   const ticket = ticketOf(command)
-  const skills = readSkills(file)
   if (input.agent_id !== undefined) subagent(skills, command, ticket)
   for (const [skill, entry] of Object.entries(skills)) {
     const confirmed = entry && entry.confirmed
@@ -144,6 +152,46 @@ function allow(skill) {
     }),
   )
   pass()
+}
+
+function deny(reason) {
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: reason,
+      },
+    }),
+  )
+  pass()
+}
+
+// A skill's time is the later `at` of its entries, 0 without one: a record written before `at` existed refuses nothing.
+function typedAt(entry) {
+  if (!entry || typeof entry !== 'object') return 0
+  const at = (part) => (part && typeof part.at === 'number' ? part.at : 0)
+  return Math.max(at(entry.pending), at(entry.confirmed))
+}
+
+function closeIsLatest(skills) {
+  const close = typedAt(skills.close)
+  return close > 0 && Object.entries(skills).every(([skill, entry]) => skill === 'close' || typedAt(entry) <= close)
+}
+
+// The main checkout's `close` value; anything that goes wrong reads as no value.
+function closeMode(cwd) {
+  try {
+    const common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      cwd: cwd || process.cwd(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    const config = JSON.parse(fs.readFileSync(path.join(path.dirname(common), '.claude', '10x.json'), 'utf8'))
+    return config && typeof config === 'object' ? config.close : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function granting(part, command, ticket, skill) {
@@ -242,7 +290,7 @@ function skillGrants(skill) {
 function record(file, skill, promptId, id) {
   const skills = readSkills(file)
   const entry = skills[skill] && typeof skills[skill] === 'object' ? skills[skill] : {}
-  skills[skill] = { ...entry, pending: { prompt_id: promptId, grants: skillGrants(skill), id } }
+  skills[skill] = { ...entry, pending: { prompt_id: promptId, grants: skillGrants(skill), id, at: Date.now() } }
   write(file, skills)
 }
 

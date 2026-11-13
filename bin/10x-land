@@ -27,7 +27,11 @@
 # line per file 10x-red-proof --lock locked whose blob at HEAD differs from the lock. With security.blockClose set it
 # then prints `security entry open: <fp>` for each confirmed entry of .10x/security.md found in or seen in <id>, with
 # status new or fix-now and a severity at or above the level, and exits 1 when there is one; without the key it never
-# reads security.md.
+# reads security.md. Unless the PR is merged (`pr: MERGED`, the cleanup run), it then prints
+# `review finding open: round <n> <id> [<severity>] <title>` for each `blocker` or `major` finding of .10x/<id>/review.md
+# with no entry in its round's `### Fixes applied` (by id, or for a finding without one, a bullet leading with its
+# severity tag), and exits 2, before the uncommitted-changes check; a missing or symlinked review.md passes.
+# `rebase`, `squash`, `push` and `merge` print the same lines and exit 2 before doing anything.
 # The template is looked up in the worktree: on a GitLab origin in .gitlab/merge_request_templates/, otherwise
 # .github/pull_request_template.md, pull_request_template.md, docs/pull_request_template.md, then
 # .github/PULL_REQUEST_TEMPLATE/; first found wins. Names match in any case; a symlink anywhere on the way does not
@@ -160,6 +164,26 @@ else
   case "$branch" in +*|*:*) die "refusing branch name '$branch': a leading + or a : is not allowed" ;; esac
 fi
 has_origin() { git -C "$ROOT" remote get-url origin >/dev/null 2>&1; }
+# review_gate — prints `review finding open: …` for each blocker or major of .10x/<id>/review.md with no entry in its
+# round's ### Fixes applied (scripts/md-check.js reviewOpen), then dies when there is one. No review.md, or a symlinked
+# one, passes: `check` reports it as `review: missing`.
+review_gate() {
+  local f open n=0 r fid sev title
+  f="$(task_dir "$id")/review.md"
+  [ -f "$f" ] && [ ! -L "$f" ] || return 0
+  # shellcheck disable=SC2016
+  open="$(node -e '
+    const [mdCheck, file] = process.argv.slice(1)
+    for (const x of require(mdCheck).reviewOpen(require("fs").readFileSync(file, "utf8")))
+      console.log([x.round === null ? "-" : x.round, x.id || "(no id)", x.severity, x.title.replace(/\t/g, " ")].join("\t"))
+  ' "$BIN_DIR/../scripts/md-check.js" "$f")" || die "could not read $(shown "$f")"
+  [ -n "$open" ] || return 0
+  while IFS=$'\t' read -r r fid sev title; do
+    say "review finding open: round $r $fid [$sev] $(shown "$title")"
+    n=$((n + 1))
+  done <<<"$open"
+  die "$n blocker or major finding(s) in $(shown "$f") have no entry in their round's ### Fixes applied"
+}
 
 origin_parts() { url_parts "$(git -C "$ROOT" remote get-url origin)"; }
 # Every URL origin pushes to must name the repo it fetches from, or the branch lands in one repo
@@ -474,6 +498,7 @@ check_body() {
 
 case "$cmd" in
   check)
+    state=""
     if [ "$mode" = pr ] || [ "$mode" = pr-merge ]; then
       if has_origin && origin_parts && [ "$o_host" = github.com ]; then
         state="$( (repo="$(gh_repo)" && gh_pr_state) 2>/dev/null)" || state=""
@@ -482,6 +507,8 @@ case "$cmd" in
       pr_template
       say "pr template: $(shown "${tpl:-none}")"
     fi
+    # The cleanup run after a merge: the branch has landed, its review no longer gates anything.
+    case "${state:-}" in MERGED*) ;; *) review_gate ;; esac
     dirty="$(git -C "$path" status --porcelain)"
     if [ -n "$dirty" ]; then
       say "uncommitted changes in $path:"; say "$dirty"; exit 1
@@ -509,6 +536,7 @@ case "$cmd" in
     ;;
 
   rebase)
+    review_gate
     # An explicit refspec, as in merge: a narrowed remote.origin.fetch would leave origin/<base> stale.
     has_origin && { git -C "$ROOT" fetch --quiet origin "+refs/heads/$base:refs/remotes/origin/$base" || die "could not fetch origin/$base"; }
     ! base_diverged || die "$(base_branch) and origin/$(base_branch) have diverged — reconcile the local base first"
@@ -522,6 +550,7 @@ case "$cmd" in
     ;;
 
   push)
+    review_gate
     [ "$branch" != "$base" ] || die "refusing to push the base branch $base"
     has_origin || die "no origin to push to"
     same_push_url
@@ -537,6 +566,7 @@ case "$cmd" in
     ;;
 
   merge)
+    review_gate
     has_origin || die "no origin"
     same_push_url
     origin_parts
@@ -587,6 +617,7 @@ case "$cmd" in
     ;;
 
   squash)
+    review_gate
     [ "$branch" != "$base" ] || die "the ticket branch is the base branch"
     td="$(task_dir "$id")"
     need_file "$td/commit-msg"

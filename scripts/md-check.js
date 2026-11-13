@@ -152,4 +152,61 @@ function handChecks(text) {
   return out
 }
 
-module.exports = { blank, bannedHits, phrases, sections, criteria, ticketCriteria, size, files, testFiles, handChecks }
+// The open `blocker` and `major` findings of a review.md: [{ round, id, severity, title, line }] in file order, <round>
+// the number or null (before the first round heading), <id> the string or null, <severity> in lower case, <line>
+// 1-based. A finding is a level 3–6 heading or an unindented list item, outside `### Fixes applied` and `### Decisions`,
+// whose text leads with `[blocker]` or `[major]`, optionally after `**` and `<id> —`. An id finding is open unless an
+// item of its round's `### Fixes applied` starts with its id (`F1 — …`, `F1 / F2 — …`); id-less findings of a round and
+// severity are all open when that round has fewer tag-led items (`[major] …`) of that severity than there are of them.
+// Patterns are tested on the blanked line (fences skipped, inline code blanked); the title is cut from the raw line.
+function reviewOpen(text) {
+  const lines = text.split('\n'), b = blank(lines)
+  const ID = '[A-Za-z][A-Za-z0-9.-]*'
+  const findRe = new RegExp(`^(?:\\*\\*)?(?:(${ID})\\s*[—–:]\\s*)?\\[(blocker|major)\\]`, 'i')
+  const idAnswerRe = new RegExp(`^(?:\\*\\*)?(${ID}(?:\\s*/\\s*${ID})*)\\s*[—–:]\\s*\\S`)
+  const tagAnswerRe = /^(?:\*\*)?\[(blocker|major)\]/i
+  const itemRe = /^(?:[-*+]|\d+[.)])[ \t]+/, headRe = /^#{3,6}[ \t]+/
+  const newRound = (n) => ({ n, findings: [], ids: new Set(), tags: { blocker: 0, major: 0 } })
+  const rounds = [newRound(null)]
+  let section = null
+  for (let k = 0; k < lines.length; k++) {
+    const s = b[k]
+    if (s === null) continue
+    const r = s.match(/^## Round ([0-9]+) — (?:full|fixes)[ \t]*$/)
+    if (r) { rounds.push(newRound(Number(r[1]))); section = null; continue }
+    if (/^#{1,3} /.test(s)) section = null
+    if (s.startsWith('### Fixes applied')) { section = 'fixes'; continue }
+    if (s.startsWith('### Decisions')) { section = 'decisions'; continue }
+    const round = rounds[rounds.length - 1]
+    const item = s.match(itemRe)
+    if (section === 'fixes') {
+      if (!item) continue
+      const t = s.slice(item[0].length)
+      const a = t.match(idAnswerRe)
+      if (a) for (const id of a[1].split('/')) round.ids.add(id.trim())
+      const g = t.match(tagAnswerRe)
+      if (g) round.tags[g[1].toLowerCase()]++
+      continue
+    }
+    if (section === 'decisions') continue
+    const marker = item || s.match(headRe)
+    if (!marker) continue
+    const f = s.slice(marker[0].length).match(findRe)
+    if (!f) continue
+    const rawMarker = lines[k].match(item ? itemRe : headRe)
+    const raw = rawMarker && lines[k].slice(rawMarker[0].length).match(findRe)
+    const rest = raw ? lines[k].slice(rawMarker[0].length + raw[0].length) : s.slice(marker[0].length + f[0].length)
+    round.findings.push({ round: round.n, id: f[1] || null, severity: f[2].toLowerCase(), title: rest.trim(), line: k + 1 })
+  }
+  const out = []
+  for (const round of rounds) {
+    const idless = { blocker: 0, major: 0 }
+    for (const f of round.findings) if (!f.id) idless[f.severity]++
+    for (const f of round.findings) {
+      if (f.id ? !round.ids.has(f.id) : round.tags[f.severity] < idless[f.severity]) out.push(f)
+    }
+  }
+  return out.sort((x, y) => x.line - y.line)
+}
+
+module.exports = { blank, bannedHits, phrases, sections, criteria, ticketCriteria, size, files, testFiles, handChecks, reviewOpen }
