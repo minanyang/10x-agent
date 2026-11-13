@@ -10,6 +10,8 @@
 # docs/scripts.md's `10x-batch run` entry must name the `PATH entry` a worker is denied, and refused when it contains
 # an allowWrite path.
 # docs/scripts.md's `10x-batch run` entry must name the main checkout's `.claude/10x.json` a worker is denied.
+# docs/loop.md must name the `--plugin-dir` a batch worker loads and `10x plugin missing`, and the `10x-batch run` entry
+# of docs/scripts.md `--plugin-dir`, `10x plugin missing` and `-plugin`.
 # README.md, README.zh-TW.md, docs/configuration.md and the Unreleased changelog section must give `batch.parallel`'s
 # default as 2, and docs/loop.md must say a roadmap follow-up joins the next version.
 # README.zh-TW.md must have the same ## / ### headings, level by level, and the two READMEs must link to each other.
@@ -261,6 +263,19 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   const entry = (scripts || "").split("\n").find((s) => s.startsWith("- `10x-batch run "))
   !entry ? bad(name, "no `10x-batch run` entry in docs/scripts.md")
     : entry.includes(".claude/10x.json") ? ok(name) : bad(name, "the `10x-batch run` entry does not name .claude/10x.json")
+}
+
+// gh-43 AC4 — docs/loop.md and the `10x-batch run` entry of docs/scripts.md say which plugin copy a worker loads and
+// what `10x plugin missing` means.
+{
+  const name = "docs say which plugin copy a batch worker loads and what 10x plugin missing means"
+  const loop = read("docs/loop.md") || ""
+  const entry = (read("docs/scripts.md") || "").split("\n").find((s) => s.startsWith("- `10x-batch run "))
+  const missing = []
+  for (const w of ["--plugin-dir", "10x plugin missing"]) if (!loop.includes(w)) missing.push(`docs/loop.md: ${w}`)
+  if (!entry) missing.push("docs/scripts.md: no `10x-batch run` entry")
+  else for (const w of ["--plugin-dir", "10x plugin missing", "-plugin"]) if (!entry.includes(w)) missing.push(`docs/scripts.md entry: ${w}`)
+  missing.length ? bad(name, missing.join("; ")) : ok(name)
 }
 
 // gh-24 AC5, AC8 — docs/loop.md's `### The batch sandbox` section names `denyWrite`.

@@ -30,8 +30,9 @@
 // worker's stream-json), <nn>-denials.tsv (`<tool>\t<command, file or tool>`), turn.md (every assistant text of the
 // latest run), reply.md (the next reply, moved to <nn>-reply.md once sent), <nn>-landed (the base and sha a close run
 // left), <nn>-fallback (the mode a run started in when auto mode was unavailable), <nn>-sandbox (`unavailable` when
-// the worker's sandbox was) and run.err (the stderr of loop's latest run). A phase is never stored: every command
-// derives it from these files and .10x/<id>/.
+// the worker's sandbox was), <nn>-plugin (`missing` when the worker's init event listed no 10x:work) and run.err
+// (the stderr of loop's latest run). A phase is never stored: every command derives it from these files and
+// .10x/<id>/.
 //
 // `init` resolves every argument before writing anything (`<n>`, `#<n>`, `gh-<n>`, an issue URL of origin's repo,
 // `--search` once, or an id with .10x/<id>/ticket.md) and exits 2 naming each one that resolves to no ticket, and each
@@ -47,11 +48,13 @@
 // .10x/_batch/tickets with no S/batch/tickets is a batch from before S, refused. The approval records of the tickets it
 // takes in are deleted.
 // `run` starts one worker turn and waits for it: ${TENX_BATCH_CLAUDE:-claude} -p … --output-format stream-json
-// --verbose --permission-mode auto, a plan session's worker with TENX_BATCH_PLAN_DIR set to .10x/<id> for
+// --verbose --plugin-dir <the directory above this script's bin/> --permission-mode auto, a plan session's worker with TENX_BATCH_PLAN_DIR set to .10x/<id> for
 // hooks/plan-boundary.js, a new --session-id for plan, implement and close, --resume of the ticket's latest
 // session for reply, the prompt after `--`. When the worker's stream-json init event reports another permission mode
 // (auto mode unavailable), it is stopped and the turn runs again as a new run in the mode used before auto mode: a plan
-// session in default with Edit(.10x/<id>/**) allowed, implement and close in acceptEdits. Every run gets
+// session in default with Edit(.10x/<id>/**) allowed, implement and close in acceptEdits. A run whose init event has
+// no 10x:work among its slash_commands is stopped, writes <nn>-plugin, is never rerun, and its ticket fails with
+// `10x plugin missing`. Every run gets
 // --disallowedTools for the commands hooks/grant.js always asks for (10x-land issue/comment/advisory, 10x-batch
 // approve/init/accept-green/checked, 10x-security set/remove/ticket), Edit of S and of the settings files (the main
 // checkout's .claude/, ~/.claude/ and, when set, $CLAUDE_CONFIG_DIR's settings.json and settings.local.json, each also
@@ -190,6 +193,8 @@ const ALLOW_WRITE = [os.tmpdir(), ...['.npm', 'Library/Caches', '.cache', 'Libra
 const configDir = process.env.CLAUDE_CONFIG_DIR
 const SETTINGS_FILES = [path.join(ROOT, '.claude'), path.join(HOME, '.claude'), ...(configDir === undefined ? [] : [path.resolve(ROOT, configDir)])]
   .flatMap((d) => [path.join(d, 'settings.json'), path.join(d, 'settings.local.json')])
+// The 10x copy this script belongs to, which every worker loads with --plugin-dir.
+const PLUGIN = canonical(path.join(__dirname, '..'))
 // <p>'s real path; through a dangling symlink, at it or at an ancestor, the path the link names, as far as it resolves.
 function real(p) {
   for (let hops = 0; hops < 40; hops++) {
@@ -244,7 +249,7 @@ function writeDeny(id) {
     path.join(home, '.config', 'git'),
     ...(xdgConfig ? [path.join(xdgConfig, 'git')] : []),
     ...['Library/LaunchAgents', '.config/systemd/user', '.config/autostart'].map((d) => path.join(home, d)),
-    canonical(path.join(__dirname, '..')),
+    PLUGIN,
     path.join(home, '.claude', 'plugins'),
     path.join(home, '.claude', 'hooks'),
     ...claude.slice(1).flatMap((d) => [path.join(d, 'plugins'), path.join(d, 'hooks')]),
@@ -832,6 +837,7 @@ function derive(id) {
     row.sandbox = true
     return set('failed', 'sandbox unavailable')
   }
+  if ((readOr(path.join(bdir(id), `${pad(last.n)}-plugin`)) || '').trim() === 'missing') return set('failed', '10x plugin missing')
   if (exit !== '0') return set('failed', exit === '?' ? `${tag} ended without an exit code` : `${tag} exited ${exit}`)
 
   if (last.session_kind === 'plan') {
@@ -1231,8 +1237,9 @@ async function run(argv, replan = false) {
       } catch {}
     })
 
-  // One worker run, recorded in runs.tsv. Started in auto mode, its stream-json's init event is read as soon as its line
-  // is complete: reporting another permission mode, it means auto mode is unavailable, and the worker is stopped.
+  // One worker run, recorded in runs.tsv. Its stream-json's init event is read as soon as its line is complete: listing
+  // no 10x:work, the plugin is missing and the worker is stopped; started in auto mode and reporting another permission
+  // mode, auto mode is unavailable and the worker is stopped.
   // The prompt goes after `--`, so a reply starting with `-` is never an option.
   const once = async (mode, sess) => {
     const prev = runs(id)
@@ -1241,7 +1248,7 @@ async function run(argv, replan = false) {
     const log = path.join(bdir(id), `${nn}-${kind}.jsonl`)
     put(turn, '')
     const out = fs.openSync(log, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW)
-    const child = spawn(bin, ['-p', '--output-format', 'stream-json', '--verbose', '--settings', settings, '--permission-mode', ...mode, '--disallowedTools', ...denied, flag, sess, '--', prompt], {
+    const child = spawn(bin, ['-p', '--output-format', 'stream-json', '--verbose', '--settings', settings, '--plugin-dir', PLUGIN, '--permission-mode', ...mode, '--disallowedTools', ...denied, flag, sess, '--', prompt], {
       cwd: ROOT,
       stdio: ['ignore', out, 'inherit'],
       env,
@@ -1266,14 +1273,17 @@ async function run(argv, replan = false) {
       fs.rmSync(replyFile, { force: true })
     }
     let init = null
-    if (mode[0] === 'auto' && child.pid) {
-      while ((init = initMode(log)) === undefined && !ended) await new Promise((res) => setTimeout(res, 100))
-      if (init === undefined) init = initMode(log) ?? null
-      if (typeof init === 'string' && init !== 'auto') {
-        try {
-          child.kill('SIGTERM')
-        } catch {}
-      }
+    if (child.pid) {
+      while ((init = initEvent(log)) === undefined && !ended) await new Promise((res) => setTimeout(res, 100))
+      if (init === undefined) init = initEvent(log) ?? null
+    }
+    const ev = init && typeof init === 'object' ? init : null
+    const missing = !!ev && !(Array.isArray(ev.slash_commands) && ev.slash_commands.includes('10x:work'))
+    const unavailable = !missing && mode[0] === 'auto' && typeof ev?.permissionMode === 'string' && ev.permissionMode !== 'auto'
+    if (missing || unavailable) {
+      try {
+        child.kill('SIGTERM')
+      } catch {}
     }
 
     const code = await exited
@@ -1281,16 +1291,17 @@ async function run(argv, replan = false) {
     put(turn, texts.length ? texts.join('\n\n') + '\n' : '')
     put(path.join(bdir(id), `${nn}-denials.tsv`), denials.map((d) => d + '\n').join(''))
     if (sandbox) put(path.join(bdir(id), `${nn}-sandbox`), 'unavailable\n')
+    if (missing) put(path.join(bdir(id), `${nn}-plugin`), 'missing\n')
     const now = runs(id).map((x) => (x.n === row.n ? { ...x, end: String(Date.now()), exit: String(code ?? 127) } : x))
     writeRuns(id, now)
     // Where it landed, read now: the base moves on as later tickets land.
     if (kind === 'close' && code === 0 && !fs.existsSync(path.join(WT_DIR, id))) put(path.join(bdir(id), `${nn}-landed`), landedOn() + '\n')
-    return { code, unavailable: typeof init === 'string' && init !== 'auto' }
+    return { code, unavailable }
   }
 
   let res = await once(['auto'], session)
-  // The turn again in today's mode, unless the ticket was dropped or this process stopped meanwhile. A rerun is never
-  // checked for its own init; plan, implement and close start a new session, a reply resumes the same one.
+  // The turn again in today's mode, unless the ticket was dropped or this process stopped meanwhile. A rerun is checked
+  // for the plugin, never for its mode; plan, implement and close start a new session, a reply resumes the same one.
   // A worker whose sandbox is unavailable writes no init event, so it is never rerun.
   if (res.unavailable && !live.signalled && !fs.existsSync(path.join(sdir(id), 'dropped')))
     res = await once(fallback, kind === 'reply' ? session : randomUUID())
@@ -1301,10 +1312,10 @@ async function run(argv, replan = false) {
   process.exit(0)
 }
 
-// The permissionMode of a stream-json log's init event, read from its complete lines: other system events (SessionStart
-// hooks) may come first. undefined while no init line is there yet; null when the init names no mode, or when an event
-// that is not a system one comes first (init precedes every turn).
-function initMode(file) {
+// A stream-json log's init event, read from its complete lines: other system events (SessionStart hooks) may come
+// first. undefined while no init line is there yet; null when an event that is not a system one comes first (init
+// precedes every turn).
+function initEvent(file) {
   const text = readOr(file) || ''
   for (const l of text.slice(0, text.lastIndexOf('\n') + 1).split('\n')) {
     if (!l.trim()) continue
@@ -1315,7 +1326,7 @@ function initMode(file) {
       continue
     }
     if (!ev || ev.type !== 'system') return null
-    if (ev.subtype === 'init') return typeof ev.permissionMode === 'string' ? ev.permissionMode : null
+    if (ev.subtype === 'init') return ev
   }
   return undefined
 }

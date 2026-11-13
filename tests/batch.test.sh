@@ -57,7 +57,7 @@ STUB
 # $WORKER_EXIT. Started in auto mode with $WORKER_MODE set, its init reports $WORKER_MODE instead and it waits for SIGTERM.
 cat >"$tmp/stub/worker" <<'STUB'
 #!/bin/bash
-prompt="" flag="" session="" mode="" perm=() deny=() in="" settings=unset right=no
+prompt="" flag="" session="" mode="" perm=() deny=() plug=() in="" settings=unset right=no
 hook='{"type":"system","subtype":"hook_started","hook_event":"SessionStart"}'
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -68,6 +68,7 @@ while [ $# -gt 0 ]; do
     --disallowedTools) in=deny; shift ;;
     --verbose) [ "${2-}" = --settings ] && right=yes; in=""; shift ;;
     --settings) settings="$2"; in=""; shift 2 ;;
+    --plugin-dir) plug+=("$2"); in=""; shift 2 ;;
     -*) in=""; shift ;;
     *) case "$in" in perm) perm+=("$1") ;; deny) deny+=("$1") ;; esac; shift ;;
   esac
@@ -78,6 +79,7 @@ printf '%s\n' "${perm[*]}" >>"$WORKER_LOG.perm"
 (IFS='|'; printf '%s\n' "${deny[*]}") >>"$WORKER_LOG.disallowed"
 printf '%s\n' "$settings" >>"$WORKER_LOG.settings"
 printf '%s\n' "$right" >>"$WORKER_LOG.afterverbose"
+(IFS='|'; printf '%s\n' "${plug[*]}") >>"$WORKER_LOG.plugin"
 printf '%s\n' "${TENX_BATCH_PLAN_DIR-unset}" >>"$WORKER_LOG.plandir"
 printf '%s\n' "${TENX_BATCH-unset}" >>"$WORKER_LOG.env"
 # With $WORKER_SCRIPT=flow the worker also does what a real one would, then prints its usual turn: /10x:work writes a
@@ -99,8 +101,15 @@ if [ "${WORKER_SCRIPT:-}" = flow ]; then
     Approved.*) sed -i.bak 's/^Status: draft/Status: approved/' ".10x/$id/plan.md"; rm -f ".10x/$id/plan.md.bak" ;;
   esac
 fi
+if [ -n "${WORKER_NOPLUGIN:-}" ]; then
+  printf '%s\n{"type":"system","subtype":"init","permissionMode":"%s","slash_commands":["other"]}\n' "$hook" "${WORKER_MODE:-$mode}"
+  trap 'kill "$s" 2>/dev/null; exit 143' TERM INT
+  sleep 20 & s=$!
+  wait "$s"
+  exit 0
+fi
 if [ "$mode" = auto ] && [ -n "${WORKER_MODE:-}" ]; then
-  printf '%s\n{"type":"system","subtype":"init","permissionMode":"%s"}\n' "$hook" "$WORKER_MODE"
+  printf '%s\n{"type":"system","subtype":"init","permissionMode":"%s","slash_commands":["10x:work","10x:close"]}\n' "$hook" "$WORKER_MODE"
   trap 'kill "$s" 2>/dev/null; exit 143' TERM INT
   sleep 300 & s=$!
   wait "$s"
@@ -108,7 +117,7 @@ if [ "$mode" = auto ] && [ -n "${WORKER_MODE:-}" ]; then
 fi
 if [ -n "${WORKER_OUT:-}" ]; then cat "$WORKER_OUT"
 else
-  printf '%s\n{"type":"system","subtype":"init","permissionMode":"%s"}\n' "$hook" "$mode"
+  printf '%s\n{"type":"system","subtype":"init","permissionMode":"%s","slash_commands":["10x:work","10x:close"]}\n' "$hook" "$mode"
   printf '%s\n' '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"done"}]}}' \
     '{"type":"result","result":"done"}'
 fi
@@ -169,7 +178,7 @@ reset() {
   sleepers=(); bgs=()
   rm -rf .10x .worktrees .git/10x-batch "$XDG_STATE_HOME"
   : >"$WORKER_LOG"; : >"$WORKER_LOG.perm"; : >"$WORKER_LOG.disallowed"; : >"$WORKER_LOG.plandir"; : >"$STUB_LOG"
-  : >"$WORKER_LOG.settings"; : >"$WORKER_LOG.afterverbose"
+  : >"$WORKER_LOG.settings"; : >"$WORKER_LOG.afterverbose"; : >"$WORKER_LOG.plugin"
   : >"$WORKER_LOG.env"; : >"$WORKER_LOG.sessions"
   echo '{"close":"local"}' >.claude/10x.json
 }
@@ -648,7 +657,7 @@ need "close: auto, then acceptEdits" eval 'test "$(sed -n 7p "$WORKER_LOG.perm")
   test "$(sed -n 8p "$WORKER_LOG.perm")" = "--permission-mode acceptEdits"'
 need "two close runs" test "$(field t1 7 2)/$(field t1 8 2)/$(field t1 7 7)" = close/close/143
 need "implement and close reruns get no ticket dir" test "$(sed -n '5,8p' "$WORKER_LOG.plandir" | tr '\n' ' ')" = "unset unset unset unset "
-need "a rerun is never checked again" test "$(wc -l <"$WORKER_LOG.perm" | tr -d ' ')" = 8
+need "a rerun is never checked for its mode again" test "$(wc -l <"$WORKER_LOG.perm" | tr -d ' ')" = 8
 end
 
 reset; ticket t1 t2
@@ -1232,7 +1241,7 @@ reset; ticket t1 t2
 begin "run: turn.md holds every assistant text of the run"
 vb init t1 t2
 cat >"$tmp/turn.jsonl" <<'EOF'
-{"type":"system","subtype":"init"}
+{"type":"system","subtype":"init","slash_commands":["10x:work"]}
 {"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"First question?"},{"type":"tool_use","id":"u1","name":"Bash","input":{"command":"ls"}}]}}
 {"type":"assistant","parent_tool_use_id":"u9","message":{"content":[{"type":"text","text":"a subagent's text"}]}}
 {"type":"result","result":"First question?"}
@@ -2495,6 +2504,60 @@ reset; ticket t1
 vb init t1
 WORKER_OUT="$tmp/other-reason.jsonl" WORKER_EXIT=1 vb run t1 plan
 need "another startup_failure_reason is an ordinary exit" eval 'test ! -e "$B/t1/01-sandbox" && grep -qF "run 01 (plan) exited 1" "$B/board.md"'
+end
+
+reset; ticket t1 t2
+begin "run: every worker run loads the plugin directory 10x-batch belongs to"
+vb init t1 t2
+WORKER_MODE=default vb run t1 plan
+echo "go" >"$B/t1/reply.md"; vb run t1 reply
+approve_plan t1 a
+WORKER_MODE=default vb run t1 implement
+evidence t1 "- AC1 — met: x"; mkdir -p .worktrees/t1
+vb run t1 close
+need "six runs, the two fallbacks among them" test "$(wc -l <"$WORKER_LOG.plugin" | tr -d ' ')" = 6
+need "each run has exactly one --plugin-dir, the directory above bin/" test "$(sort -u "$WORKER_LOG.plugin")" = "$(cd "$BIN/.." && pwd -P)"
+end
+
+reset; ticket t1
+printf '%s\n' '{"type":"system","subtype":"init","permissionMode":"auto"}' \
+  '{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"done"}]}}' \
+  '{"type":"result","result":"done"}' >"$tmp/bare-init.jsonl"
+printf '%s\n' '{"type":"result","result":"x"}' >"$tmp/no-init.jsonl"
+begin "run: a worker whose init lacks 10x:work is stopped and its ticket fails with 10x plugin missing"
+for m in default auto; do
+  fl=(); [ "$m" = auto ] && fl=(--auto)
+  reset; ticket t1
+  vb init ${fl[@]+"${fl[@]}"} t1
+  WORKER_NOPLUGIN=1 vb run t1 plan
+  need "$m: 01-plugin holds missing" test "$(cat "$B/t1/01-plugin" 2>/dev/null)" = missing
+  need "$m: one worker start and one run row" test "$(wc -l <"$WORKER_LOG" | tr -d ' ')/$(wc -l <"$SB/t1/runs.tsv" | tr -d ' ')" = 1/2
+  need "$m: no fallback" test -z "$(find "$B/t1" -name '*-fallback')"
+  need "$m: the row is failed with 10x plugin missing" grep -qF "| 1 | t1 | failed | $(field t1 1 3) | failed | 10x plugin missing |" "$B/board.md"
+  need "$m: under Needs the human" grep -qxF -- "- t1 — failed: 10x plugin missing" "$B/board.md"
+  need "$m: not as an exit" not grep -qF "exited 143" "$B/board.md"
+  reset; ticket t1
+  vb init ${fl[@]+"${fl[@]}"} t1
+  WORKER_NOPLUGIN=1 lp 60
+  need "$m: loop finished" finished
+  need "$m: loop reports it as a failed item" printed '{"items":[{"id":"t1","need":"failed","evidence":"10x plugin missing"}]}'
+  need "$m: loop started the worker once" test "$(wc -l <"$WORKER_LOG" | tr -d ' ')" = 1
+done
+reset; ticket t1
+vb init --auto t1
+WORKER_NOPLUGIN=1 WORKER_MODE=default vb run t1 plan
+need "another mode too: 01-plugin holds missing" test "$(cat "$B/t1/01-plugin" 2>/dev/null)" = missing
+need "another mode too: one run, no fallback" test "$(wc -l <"$WORKER_LOG" | tr -d ' ')/$(find "$B/t1" -name '*-fallback' | wc -l | tr -d ' ')" = 1/0
+reset; ticket t1
+vb init t1
+WORKER_OUT="$tmp/bare-init.jsonl" vb run t1 plan
+need "an init without slash_commands: 01-plugin holds missing" test "$(cat "$B/t1/01-plugin" 2>/dev/null)" = missing
+need "an init without slash_commands: failed" grep -qF "| 1 | t1 | failed | $(field t1 1 3) | failed | 10x plugin missing |" "$B/board.md"
+reset; ticket t1
+vb init t1
+WORKER_OUT="$tmp/no-init.jsonl" WORKER_EXIT=1 vb run t1 plan
+need "no init event: no 01-plugin" test ! -e "$B/t1/01-plugin"
+need "no init event: judged by its exit" grep -qF "run 01 (plan) exited 1" "$B/board.md"
 end
 
 [ "$fail" -eq 0 ] && echo "batch: all cases pass"
