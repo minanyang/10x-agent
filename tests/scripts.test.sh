@@ -1101,10 +1101,14 @@ STUB_STATE="MERGED https://github.com/acme/land/pull/1" expect "check does not r
 ! grep -q 'review finding open' "$tmp/out" && ok "a merged PR prints no review finding" || { bad "a merged PR prints no review finding"; cat "$tmp/out"; }
 o_gate="$(git ls-remote origin)"; l_gate="$(git -C "$lw" rev-parse HEAD)"
 : >"$tmp/stub.log"
-for sub in rebase squash push merge; do
-  STUB_VIEW="main OPEN false" expect "$sub refuses an unanswered blocker" 2 10x-land "$sub" L1
-  grep -qxF 'review finding open: round 1 F1 [blocker] boom' "$tmp/out" && ok "$sub prints the finding line" || { bad "$sub prints the finding line"; cat "$tmp/out"; }
-done
+STUB_VIEW="main OPEN false" expect "rebase refuses an unanswered blocker" 2 10x-land rebase L1
+grep -qxF 'review finding open: round 1 F1 [blocker] boom' "$tmp/out" && ok "rebase prints the finding line" || { bad "rebase prints the finding line"; cat "$tmp/out"; }
+STUB_VIEW="main OPEN false" expect "squash refuses an unanswered blocker" 2 10x-land squash L1
+grep -qxF 'review finding open: round 1 F1 [blocker] boom' "$tmp/out" && ok "squash prints the finding line" || { bad "squash prints the finding line"; cat "$tmp/out"; }
+STUB_VIEW="main OPEN false" expect "push refuses an unanswered blocker" 2 10x-land push L1
+grep -qxF 'review finding open: round 1 F1 [blocker] boom' "$tmp/out" && ok "push prints the finding line" || { bad "push prints the finding line"; cat "$tmp/out"; }
+STUB_VIEW="main OPEN false" expect "merge refuses an unanswered blocker" 2 10x-land merge L1
+grep -qxF 'review finding open: round 1 F1 [blocker] boom' "$tmp/out" && ok "merge prints the finding line" || { bad "merge prints the finding line"; cat "$tmp/out"; }
 [ "$(git ls-remote origin)" = "$o_gate" ] && [ "$(git -C "$lw" rev-parse HEAD)" = "$l_gate" ] && ! grep -q 'pr merge' "$tmp/stub.log" \
   && ok "the refusing subcommands changed nothing" || bad "the refusing subcommands changed nothing"
 cp "$tmp/review.L1.bak" .10x/L1/review.md
