@@ -498,6 +498,7 @@ check_body() {
 
 case "$cmd" in
   check)
+    state=""
     if [ "$mode" = pr ] || [ "$mode" = pr-merge ]; then
       if has_origin && origin_parts && [ "$o_host" = github.com ]; then
         state="$( (repo="$(gh_repo)" && gh_pr_state) 2>/dev/null)" || state=""
