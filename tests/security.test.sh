@@ -599,7 +599,7 @@ need "ticket" exits 0 ticket "$FPA" "security-$H8"
 printf '# Fix security entry %s\n\n## Context\nSecurity entry `%s` in `.10x/security.md` (title, location and trace are there). Found in `audit/run-1`.\n\n## Acceptance criteria\n- [ ] AC1 — Security entry `%s` is fixed, and removed from `security.md` once a full review round has no finding against it.\n' \
   "$H8" "$FPA" "$FPA" >"$tmp/ticket.want"
 need "ticket.md is the documented text" test "$(cat ".10x/security-$H8/ticket.md")" = "$(cat "$tmp/ticket.want")"
-need "no title" not grep -qF "Eval of cmd in the runner"".10x/security-$H8/ticket.md"
+need "no title" not grep -qF "Eval of cmd in the runner" ".10x/security-$H8/ticket.md"
 need "no location" not grep -qF "src/a.sh" ".10x/security-$H8/ticket.md"
 need "no trace" not grep -qF "entrypoint" ".10x/security-$H8/ticket.md"
 end
