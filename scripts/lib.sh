@@ -22,7 +22,7 @@ main_root() {
 
 ROOT="$(main_root)"
 CONFIG="$ROOT/.claude/10x.json"
-COMMON="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)"
+COMMON="$(command git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)"
 WT_PIN=""; WT_GIT_DIR=""; WT_REASON=""
 
 # cfg <dotted.key> [default] — print a config value (arrays one item per line).
