@@ -320,7 +320,7 @@ need "title byte for byte" field_is "$FPS" title "Finding with a line${LS}separa
 need "trace byte for byte" field_is "$FPS" trace "argv${PS}reaches the sink"
 need "set exit 0" exits 0 set T1 "$FPS" later
 need "list --plannable exit 0" exits 0 list --plannable
-need "one line printed" test "$(wc -l <"$tmp/out")" = 1
+need "one line printed" test "$(grep -c '' "$tmp/out")" = 1
 need "remove exit 0" exits 0 remove T1 "$FPS"
 end
 
