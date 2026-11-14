@@ -23,6 +23,7 @@ main_root() {
 ROOT="$(main_root)"
 CONFIG="$ROOT/.claude/10x.json"
 COMMON="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)"
+WT_PIN=""; WT_GIT_DIR=""; WT_REASON=""
 
 # cfg <dotted.key> [default] — print a config value (arrays one item per line).
 cfg() { cfg_in "$CONFIG" "$@"; }
@@ -103,26 +104,53 @@ tickets_need() {
 worktree_dir() { printf '%s/%s\n' "$ROOT" "$(cfg worktreeDir .worktrees)"; }
 task_dir() { printf '%s/.10x/%s\n' "$ROOT" "$1"; }
 
-# The worktree of ticket <id>, or die.
+# wt_path <id> — sets WT to the worktree of ticket <id>, checked and pinned (wt_check), or dies. Run it in the caller's
+# shell, never inside $(…), so the pin outlives the call.
 wt_path() {
-  local p r
+  local p
   p="$(worktree_dir)/$1"
   [ -e "$p/.git" ] || die "ticket $1 has no worktree at $p (run: 10x-worktree add $1)"
-  r="$(wt_check "$p")"
-  [ -z "$r" ] || die "$r"
-  printf '%s\n' "$p"
+  wt_check "$p" || die "$WT_REASON"
+  # shellcheck disable=SC2034  # read by the caller
+  WT="$p"
 }
 
-# wt_check <worktree> — prints why git must not run in <worktree> (its .git file or admin directory no longer points at
-# the main checkout), nothing when it may. scripts/worktree.js reads files only, never git. A check that cannot run is a
-# reason too: an empty one must never come from a broken check.
+# wt_check <worktree> — whether git may run in <worktree> (its .git file and admin directory still point at the main
+# checkout; scripts/worktree.js reads files only, never git). Run it in the caller's shell, never inside $(…). Returns 0
+# and pins git -C <worktree> to what the check resolved (WT_PIN the worktree, WT_GIT_DIR its admin dir, WT_REASON
+# empty); else returns 1 with WT_PIN and WT_GIT_DIR empty and WT_REASON saying why. A check that cannot run is a
+# refusal too: a pass must never come from a broken check.
 wt_check() {
-  local out
-  if ! out="$(node "$(dirname "${BASH_SOURCE[0]}")/worktree.js" "$1" "$COMMON" 2>&1)"; then
-    printf 'refusing to run git in %s: the worktree check failed: %s\n' "$(shown "$1")" "$(shown "$out")"
+  local out rc=0
+  out="$(node "$(dirname "${BASH_SOURCE[0]}")/worktree.js" "$1" "$COMMON")" || rc=$?
+  if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
+    WT_PIN="$1"; WT_GIT_DIR="$out"; WT_REASON=""
     return 0
   fi
-  [ -z "$out" ] || printf '%s\n' "$out"
+  WT_PIN=""; WT_GIT_DIR=""
+  if [ "$rc" -eq 3 ]; then WT_REASON="$(shown "$out")"
+  else WT_REASON="refusing to run git in $(shown "$1"): the worktree check failed (exit $rc): $(shown "$out")"; fi
+  return 1
+}
+
+# wt_run <command…> — <command> with git pinned to the worktree wt_check last passed: with GIT_DIR, GIT_COMMON_DIR and
+# GIT_WORK_TREE set git does no discovery, so a .git file or commondir rewritten after the check runs no planted
+# config, hook or filter (refs still follow commondir: data, see scripts/worktree.js).
+wt_run() { env GIT_DIR="$WT_GIT_DIR" GIT_COMMON_DIR="$COMMON" GIT_WORK_TREE="$WT_PIN" "$@"; }
+
+# The single place git is started from bash. git -C <dir> on the main checkout runs as is; on any other directory it
+# runs pinned, after a check unless <dir> is the worktree checked last, so a call site cannot skip the check or the pin.
+# Inside $(…) a refusal ends that subshell only (git still never runs), so call sites check in their own shell first.
+# shellcheck disable=SC2032  # xargs starts the real git only on the main checkout, which is never pinned
+git() {
+  if [ "${1:-}" != -C ]; then command git "$@"; return; fi
+  local dir="${2:-}"
+  if [ "$dir" = "$ROOT" ]; then command git "$@"; return; fi
+  if [ -z "$dir" ] || [ "$dir" != "${WT_PIN:-}" ]; then
+    [[ "$dir" == /* ]] || die "refusing to run git in $(shown "$dir"): not an absolute path"
+    wt_check "$dir" || die "$WT_REASON"
+  fi
+  wt_run git "$@"
 }
 
 # Base branch name: config `base`, else develop if origin has it, else origin's default, else main.

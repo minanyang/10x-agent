@@ -68,7 +68,7 @@ id="${1:-}"; [ -n "$id" ] || die "$usage"
 check_id "$id"
 fixes=""
 case "${2:-}" in "") ;; --fixes) fixes=1 ;; *) die "$usage" ;; esac
-path="$(wt_path "$id")"
+wt_path "$id"; path="$WT"
 dir="$(task_dir "$id")"
 mkdir -p "$dir"
 locked="$(lock_changed "$path")"
@@ -121,7 +121,7 @@ git -C "$path" diff "$base" HEAD -- . "${excludes[@]}" >"$diff_file"
 here="$(dirname "$(readlink -f "$0")")/.."
 if [ -n "$fixes" ]; then mb="$(git -C "$path" merge-base "$(base_ref)" HEAD)" || die "no merge base with $(base_ref)"; else mb="$base"; fi
 # shellcheck disable=SC2016  # JavaScript, not shell
-plan_checks="$(node -e '
+plan_checks="$(wt_run node -e '
   const fs = require("fs"), { execFileSync } = require("child_process")
   const [wt, planPath, mb, mdCheck, ...excl] = process.argv.slice(1)
   const { blank, sections } = require(mdCheck)
@@ -171,7 +171,7 @@ plan_checks="$(node -e '
   console.log(out.join("\n"))
 ' "$path" "$dir/plan.md" "$mb" "$here/scripts/md-check.js" "${excludes[@]}" ':(exclude,glob)**/CHANGELOG*')" || die "could not run the plan checks"
 # shellcheck disable=SC2016  # JavaScript, not shell
-security="$(node -e '
+security="$(wt_run node -e '
   const path = require("path"), { execFileSync } = require("child_process")
   const [wt, base] = process.argv.slice(1)
   const git = (args) => {

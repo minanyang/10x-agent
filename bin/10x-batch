@@ -409,9 +409,10 @@ function put(file, text) {
   fs.renameSync(tmp, file)
 }
 
-function git(argv) {
+// <env>, when given, is merged over process.env: accept-green passes worktree.pin's, which pins git to the checked worktree.
+function git(argv, env) {
   try {
-    return execFileSync('git', ['-C', ROOT, ...argv], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    return execFileSync('git', ['-C', ROOT, ...argv], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: env ? { ...process.env, ...env } : process.env }).trim()
   } catch {
     return null
   }
@@ -1426,11 +1427,16 @@ function acceptGreen(argv) {
     die(`accept-green ${id} refused: '${flat(arg)}' is not a path relative to the worktree root`)
   const wt = path.join(WT_DIR, id)
   if (!fs.existsSync(path.join(wt, '.git'))) die(`accept-green ${id} refused: ${id} has no worktree at ${wt}`)
-  const redirected = worktree.reason(wt, common)
-  if (redirected) die(`accept-green ${id} refused: ${redirected}`)
-  const wtGit = (a) => git(['-C', wt, ...a])
+  const pin = worktree.pin(wt, common)
+  if (pin.reason) die(`accept-green ${id} refused: ${pin.reason}`)
+  // Pinned git still resolves refs through the admin dir's commondir, which a worker can rewrite: only the worktree's
+  // own HEAD file is read pinned, and the commits are read in the main checkout.
+  const wtGit = (a) => git(['-C', wt, ...a], pin.env)
+  const head = wtGit(['symbolic-ref', '-q', 'HEAD'])
+  const tip = head ? git(['rev-parse', '--verify', '-q', `${head}^{commit}`]) : wtGit(['rev-parse', '--verify', '-q', 'HEAD^{commit}'])
+  if (!tip) die(`accept-green ${id} refused: no commit at HEAD`)
   const ref = baseRef()
-  const mb = wtGit(['merge-base', ref, 'HEAD'])
+  const mb = git(['merge-base', ref, tip])
   if (!mb) die(`accept-green ${id} refused: no merge base with ${ref}`)
   // The test files red-proof runs: redProof.tests when redProof.command is set (the worktree's config, else the main
   // checkout's), else its JavaScript test-file pattern.
@@ -1444,11 +1450,11 @@ function acceptGreen(argv) {
   const cmd = rp?.command == null ? '' : String(rp.command)
   const globs = cmd ? (Array.isArray(rp.tests) ? rp.tests : rp.tests == null ? [] : [rp.tests]).map(String).filter(Boolean) : []
   if (cmd && !globs.length) die('redProof.command is set but redProof.tests is missing (git pathspec globs naming the test files)')
-  const out = wtGit(['diff', '-z', '--name-only', '--no-renames', '--diff-filter=AMT', mb, 'HEAD', ...(cmd ? ['--', ...globs.map((g) => `:(glob)${g}`)] : [])])
+  const out = git(['diff', '-z', '--name-only', '--no-renames', '--diff-filter=AMT', mb, tip, ...(cmd ? ['--', ...globs.map((g) => `:(glob)${g}`)] : [])])
   if (out === null) die(`accept-green ${id} refused: cannot list the files the branch changes`)
   const tests = out.split('\0').filter((f) => f && (cmd || /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/.test(f)))
   if (!tests.includes(file)) die(`accept-green ${id} refused: ${flat(file)} is not a test file the branch adds or modifies`)
-  const blob = wtGit(['rev-parse', `HEAD:${file}`])
+  const blob = git(['rev-parse', `${tip}:${file}`])
   if (!blob) die(`accept-green ${id} refused: no blob for ${flat(file)} at HEAD`)
   mkd(sdir(id))
   const rec = path.join(sdir(id), 'accepted-green.md')

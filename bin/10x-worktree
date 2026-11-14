@@ -42,7 +42,10 @@
 # moved, stops it before anything moves. Prints each committed path.
 # Before running git in an existing worktree, `add`, `path`, `rm` and `memory` exit 2 when its .git file or admin
 # directory no longer points at the main checkout (scripts/worktree.js): a redirected config would run its own
-# commands. `list` prints such a worktree as a `skipped: <reason>` line instead of its row and exits 1.
+# commands. `list` prints such a worktree as a `skipped: <reason>` line instead of its row and exits 1. After the
+# check, the git they run there is pinned to the checked directories (scripts/lib.sh git()), so a link file rewritten
+# afterwards runs no planted command (refs, which are data, still follow commondir). `rm` makes git worktree remove's own tests itself, pinned — a worktree with submodules
+# or uncommitted changes is refused — then removes it with --force, which starts no git in the worktree.
 
 set -euo pipefail
 # shellcheck source=../scripts/lib.sh
@@ -61,6 +64,7 @@ landed() {
   git -C "$ROOT" merge-base --is-ancestor "$1" "$base" && return 0
   files="$(git -C "$ROOT" diff --name-only "$base...$1")"
   [ -n "$files" ] || return 1
+  # shellcheck disable=SC2033  # xargs starts the real git, on the main checkout, which is never pinned
   printf '%s\n' "$files" | tr '\n' '\0' | xargs -0 git -C "$ROOT" diff --quiet "$1" "$base" --
 }
 
@@ -102,8 +106,7 @@ case "$cmd" in
     path="$(worktree_dir)/$id"
     if [ -e "$path/.git" ]; then
       ticket_lines "$id"
-      r="$(wt_check "$path")"
-      [ -z "$r" ] || die "$r"
+      wt_check "$path" || die "$WT_REASON"
       say "exists: $path on $(git -C "$path" rev-parse --abbrev-ref HEAD)"
       exit 0
     fi
@@ -128,6 +131,7 @@ case "$cmd" in
       git -C "$ROOT" worktree add --quiet --no-track -b "$branch" "$path" "$start"
       created=1
     fi
+    wt_check "$path" || die "$WT_REASON"
     say "created: $path on $branch from $start ($(git -C "$path" rev-parse --short HEAD))"
     # The commit the branch was cut at, which `rm` compares against; an attached branch gets none.
     if [ -L "$dir" ] || [ -L "$dir/start" ]; then
@@ -163,8 +167,7 @@ case "$cmd" in
       [ -e "$p/.git" ] || continue
       found=1
       p="${p%/}"
-      r="$(wt_check "$p")"
-      if [ -n "$r" ]; then say "skipped: $r"; skipped=1; continue; fi
+      if ! wt_check "$p"; then say "skipped: $WT_REASON"; skipped=1; continue; fi
       printf '%-24s %-40s %s uncommitted\n' "$(basename "$p")" "$(git -C "$p" rev-parse --abbrev-ref HEAD)" "$(git -C "$p" status --porcelain | wc -l | tr -d ' ')"
     done
     [ "$found" = 1 ] || say "no ticket worktrees under $dir"
@@ -173,20 +176,25 @@ case "$cmd" in
 
   path)
     id="${1:-}"; [ -n "$id" ] || die "usage: 10x-worktree path <id>"
-    check_id "$id"; wt_path "$id"
+    check_id "$id"; wt_path "$id"; say "$WT"
     ;;
 
   rm)
     id="${1:-}"; [ -n "$id" ] || die "usage: 10x-worktree rm <id>"
     check_id "$id"
     [ $# -eq 1 ] || die "usage: 10x-worktree rm <id>"
-    path="$(wt_path "$id")"
+    wt_path "$id"; path="$WT"
     branch="$(git -C "$path" rev-parse --abbrev-ref HEAD)"
     tip="$(git -C "$path" rev-parse HEAD)"
     dir="$(task_dir "$id")"
     recorded=""
     if [ ! -L "$dir" ] && [ ! -L "$dir/start" ] && [ -f "$dir/start" ]; then recorded="$(cat "$dir/start")"; fi
-    git -C "$ROOT" worktree remove "$path" || die "worktree has uncommitted changes; commit or discard them yourself"
+    # git worktree remove would run its own git status in the worktree, reading the link files again: its two tests
+    # are made here, pinned, and --force then starts no git there.
+    [ ! -e "$WT_GIT_DIR/modules" ] || die "worktree has submodules; remove it yourself"
+    st="$(git -C "$path" status --porcelain --ignore-submodules=none)" || die "could not read the worktree's status"
+    [ -z "$st" ] || die "worktree has uncommitted changes; commit or discard them yourself"
+    git -C "$ROOT" worktree remove --force "$path" || die "could not remove the worktree at $path"
     say "removed: $path"
     # The record is agent-writable: deleting with -D also requires the tip to be on the base, so nothing is lost.
     if [ "$recorded" = "$tip" ] && git -C "$ROOT" merge-base --is-ancestor "$tip" "$(base_ref)" 2>/dev/null; then
@@ -245,7 +253,7 @@ case "$cmd" in
     id="${1:-}"; [ -n "$id" ] || die "usage: 10x-worktree memory <id>"
     check_id "$id"
     [ $# -eq 1 ] || die "usage: 10x-worktree memory <id>"
-    path="$(wt_path "$id")"
+    wt_path "$id"; path="$WT"
     mem=.claude/agent-memory
     moves=()
     while IFS= read -r -d '' line; do

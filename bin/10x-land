@@ -157,7 +157,7 @@ else
          die "unknown security.blockClose '$(shown "$block")' in .claude/10x.json (want critical, high, medium, low or informational)" ;;
     esac
   fi
-  path="$(wt_path "$id")"
+  wt_path "$id"; path="$WT"
   branch="$(git -C "$path" rev-parse --abbrev-ref HEAD)"
   base="$(base_branch)"
   # A leading + or a : would turn the branch into a forced or re-targeted refspec.

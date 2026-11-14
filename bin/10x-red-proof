@@ -68,7 +68,7 @@ check_id "$id"
 lock=""
 case "${2:-}" in "") ;; --lock) lock=1 ;; *) die "$usage" ;; esac
 [ $# -le 2 ] || die "$usage"
-path="$(wt_path "$id")"
+wt_path "$id"; path="$WT"
 [ -z "$(tree_status "$path")" ] || die "the worktree has uncommitted changes; commit first (red-proof rewrites the tree)"
 rp_config "$path"
 base="$(git -C "$path" merge-base "$(base_ref)" HEAD)" || die "no merge base with $(base_ref)"
