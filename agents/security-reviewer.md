@@ -151,7 +151,7 @@ Confirmed findings in the diff only. For each:
 
 - `verdict` — `confirmed` or `needs_validation`;
 - `rule` — the vulnerability class, kebab-case (`command-injection`, `path-traversal`);
-- `title` — one line;
+- `title` — one line, at least 20 characters;
 - `path` — the sink's repo-relative path; `line` — its line number, an integer;
 - `snippet` — the sink line's text, as in the file;
 - `trace` — entrypoint to sink, one string, and for `needs_validation` the exact unresolved fact;
