@@ -1763,6 +1763,34 @@ done
 rm -f .10x/drafts/advnamed.md
 [ "$named_bad" = 0 ] && ok "issue refuses a security draft that names its entry" || bad "issue refuses a security draft that names its entry"
 
+# A draft without a Security: line is checked too: one that names an entry is refused before any gh call.
+plain_bad=0
+for v in title fingerprint location entry-title; do
+  case "$v" in
+    title) printf '# Fix Weak temp file in backup job\nLabels: bug\n\n## Context\nx\n\n## Acceptance criteria\n- [ ] AC1 — Fixed.\n' ;;
+    fingerprint) printf '# Fix\nLabels: bug\n\n## Context\nEntry %s.\n\n## Acceptance criteria\n- [ ] AC1 — Fixed.\n' "$AF2" ;;
+    location) printf '# Fix\nLabels: bug\n\n## Context\nSee bin/deploy.sh:3.\n\n## Acceptance criteria\n- [ ] AC1 — Fixed.\n' ;;
+    entry-title) printf '# Fix\nLabels: bug\n\n## Context\nThe weak TEMP FILE in backup job is the issue.\n\n## Acceptance criteria\n- [ ] AC1 — Fixed.\n' ;;
+  esac >.10x/drafts/advplain.md
+  : >"$tmp/stub.log"
+  10x-land issue advplain >"$tmp/out" 2>&1; rc=$?
+  { [ "$rc" -eq 2 ] && grep -qF "10x: draft advplain contains security entry $AF2" "$tmp/out" && ! grep -qiE 'weak temp|deploy' "$tmp/out" &&
+    ! grep -qE 'issue create|label list' "$tmp/stub.log" && [ -f .10x/drafts/advplain.md ]; } ||
+    { plain_bad=1; echo "      $v (exit $rc):"; cat "$tmp/out" "$tmp/stub.log"; }
+done
+rm -f .10x/drafts/advplain.md
+[ "$plain_bad" = 0 ] && ok "issue refuses a draft without a Security line that names an entry" ||
+  bad "issue refuses a draft without a Security line that names an entry"
+
+# A draft without a Security: line that names no entry is created as before.
+printf '# Add a retry to the uploader\n\n## Context\nThe uploader gives up on the first network error.\n## Acceptance criteria\n- [ ] AC1 — The uploader retries once.\n' >.10x/drafts/advnone.md
+: >"$tmp/stub.log"
+10x-land issue advnone >"$tmp/out" 2>&1; rc=$?
+[ "$rc" -eq 0 ] && grep -qE -- '^issue create --repo github.com/acme/adv --title Add a retry to the uploader --body-file .+' "$tmp/stub.log" &&
+  [ ! -e .10x/drafts/advnone.md ] &&
+  ok "issue creates a draft without a Security line that names no entry" ||
+  { bad "issue creates a draft without a Security line that names no entry (exit $rc)"; cat "$tmp/out" "$tmp/stub.log"; }
+
 # A draft that names nothing is created, and its Security: line is a header, not part of the issue body.
 adv_draft advclean "$AF2" 'A security fix planned in roadmap version v1; the entry is in `.10x/security.md`.'
 : >"$tmp/stub.log"

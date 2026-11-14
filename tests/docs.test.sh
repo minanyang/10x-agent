@@ -14,6 +14,8 @@
 # of docs/scripts.md `--plugin-dir`, `10x plugin missing` and `-plugin`.
 # README.md, README.zh-TW.md, docs/configuration.md and the Unreleased changelog section must give `batch.parallel`'s
 # default as 2, and docs/loop.md must say a roadmap follow-up joins the next version.
+# docs/scripts.md's `- A draft may carry` line and the Unreleased changelog section must say `10x-land issue` checks
+# every draft for security entries.
 # README.zh-TW.md must have the same ## / ### headings, level by level, and the two READMEs must link to each other.
 # Every relative link in README.md, README.zh-TW.md and docs/*.md must resolve to a file, and an anchor to a heading
 # of that file as GitHub slugs it.
@@ -450,6 +452,22 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
   const first = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
   if (!first.includes("10x-batch replan")) missing.push("CHANGELOG.md: 10x-batch replan under the first ## heading")
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
+// gh-45 AC3 — docs/scripts.md and the Unreleased changelog section say `10x-land issue` checks every draft.
+{
+  const name = "docs say 10x-land issue checks every draft for security entries"
+  const missing = []
+  const entry = (read("docs/scripts.md") || "").split("\n").find((s) => s.startsWith("- A draft may carry"))
+  if (!entry) missing.push("docs/scripts.md: no `- A draft may carry` line")
+  else if (!entry.includes("every draft")) missing.push("docs/scripts.md `- A draft may carry` line: every draft")
+  const lines = (read("CHANGELOG.md") || "").split("\n")
+  const at = lines.findIndex((s) => /^##\s/.test(s))
+  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
+  if (at < 0 || lines[at].trim() !== "## Unreleased") missing.push("CHANGELOG.md: the first ## heading is not ## Unreleased")
+  const first = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
+  for (const w of ["10x-land issue", "every draft"]) if (!first.includes(w)) missing.push(`CHANGELOG.md ## Unreleased: ${w}`)
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
