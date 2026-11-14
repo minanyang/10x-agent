@@ -78,8 +78,10 @@
 # when it fails, the draft stays and the script exits with gh's code.
 # A draft may also carry a `Security: <fingerprint>` header line (sha256: and 64 lowercase hex digits), naming the
 # .10x/security.md entry it fixes; it is a header, never part of an issue body. `issue` runs `10x-security route` on it
-# and refuses, before any gh write or label call, an entry that routes to advisory, and a title or body (after the
-# header) that names any entry, printing `10x: draft <slug> contains security entry <fp>`.
+# and refuses, before any gh write or label call, an entry that routes to advisory. `issue` also refuses, before any gh
+# write or label call, every draft — with the Security: line or without — whose title or body (after the header) names
+# any entry, printing `10x: draft <slug> contains security entry <fp>`; a security.md that does not parse, or a
+# symlinked one, exits 2.
 # A draft may carry a `Size: small` or `Size: normal` header line (any other value exits 2, naming the line). `issue`
 # publishes `Size: small` as the issue body's first line, a blank line after it, and `Size: normal` nowhere; `ticket`
 # keeps it in the verbatim copy. `issue`, `ticket` and `advisory` refuse `Size: small` beside a Security: line, and
@@ -634,12 +636,12 @@ case "$cmd" in
     if [ -n "$security" ]; then
       sec_route "$security"
       [ "$route" != advisory ] || die "draft security entry $security routes to advisory: use 10x-land advisory $id"
-      # The title and the body only: the Security: line is a header and never published.
-      named="$(mktemp)"; trap 'rm -f "$named"' EXIT
-      { printf '%s\n' "$title"; tail -n +"$body_from" "$draft"; } >"$named"
-      disclosure_check "draft $id" "$named"
-      rm -f "$named"
     fi
+    # Every draft, with a Security: line or without: the title and the body only, as the header lines are never published.
+    named="$(mktemp)"; trap 'rm -f "$named"' EXIT
+    { printf '%s\n' "$title"; tail -n +"$body_from" "$draft"; } >"$named"
+    disclosure_check "draft $id" "$named"
+    rm -f "$named"
     [ "$size" != small ] || small_paths "$draft"
     [ -z "$itype" ] || [[ "$itype" =~ ^[A-Za-z0-9][A-Za-z0-9\ _-]*$ ]] || die "invalid issue type '$itype'"
     if [ ${#labels[@]} -gt 0 ]; then
