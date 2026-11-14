@@ -385,6 +385,9 @@ for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/S
     /severity[^.]*\bonly\b[^.]*confirmed/i.test(contract)
     ? ok("security-reviewer: output has ## Findings and ## Out of diff")
     : bad("security-reviewer: output has ## Findings and ## Out of diff")
+  contract.includes("`title` — one line, at least 20 characters;")
+    ? ok("security-reviewer: a record's title is at least 20 characters")
+    : bad("security-reviewer: a record's title is at least 20 characters")
 
   const w = flat(work)
   w.includes("Only `## Findings` goes to `review.md`") && w.includes("nothing from `## Out of diff` goes into `review.md`, the report, a commit or a PR")

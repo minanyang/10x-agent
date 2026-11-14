@@ -1,6 +1,7 @@
 #!/bin/bash
 # Unit cases for bin/10x-security (add, set, remove) on a throwaway repository with an origin. The cases start with
 # nothing in .git/info/exclude beyond git's own comments: 10x-security must exclude .10x/ itself before it writes.
+# The last section covers the title floor of add and import, and disclosed()'s title match at word boundaries.
 # shellcheck disable=SC2015,SC2016,SC2154,SC2329  # `cond && ok || bad` is safe: ok always returns 0; `$cmd` below is literal snippet text; $FP_<name> is set by mkrec's printf -v; helpers run through need
 set -uo pipefail
 BIN="$(cd "$(dirname "$0")/.." && pwd)/bin"
@@ -48,7 +49,7 @@ add_() { sec add "$1" "$root/.10x/$1/${2:-out.json}"; }
 jrec() {
   local sev=',"severity":"high"'
   [ "$1" = confirmed ] || sev=''
-  printf '{"verdict":"%s","rule":"%s","title":"Finding in %s","path":"%s","line":%s,"snippet":"%s","trace":"argv reaches the sink"%s}' \
+  printf '{"verdict":"%s","rule":"%s","title":"Finding in file %s","path":"%s","line":%s,"snippet":"%s","trace":"argv reaches the sink"%s}' \
     "$1" "$2" "$3" "$3" "$4" "$5" "$sev"
 }
 # arr <record>... — a JSON array.
@@ -89,7 +90,7 @@ need "exit 0" exits 0 add T1 "$root/.10x/T1/out.json" # the fixture is a regular
 need "prints added: and the fingerprint" out_is "added: $FP1"
 {
   printf '# Security entries\n\n## %s\n' "$FP1"
-  printf '%s\n' '- title: Finding in bin/deploy.sh' '- verdict: confirmed' '- severity: high' "- rule: $RULE" '- location: bin/deploy.sh:12' \
+  printf '%s\n' '- title: Finding in file bin/deploy.sh' '- verdict: confirmed' '- severity: high' "- rule: $RULE" '- location: bin/deploy.sh:12' \
     '- trace: argv reaches the sink' '- status: new' '- reason:' '- found in: T1' '- seen in:' '- audit fingerprint:' '- not seen in:'
 } >"$tmp/want.md"
 need "security.md is exactly the documented layout" cmp -s "$S" "$tmp/want.md"
@@ -381,8 +382,8 @@ META_ALL='{"run_id":"run-1","scope_paths":["."],"run_status":"complete"}'
 FPA="$(exp_fp command-injection src/a.sh 'eval "$cmd"')"
 FPB="$(exp_fp path-traversal src/b.sh 'cat "$p"')"
 FPC="$(exp_fp command-injection src/c.sh 'rm -rf "$d"')"
-ALPHA() { frec cf:alpha confirmed 'Eval of cmd' src/a.sh 2; }
-BETA() { frec cf:beta needs_validation 'Read of p' src/b.sh 1; }
+ALPHA() { frec cf:alpha confirmed 'Eval of cmd in the runner' src/a.sh 2; }
+BETA() { frec cf:beta needs_validation 'Read of p in the loader' src/b.sh 1; }
 # snap — every path under .10x/ with its checksum, and the exclude file.
 snap() { { find .10x | sort; find .10x .git/info/exclude -type f -exec cksum {} + | sort; } 2>&1; }
 
@@ -439,7 +440,7 @@ need "audit fingerprint" field_is "$FPA" "audit fingerprint" cf:alpha
 need "verdict" field_is "$FPA" verdict confirmed
 need "severity from overall_severity" field_is "$FPA" severity high
 need "location is the sink's" field_is "$FPA" location src/a.sh:2
-need "title" field_is "$FPA" title "Eval of cmd"
+need "title" field_is "$FPA" title "Eval of cmd in the runner"
 need "status" field_is "$FPA" status new
 need "found in the run" field_is "$FPA" "found in" audit/run-1
 need "trace is one line per entry, escaped" field_is "$FPA" trace 'entrypoint src/b.sh:1\nsink src/a.sh:2'
@@ -452,8 +453,8 @@ end
 reset; : >.git/info/exclude
 arr "$(jrec confirmed command-injection src/c.sh 1 'rm -rf \"$d\"')" | put T1 out.json
 run_ 1 "$(arr "$(ALPHA)" "$(BETA)")" "$RULES" "$META_SRC"
-run_ 2 "$(arr "$(frec cf:alpha confirmed 'Renamed eval' src/b.sh 1 medium)" "$(frec cf:beta2 needs_validation 'Another read' src/b.sh 1)" \
-  "$(frec cf:gamma2 confirmed 'Rm' src/c.sh 1)")" \
+run_ 2 "$(arr "$(frec cf:alpha confirmed 'Renamed eval in the runner' src/b.sh 1 medium)" "$(frec cf:beta2 needs_validation 'Another read in the loader' src/b.sh 1)" \
+  "$(frec cf:gamma2 confirmed 'Rm of d in the cleaner' src/c.sh 1)")" \
   '{"cf:alpha":"command-injection","cf:beta2":"path-traversal","cf:gamma2":"command-injection"}' '{"run_id":"run-2","scope_paths":["src"]}'
 begin "import matches by audit fingerprint, then by 10x fingerprint"
 need "T1 adds the entry import will match by 10x fingerprint" exits 0 add T1 "$root/.10x/T1/out.json"
@@ -466,7 +467,7 @@ need "audit match: seen in the second run" field_is "$FPA" "seen in" audit/run-2
 need "audit match: found in stays" field_is "$FPA" "found in" audit/run-1
 need "audit match: status kept" field_is "$FPA" status accepted
 need "audit match: reason kept" field_is "$FPA" reason "not reachable"
-need "audit match: title kept" field_is "$FPA" title "Eval of cmd"
+need "audit match: title kept" field_is "$FPA" title "Eval of cmd in the runner"
 need "audit match: severity from the record" field_is "$FPA" severity medium
 need "audit match: location from the record" field_is "$FPA" location src/b.sh:1
 need "audit match: trace from the record" field_is "$FPA" trace 'entrypoint src/b.sh:1\nsink src/b.sh:1'
@@ -493,10 +494,10 @@ arr "$(jrec confirmed command-injection src/c.sh 1 'rm -rf \"$d\"')" | put T1 ou
 begin "import refuses a run with a record that has no rule"
 need "T1 adds" exits 0 add T1 "$root/.10x/T1/out.json"
 cp "$S" "$tmp/before.md"
-run_ 1 "$(arr "$(ALPHA)" "$(frec cf:nope confirmed 'Secret-title-nope' src/b.sh 1)")" "$RULES" "$META_SRC"
+run_ 1 "$(arr "$(ALPHA)" "$(frec cf:nope confirmed 'Secret-title-nope-long' src/b.sh 1)")" "$RULES" "$META_SRC"
 need "exit 2" exits 2 import run-1
 need "names the record" has "findings[1]"
-need "does not quote the title" not has "Secret-title-nope"
+need "does not quote the title" not has "Secret-title-nope-long"
 need "does not quote the Cloudflare fingerprint" not has "cf:nope"
 need "security.md is unchanged, the good record is not written either" cmp -s "$S" "$tmp/before.md"
 end
@@ -506,14 +507,14 @@ arr "$(jrec confirmed command-injection src/c.sh 1 'rm -rf \"$d\"')" | put T1 ou
 begin "import refuses a run whose sink line does not exist"
 need "T1 adds" exits 0 add T1 "$root/.10x/T1/out.json"
 cp "$S" "$tmp/before.md"
-run_ 1 "$(arr "$(frec cf:alpha confirmed 'Secret-title-a' src/a.sh 4)")" "$RULES" "$META_SRC"
+run_ 1 "$(arr "$(frec cf:alpha confirmed 'Secret-title-a-longer' src/a.sh 4)")" "$RULES" "$META_SRC"
 need "line 4 of a 3-line file: exit 2" exits 2 import run-1
 need "names the record" has "findings[0]"
-need "does not quote the title" not has "Secret-title-a"
-run_ 2 "$(arr "$(ALPHA)" "$(frec cf:beta confirmed 'Secret-title-b' src/nope.sh 1)")" "$RULES" "$META_SRC"
+need "does not quote the title" not has "Secret-title-a-longer"
+run_ 2 "$(arr "$(ALPHA)" "$(frec cf:beta confirmed 'Secret-title-b-longer' src/nope.sh 1)")" "$RULES" "$META_SRC"
 need "a missing sink file: exit 2" exits 2 import run-2
 need "names the record" has "findings[1]"
-need "does not quote the title" not has "Secret-title-b"
+need "does not quote the title" not has "Secret-title-b-longer"
 need "security.md is unchanged" cmp -s "$S" "$tmp/before.md"
 end
 
@@ -598,7 +599,7 @@ need "ticket" exits 0 ticket "$FPA" "security-$H8"
 printf '# Fix security entry %s\n\n## Context\nSecurity entry `%s` in `.10x/security.md` (title, location and trace are there). Found in `audit/run-1`.\n\n## Acceptance criteria\n- [ ] AC1 — Security entry `%s` is fixed, and removed from `security.md` once a full review round has no finding against it.\n' \
   "$H8" "$FPA" "$FPA" >"$tmp/ticket.want"
 need "ticket.md is the documented text" test "$(cat ".10x/security-$H8/ticket.md")" = "$(cat "$tmp/ticket.want")"
-need "no title" not grep -qF "Eval of cmd" ".10x/security-$H8/ticket.md"
+need "no title" not grep -qF "Eval of cmd in the runner"".10x/security-$H8/ticket.md"
 need "no location" not grep -qF "src/a.sh" ".10x/security-$H8/ticket.md"
 need "no trace" not grep -qF "entrypoint" ".10x/security-$H8/ticket.md"
 end
@@ -651,7 +652,7 @@ sec set T1 "$FP_lacc" accepted "not reachable"
 sec set T1 "$FP_lrej" rejected "a false positive"
 printf '# Roadmap\n\n## Later\n- Fix lplan (security %s)\n' "$FP_lplan" >.10x/roadmap.md
 need "exit 0" exits 0 list --plannable
-need "only the confirmed later entries outside the roadmap, in file order" out_is "$(printf '%s medium later Finding in lib/la.sh\n%s high later Finding in lib/lb.sh' "$FP_la" "$FP_lb")"
+need "only the confirmed later entries outside the roadmap, in file order" out_is "$(printf '%s medium later Finding in file lib/la.sh\n%s high later Finding in file lib/lb.sh' "$FP_la" "$FP_lb")"
 printf '# Roadmap\n\n## Later\n- Fix la (security %s)\n- Fix lb (security %s)\n- Fix lplan (security %s)\n' "$FP_la" "$FP_lb" "$FP_lplan" >.10x/roadmap.md
 need "every candidate planned: exit 0" exits 0 list --plannable
 need "prints nothing" out_is ""
@@ -811,6 +812,79 @@ need "git status is empty after set" test -z "$(git status --porcelain)"
 need ".10x/ is excluded" grep -qxF '/.10x/' .git/info/exclude
 need ".worktrees/ is excluded" grep -qxF '/.worktrees/' .git/info/exclude
 need "security.md is not tracked" test -z "$(git ls-files .10x)"
+end
+
+# ---------------------------------------------------------------- the title floor and the title match
+
+SECJS="$BIN/../scripts/security.js"
+ZFP="sha256:$(printf '0%.0s' {1..64})"
+# dis <title> <text> — true when disclosed() names an entry titled <title>, with no location, in <text>.
+dis() {
+  node -e 'const s = require(process.argv[1]); const e = { fp: process.argv[2], line: 3, values: { title: process.argv[3], location: "" } }
+    process.exit(s.disclosed([e], process.argv[4]).length === 1 ? 0 : 1)' "$SECJS" "$ZFP" "$1" "$2"
+}
+# trec <title> — a confirmed record of $P1 titled <title>; the title is plain text.
+trec() {
+  printf '{"verdict":"confirmed","rule":"%s","title":"%s","path":"%s","line":12,"snippet":"%s","trace":"argv reaches the sink","severity":"high"}' \
+    "$RULE" "$1" "$P1" "$JSNIP"
+}
+
+begin "disclosed matches a title only at word boundaries"
+T='Shell injection in deploy hook'
+need "any case, at the start and the end" dis "$T" 'fix: SHELL injection in deploy HOOK'
+need "next to a full stop" dis "$T" 'Fixes the Shell Injection in deploy hook.'
+need "glued on both sides: no match" not dis "$T" 'nutshell injection in deploy hooks'
+need "glued on the left: no match" not dis "$T" 'preShell injection in deploy hook'
+need "glued on the right: no match" not dis "$T" 'Shell injection in deploy hooks'
+need "a whole-word occurrence after a glued one" dis "$T" 'preshell injection in deploy hook, then Shell injection in deploy hook'
+need "next to CJK characters" dis "$T" '修正了Shell injection in deploy hook的問題'
+need "a title with punctuation at both ends needs no boundary" dis '(deploy) hook runs eval!' 'x(deploy) hook runs eval!y'
+end
+
+reset
+begin "add refuses a title under 20 characters"
+arr "$(trec 'Nineteen characters')" | put T1 short.json
+need "19 characters: exit 2" exits 2 add T1 "$root/.10x/T1/short.json"
+need "19 characters: the message" line "10x-security: records[0]: title must be at least 20 characters"
+arr "$(trec '  Nineteen characters  ')" | put T1 padded.json
+need "19 characters padded with spaces: exit 2" exits 2 add T1 "$root/.10x/T1/padded.json"
+need "padded: the message" line "10x-security: records[0]: title must be at least 20 characters"
+need "nothing written" test ! -e "$S"
+arr "$(trec 'Twenty characters ok')" | put T1 twenty.json
+need "exactly 20 characters: accepted" exits 0 add T1 "$root/.10x/T1/twenty.json"
+arr "$(trec '漏洞漏洞漏洞漏洞漏洞漏洞漏洞漏洞漏洞漏洞')" | put T1 cjk.json
+need "20 CJK characters: accepted" exits 0 add T1 "$root/.10x/T1/cjk.json"
+end
+
+reset; : >.git/info/exclude
+arr "$(jrec confirmed command-injection src/c.sh 1 'rm -rf \"$d\"')" | put T1 out.json
+begin "import refuses a title under 20 characters"
+need "T1 adds" exits 0 add T1 "$root/.10x/T1/out.json"
+cp "$S" "$tmp/before.md"
+run_ 1 "$(arr "$(ALPHA)" "$(frec cf:beta confirmed 'Short eval title' src/b.sh 1)")" "$RULES" "$META_SRC"
+need "a short confirmed title: exit 2" exits 2 import run-1
+need "confirmed: the message" line "10x-security: findings[1]: title must be at least 20 characters"
+need "confirmed: does not quote the title" not has "Short eval title"
+run_ 2 "$(arr "$(frec cf:beta needs_validation 'Short read title' src/b.sh 1)")" "$RULES" "$META_SRC"
+need "a short needs_validation title: exit 2" exits 2 import run-2
+need "needs_validation: the message" line "10x-security: findings[0]: title must be at least 20 characters"
+need "needs_validation: does not quote the title" not has "Short read title"
+need "security.md is unchanged" cmp -s "$S" "$tmp/before.md"
+run_ 3 "$(arr "$(ALPHA)" "$(BETA)" "$(frej cf:gamma 'Not real')")" "$RULES" "$META_SRC"
+need "a short rejected title beside valid records: exit 0" exits 0 import run-3
+end
+
+reset
+begin "a stored title under 20 characters still parses and matches"
+{
+  printf '# Security entries\n\n## %s\n' "$FP1"
+  printf '%s\n' '- title: Eval of cmd' '- verdict: confirmed' '- severity: high' "- rule: $RULE" '- location: bin/deploy.sh:12' \
+    '- trace: argv reaches the sink' '- status: new' '- reason:' '- found in: T1' '- seen in:' '- audit fingerprint:' '- not seen in:'
+} >"$S"
+node -e 'const s = require(process.argv[1]); const p = s.parse(require("fs").readFileSync(process.argv[2], "utf8"))
+  console.log(p.faults.length, p.entries.length, s.disclosed(p.entries, "fix the eval of cmd.").join(","), s.disclosed(p.entries, "medieval of cmds").join(","))' \
+  "$SECJS" "$S" >"$tmp/out" 2>&1
+need "no fault, one entry, matched as whole words, not inside a longer word" out_is "0 1 $FP1 "
 end
 
 [ "$fail" -eq 0 ] && echo "security: all cases pass"
