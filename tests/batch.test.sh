@@ -1217,10 +1217,12 @@ cp "$root/.git/worktrees/t1/commondir" "$tmp/commondir.orig"
 mkdir -p "$tmp/evil/objects" "$tmp/evil/refs"
 echo 'ref: refs/heads/main' >"$tmp/evil/HEAD"
 printf '[core]\n\trepositoryformatversion = 0\n' >"$tmp/evil/config"
+# Taken before the redirect: afterwards this git would read the planted refs too.
+want="$(git -C "$wt1" rev-parse HEAD:src/a.test.mjs | cut -c1-12)"
 SHIM_WT="$wt1" SHIM_EVIL="$tmp/evil" SHIM_ADMIN="$root/.git/worktrees/t1" SHIM_REAL_GIT="$GIT_DIR_BIN/git" vb accept-green t1 src/a.test.mjs "r"
 rc=$?
 need "exit 0" test "$rc" -eq 0
-need "the accepted line" eval 'grep -qxF "accepted: t1 src/a.test.mjs blob $(git -C "$wt1" rev-parse HEAD:src/a.test.mjs | cut -c1-12)" "$tmp/out"'
+need "the accepted line" eval 'grep -qxF "accepted: t1 src/a.test.mjs blob $want" "$tmp/out"'
 rm -f "$tmp/stub/git"; cp "$tmp/commondir.orig" "$root/.git/worktrees/t1/commondir"; rm -r "$tmp/evil"; rm -f "$SB/t1/accepted-green.md"
 end
 

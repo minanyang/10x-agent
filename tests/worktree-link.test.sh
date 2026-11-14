@@ -96,6 +96,9 @@ restore
 
 10x-worktree add B --no-setup >/dev/null || { echo "worktree add B failed"; exit 2; }
 wtb="$tmp/repo/.worktrees/B"; adminb="$tmp/repo/.git/worktrees/B"
+# Pinned git still reads refs through commondir, so the planted git dir holds B's branch, as it holds A's.
+refb="$(git -C "$wtb" symbolic-ref HEAD)"; mkdir -p "$(dirname "$tmp/x/.git/$refb")"
+git -C "$wtb" rev-parse HEAD >"$tmp/x/.git/$refb"
 raced "$wtb" "$adminb" 10x-worktree rm B >"$tmp/out" 2>&1; rc=$?
 [ "$rc" -eq 0 ] && grep -qF "removed: $wtb" "$tmp/out" && [ ! -e "$wtb" ] && [ ! -e "$marker" ] &&
   ok "10x-worktree rm removes the worktree and runs no planted fsmonitor when commondir is redirected after the check" ||
