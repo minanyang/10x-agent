@@ -1201,6 +1201,31 @@ need "no record" test ! -e "$SB/t1/accepted-green.md"
 cp "$tmp/commondir.orig" "$root/.git/worktrees/t1/commondir"; rm -r "$tmp/evil"
 end
 
+begin "accept-green: reads the main checkout's refs when commondir is redirected after the check"
+# A git shim redirects commondir right before the real git runs, after the link-file check has passed.
+cat >"$tmp/stub/git" <<'STUB'
+#!/bin/bash
+prev=""
+for a in "$@"; do
+  [ "$prev" = -C ] && [ "$a" = "$SHIM_WT" ] && printf '%s\n' "$SHIM_EVIL" >"$SHIM_ADMIN/commondir"
+  prev="$a"
+done
+exec "$SHIM_REAL_GIT" "$@"
+STUB
+chmod +x "$tmp/stub/git"
+cp "$root/.git/worktrees/t1/commondir" "$tmp/commondir.orig"
+mkdir -p "$tmp/evil/objects" "$tmp/evil/refs"
+echo 'ref: refs/heads/main' >"$tmp/evil/HEAD"
+printf '[core]\n\trepositoryformatversion = 0\n' >"$tmp/evil/config"
+# Taken before the redirect: afterwards this git would read the planted refs too.
+want="$(git -C "$wt1" rev-parse HEAD:src/a.test.mjs | cut -c1-12)"
+SHIM_WT="$wt1" SHIM_EVIL="$tmp/evil" SHIM_ADMIN="$root/.git/worktrees/t1" SHIM_REAL_GIT="$GIT_DIR_BIN/git" vb accept-green t1 src/a.test.mjs "r"
+rc=$?
+need "exit 0" test "$rc" -eq 0
+need "the accepted line" eval 'grep -qxF "accepted: t1 src/a.test.mjs blob $want" "$tmp/out"'
+rm -f "$tmp/stub/git"; cp "$tmp/commondir.orig" "$root/.git/worktrees/t1/commondir"; rm -r "$tmp/evil"; rm -f "$SB/t1/accepted-green.md"
+end
+
 begin "accept-green is in every run's disallowed rules"
 vb run t1 plan
 need "both rules on the run" eval 'tr "|" "\n" <"$WORKER_LOG.disallowed" | grep -qxF "Bash(10x-batch accept-green:*)" && tr "|" "\n" <"$WORKER_LOG.disallowed" | grep -qxF "Bash(10x-batch accept-green *)"'

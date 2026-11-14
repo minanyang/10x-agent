@@ -1,9 +1,16 @@
 // Whether git may run in a ticket worktree: its .git file and its admin directory must still point at the main
 // checkout. A redirected `.git` or `commondir` makes git read another config, whose core.fsmonitor, filters or hooks
 // then run as whoever runs git there. Reads files only, never git, so the check cannot trip the config it guards.
+// A clean check also gives what git is then pinned to: with GIT_DIR, GIT_COMMON_DIR and GIT_WORK_TREE set, git does no
+// discovery, never reads <wt>/.git again and takes config, hooks and objects from GIT_COMMON_DIR, so rewriting the link
+// files after the check runs no planted command. Refs still follow <admin>/commondir (git's files ref backend reads it
+// whatever GIT_COMMON_DIR says): they are data, which a worker can write in the common dir directly anyway.
 //
-//   reason(<worktree>, <git common dir>)  — a one-line reason to refuse, or null
-//   node scripts/worktree.js <worktree> <git common dir>  — prints the reason (nothing when clean), exit 0; 2 on usage
+//   pin(<worktree>, <git common dir>)  — { reason: <one line> } when git must not run there, else
+//                                         { env: { GIT_DIR: <real admin dir>, GIT_COMMON_DIR: <real common dir>,
+//                                         GIT_WORK_TREE: <worktree as given> } }
+//   node scripts/worktree.js <worktree> <git common dir>  — clean: prints the admin dir, exit 0; refused: prints the
+//                                         reason, exit 3 (not 1, which an uncaught exception in node gives); usage: exit 2
 //
 // Accepted, as git writes them (absolute, or relative under worktree.useRelativePaths), each one line of valid UTF-8,
 // all compared as real paths:
@@ -41,8 +48,8 @@ function line(file) {
   return { value: s }
 }
 
-function reason(wt, common) {
-  const refuse = (what) => `refusing to run git in ${shown(wt)}: ${what}; inspect it, then remove the worktree directory and run git worktree prune`
+function pin(wt, common) {
+  const refuse = (what) => ({ reason: `refusing to run git in ${shown(wt)}: ${what}; inspect it, then remove the worktree directory and run git worktree prune` })
   const realWt = real(wt)
   if (!realWt) return refuse(`${shown(wt)} does not resolve`)
   const realCommon = real(common)
@@ -67,10 +74,12 @@ function reason(wt, common) {
   if (d.bad) return refuse(d.bad)
   if (real(against(admin, d.value)) !== path.join(realWt, '.git'))
     return refuse(`${shown(path.join(admin, 'gitdir'))} points at ${shown(d.value)}, not ${shown(path.join(realWt, '.git'))}`)
-  return null
+  // bash reads the admin dir back through $(…), which would cut or fold a line break.
+  if (/[\n\r]/.test(admin)) return refuse(`${shown(dotGit)} points at ${shown(admin)}, whose path holds a line break`)
+  return { env: { GIT_DIR: admin, GIT_COMMON_DIR: realCommon, GIT_WORK_TREE: wt } }
 }
 
-module.exports = { reason }
+module.exports = { pin }
 
 if (require.main === module) {
   const a = process.argv.slice(2)
@@ -78,6 +87,11 @@ if (require.main === module) {
     console.error('usage: node scripts/worktree.js <worktree> <git common dir>')
     process.exit(2)
   }
-  const r = reason(a[0], a[1])
-  if (r) console.log(r)
+  const p = pin(a[0], a[1])
+  if (p.reason) {
+    console.log(p.reason)
+    process.exitCode = 3
+  } else {
+    console.log(p.env.GIT_DIR)
+  }
 }
