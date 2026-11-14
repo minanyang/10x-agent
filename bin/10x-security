@@ -12,9 +12,9 @@
 //   10x-security route <fingerprint>
 //
 // `add` reads <file>, a regular, non-symlinked, singly linked file inside .10x/<id>/ holding a JSON array of records
-// (`[]` does nothing). Each record has exactly verdict (confirmed or needs_validation), rule (kebab-case), title, path
-// (relative: no leading / or ./, no \, no //, no .. segment), line (an integer >= 1), snippet and trace, plus
-// severity (critical, high, medium, low or informational) exactly when verdict is confirmed. Every fault is printed as
+// (`[]` does nothing). Each record has exactly verdict (confirmed or needs_validation), rule (kebab-case), title (at
+// least 20 characters, trimmed), path (relative: no leading / or ./, no \, no //, no .. segment), line (an integer
+// >= 1), snippet and trace, plus severity (critical, high, medium, low or informational) exactly when verdict is confirmed. Every fault is printed as
 // `10x-security: records[<i>]: <field> <why>` and nothing is written. The fingerprint is `sha256:` + the sha256 of
 // `<rule>\n<path>\n<snippet>`, the snippet's whitespace runs collapsed to one space and its ends trimmed. A new one
 // appends an entry (location <path>:<line>, status new, found in <id>) and prints `added: <fp>`; a known one adds
@@ -33,9 +33,10 @@
 //
 // `import` reads .10x/audit/run-<n>/findings.json, rules.json (a security-audit fingerprint to a kebab-case rule) and
 // run-metadata.json, and checks every record before taking the lock; any fault refuses the whole run, naming the
-// record only as `findings[<i>]`. `rejected` records are skipped. For the others the sink is the last `sink` trace
-// entry (or the only entry), whose file and line must exist in the main checkout; the fingerprint is the one `add`
-// computes from the rule, the sink's path and that line. A record matches the entry with its `audit fingerprint`, else
+// record only as `findings[<i>]`. `rejected` records are skipped. The others' titles have `add`'s floor of 20
+// characters, trimmed. For the others the sink is the last `sink` trace entry (or the only entry), whose file and line
+// must exist in the main checkout; the fingerprint is the one `add` computes from the rule, the sink's path and that
+// line. A record matches the entry with its `audit fingerprint`, else
 // the one with its fingerprint (filling an empty `audit fingerprint`): audit/run-<n> joins `seen in` as with `add`,
 // verdict, severity, location and trace are the record's, and `seen: <fp> <status>` is printed. An unmatched record
 // is added as `add` does, found in audit/run-<n>, and prints `added: <fp>`. With `scope_paths` exactly ["."], every
@@ -374,9 +375,12 @@ function auditRecord(r, i, rules, faults) {
   const bad = (field, why) => faults.push(`findings[${i}]: ${field} ${why}`)
   if (!AUDIT_VERDICTS.includes(r.verdict)) bad('verdict', `must be ${AUDIT_VERDICTS.join(', ')}`)
   if (typeof r.fingerprint !== 'string' || !AUDIT_FP.test(r.fingerprint)) bad('fingerprint', `must match ${AUDIT_FP.source}`)
+  let titled = false
   if (typeof r.title !== 'string' || r.title.trim() === '') bad('title', 'must be a non-empty string')
   else if (sec.CONTROL.test(r.title)) bad('title', 'holds a control character')
+  else titled = true
   if (r.verdict === 'rejected') return null
+  if (titled && sec.titleLength(r.title) < sec.TITLE_MIN) bad('title', `must be at least ${sec.TITLE_MIN} characters`)
   if (r.verdict === 'confirmed' && !(isObject(r.severity) && sec.SEVERITIES.includes(r.severity.overall_severity)))
     bad('severity.overall_severity', `must be one of ${sec.SEVERITIES.join(', ')}`)
   const rule = typeof r.fingerprint === 'string' && Object.hasOwn(rules, r.fingerprint) ? rules[r.fingerprint] : undefined

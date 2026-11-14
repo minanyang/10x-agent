@@ -1,5 +1,5 @@
-// The main checkout's .10x/security.md: parse, serialise, the fingerprint, the check of a reviewer's records and the
-// disclosure match. bin/10x-security is its only writer; bin/10x-land reads it.
+// The main checkout's .10x/security.md: parse, serialise, the fingerprint, the check of a reviewer's records, the
+// title floor and the disclosure match. bin/10x-security is its only writer; bin/10x-land reads it.
 //
 //   # Security entries
 //
@@ -45,6 +45,11 @@ const CONTROL = /[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f-\x9f]/
 // The snippet is only hashed; the whitespace it normalises is allowed in it.
 const SNIPPET_CONTROL = /[\x00-\x08\x0e-\x1f\x7f-\x9f]/
 const RECORD_KEYS = ['verdict', 'rule', 'title', 'path', 'line', 'snippet', 'trace']
+// The fewest characters a title written by add or import may have: a shorter one would match too much text.
+const TITLE_MIN = 20
+
+// A title's length in code points, trimmed.
+const titleLength = (s) => [...s.trim()].length
 
 const escape = (s) => s.replace(/[\\\n\r\t]/g, (c) => ({ '\\': '\\\\', '\n': '\\n', '\r': '\\r', '\t': '\\t' })[c])
 
@@ -160,6 +165,7 @@ function validate(records) {
       if (!has(k)) continue
       if (typeof r[k] !== 'string' || r[k].trim() === '') bad(k, 'must be a non-empty string')
       else if ((k === 'snippet' ? SNIPPET_CONTROL : CONTROL).test(r[k])) bad(k, 'holds a control character')
+      else if (k === 'title' && titleLength(r.title) < TITLE_MIN) bad('title', `must be at least ${TITLE_MIN} characters`)
     }
   })
   return faults
@@ -200,15 +206,28 @@ function locationIn(text, loc) {
   return false
 }
 
-// The fingerprints of the entries <text> names: the fingerprint verbatim, the title in any case, or the location
-// verbatim, not inside a longer path and not followed by a digit. Whatever the entry's status.
+const WORD_CHAR = /[A-Za-z0-9_]/
+
+// True when <lower> holds <title> (both lower-cased) not glued to an ASCII word character: a side needs the boundary
+// only when the title's own character on that side is one.
+function titleIn(lower, title) {
+  const glued = (a, b) => WORD_CHAR.test(a) && WORD_CHAR.test(b)
+  for (let k = lower.indexOf(title); k !== -1; k = lower.indexOf(title, k + 1)) {
+    if (!glued(lower[k - 1] ?? '', title[0]) && !glued(title[title.length - 1], lower[k + title.length] ?? '')) return true
+  }
+  return false
+}
+
+// The fingerprints of the entries <text> names: the fingerprint verbatim, the title in any case, at ASCII word
+// boundaries, or the location verbatim, not inside a longer path and not followed by a digit. Whatever the entry's
+// status.
 function disclosed(entries, text) {
   const lower = text.toLowerCase()
   return entries
     .filter((e) => {
       const title = e.values.title.trim().toLowerCase()
       const loc = e.values.location
-      return text.includes(e.fp) || (title !== '' && lower.includes(title)) || (loc !== '' && locationIn(text, loc))
+      return text.includes(e.fp) || (title !== '' && titleIn(lower, title)) || (loc !== '' && locationIn(text, loc))
     })
     .map((e) => e.fp)
 }
@@ -226,4 +245,4 @@ function open(entries, id, level) {
     .map((e) => e.fp)
 }
 
-module.exports = { HEADER, FILE, FIELDS, SEVERITIES, STATUSES, ID, AUDIT, RULE, CONTROL, SNIPPET_CONTROL, escape, unescape, list, badPath, fingerprint, parse, serialise, validate, load, loadOrExit, locationIn, disclosed, open }
+module.exports = { HEADER, FILE, FIELDS, SEVERITIES, STATUSES, ID, AUDIT, RULE, CONTROL, SNIPPET_CONTROL, TITLE_MIN, escape, unescape, list, badPath, fingerprint, parse, serialise, validate, load, loadOrExit, locationIn, titleIn, titleLength, disclosed, open }

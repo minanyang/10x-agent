@@ -65,7 +65,8 @@
 # `push` (each commit message in <base>..<branch>), `pr` (pr-title, pr-body.md and each commit message in
 # <base>..<branch>), `squash` (commit-msg) and `comment` (comment.md) refuse, before any git push, gh, glab or
 # commit-tree call, text that names an entry of .10x/security.md, whatever
-# its status: its fingerprint, its title in any case, or its location verbatim when not preceded by a path character
+# its status: its fingerprint, its title in any case, not glued to an ASCII word character on a side where the title
+# has one, or its location verbatim when not preceded by a path character
 # ([A-Za-z0-9._/-]) and not followed by a digit. Each hit prints `10x: <file> contains security entry <fp>` (for a commit,
 # `commit <7-char sha>`), never the entry's title or location; exit 2. Without security.md nothing matches; a
 # security.md that does not parse, or a symlinked one, exits 2.
