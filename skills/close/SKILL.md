@@ -34,7 +34,7 @@ allowed-tools:
 
 The PR tool follows `origin`: github.com → `gh`, a GitLab host → `glab`. Any other host, or no `origin`, supports only `local`.
 
-Run one command per Bash call — no `&&`, `;` or `|` — so each call matches this skill's `allowed-tools` on its own. Run git in a worktree as `git -C <worktree> …`, never after `cd`. In `pr-merge` mode, running `/10x:close` is the user's request to merge: state the PR URL, then merge.
+Run one command per Bash call — no `&&`, `;` or `|` — so each call matches this skill's `allowed-tools` on its own. Whether the worktree has uncommitted changes is read from `10x-land check`'s output — its `uncommitted changes in <worktree>:` line and the paths under it — and close runs no git command of its own to check it. In `pr-merge` mode, running `/10x:close` is the user's request to merge: state the PR URL, then merge.
 
 ## Step 0 — Take stock, stop on anything unfinished
 
@@ -49,7 +49,7 @@ Stop and say why if any of these holds:
 
 - only in `pr` or `pr-merge` mode (`local` never calls `gh` or `glab`, not even to check; in `local` mode the grant hook refuses any `gh` or `glab` command): the PR tool is missing or logged out — check with `gh auth status` (or `glab auth status`) **before** rebasing or pushing, so a failure never leaves a pushed branch without a PR. Command not found → install it (https://cli.github.com, https://gitlab.com/gitlab-org/cli); non-zero exit → `gh auth login` / `glab auth login`. Mention that `"close": "local"` in `.claude/10x.json` needs neither;
 - no worktree for `<id>`: look for an open PR of the branch instead (the second run of `pr` mode, Step 4);
-- uncommitted changes in the worktree;
+- `check` printed `uncommitted changes in <worktree>:` and the paths under it;
 - `check` printed `locked test changed: <path>` lines: a locked test changed without a relock that red-proof accepted — that is `/10x:work`'s job;
 - `check` printed `security entry open: <fp>` lines: a confirmed security entry of this ticket at or above `security.blockClose` is still `new` or `fix-now` — name the fingerprints only; the user settles them through `/10x:work`. Not a stop on the `pr: MERGED` cleanup run below;
 - `review: missing` — that is `/10x:work`'s job;

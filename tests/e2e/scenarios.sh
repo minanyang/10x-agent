@@ -131,7 +131,11 @@ flow_open_files() {
   TICKET="$(file_ticket)"
   if [ -n "$TICKET" ]; then
     new_session
-    drive "/10x:work $TICKET" "$REPLY" 6 has_plan
+    if ticket_small "$TICKET"; then
+      drive "/10x:work $TICKET" "$REPLY" 6 work_reported
+    else
+      drive "/10x:work $TICKET" "$REPLY" 6 has_plan
+    fi
   fi
   check_scenarios plan
 }
@@ -559,7 +563,11 @@ scenario_F1() {
 
 scenario_F2() {
   ensure "open wrote no ticket file to work from" [ -n "$TICKET" ]
-  ensure "plan.md is missing" [ -s "$REPO/.10x/$TICKET/plan.md" ]
+  if ticket_small "$TICKET"; then
+    ensure "work did not reach its report" work_reported
+  else
+    ensure "plan.md is missing" [ -s "$REPO/.10x/$TICKET/plan.md" ]
+  fi
   ensure "ticket.md is no longer the approved draft" cmp -s "$RUN/draft-snapshot.md" "$REPO/.10x/$TICKET/ticket.md"
   ensure "10x-ticket was run" [ "$(tool_count '^10x-ticket( |$)')" = 0 ]
 }
@@ -1056,9 +1064,10 @@ scenario_R2() {
   ensure "roadmap.md changed before the approval" [ "$(cat "$RUN/roadmap-at-draft-2")" != changed ]
   ensure "the second run merged nothing into roadmap.md" not cmp -s "$snap" "$f"
   ensure "the draft was not deleted" not has_roadmap_draft
+  ensure "roadmap_lost could not compare the two files" roadmap_lost "$snap" "$f" >/dev/null
   while IFS= read -r l; do
-    ensure "roadmap.md lost the line: $l" grep -Fxq -- "$l" "$f"
-  done < <(grep -v '^[[:space:]]*$' "$snap")
+    ensure "roadmap.md lost the line: $l" false
+  done < <(roadmap_lost "$snap" "$f" 2>/dev/null)
   ensure "roadmap.md was written with Write or Edit" [ "$(roadmap_writes)" = 0 ]
 }
 

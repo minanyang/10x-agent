@@ -529,6 +529,42 @@ has_plan() {
   [ -f "$plan" ] || return 1
   [ "$(md_section "$plan" Files | grep -c '^[-*] ')" -le 3 ] || [ -s "$REPO/.10x/$TICKET/cold-read.md" ]
 }
+# ticket_small <id> — exit 0 when md-check.js's size() says .10x/<id>/ticket.md declares `small`, else 1.
+# shellcheck disable=SC2016  # JavaScript, not shell
+ticket_small() {
+  node -e '
+const fs = require("fs")
+const md = require(process.argv[1] + "/scripts/md-check.js")
+let text
+try { text = fs.readFileSync(process.argv[2], "utf8") } catch { process.exit(1) }
+process.exit(md.size(text) === "small" ? 0 : 1)
+' "$PLUGIN" "$REPO/.10x/$1/ticket.md"
+}
+# work_reported — $TICKET's work session reached its report: review.md is non-empty; every criterion of ticket.md has
+# `met:` or `deferred:` plus text as the last of its evidence.md lines (as the Stop gate matches them); no `asked:` line.
+# shellcheck disable=SC2016  # JavaScript, not shell
+work_reported() {
+  [ -s "$REPO/.10x/$TICKET/review.md" ] || return 1
+  node -e '
+const fs = require("fs")
+const md = require(process.argv[1] + "/scripts/md-check.js")
+let crit, raw
+try {
+  crit = md.ticketCriteria(fs.readFileSync(process.argv[2], "utf8"))
+  raw = fs.readFileSync(process.argv[3], "utf8").split("\n")
+} catch { process.exit(1) }
+if (!crit.length) process.exit(1)
+const last = new Map()
+let asked = false
+for (const line of raw) {
+  const ac = /^\s*[-*+]\s+(AC\d+)\s*[—–:-]\s*(.*?)\s*$/.exec(line)
+  if (ac) last.set(ac[1], ac[2])
+  else if (/^\s*[-*+]\s+asked:/.test(line)) asked = true
+}
+const ok = crit.every((c) => /^(met|deferred):\s*\S/.test(last.get("AC" + c.n) || ""))
+process.exit(ok && !asked ? 0 : 1)
+' "$PLUGIN" "$REPO/.10x/$TICKET/ticket.md" "$REPO/.10x/$TICKET/evidence.md"
+}
 pr_exists() { [ "$(state_json | jq '.prs | length')" -ge 1 ]; }
 pr_merged() { [ "$(state_json | jq '[.prs[] | select(.state == "MERGED")] | length')" -ge 1 ]; }
 pr_edited() { [ "$(ghlog_count pr edit)" -ge 1 ]; }
@@ -597,6 +633,40 @@ for (let k = at + 2; k < lines.length && lines[k].trim().startsWith("|"); k++) {
   console.log(JSON.stringify({ version, items: items(contents), why, state }))
 }
 ' "$REPO"
+}
+# roadmap_lost <first> <current> — each non-blank line of <first> that <current> does not keep, byte for byte. A version
+# row of <first> with a Contents cell is also kept when <current> has the row with "; <added>" at the end of that cell
+# (the first such row only). Exit 2 with a message when either file cannot be read.
+# shellcheck disable=SC2016  # JavaScript, not shell
+roadmap_lost() {
+  node -e '
+const fs = require("fs")
+const { parse } = require(process.argv[1] + "/scripts/roadmap.js")
+let a, b
+try { a = fs.readFileSync(process.argv[2], "utf8"); b = fs.readFileSync(process.argv[3], "utf8") }
+catch (e) { console.error("roadmap_lost: " + e.message); process.exit(2) }
+const have = new Set(b.split("\n"))
+const curRows = parse(b).rows
+const oldRows = new Map(parse(a).rows.map((r) => [r.raw, r]))
+const grew = (old) => {
+  const c = old.cells[1]
+  if (!c || !c.text) return false
+  const pre = old.raw.slice(0, c.to) + "; "
+  const post = old.raw.slice(c.to)
+  return curRows.some((r) => {
+    if (!r.raw.startsWith(pre) || !r.raw.endsWith(post) || r.raw.length <= pre.length + post.length) return false
+    const added = r.raw.slice(pre.length, r.raw.length - post.length)
+    return added.length > 0 && !/(^|[^\\])\|/.test(added)
+  })
+}
+let used = false
+for (const line of a.split("\n")) {
+  if (!line.trim() || have.has(line)) continue
+  const old = oldRows.get(line)
+  if (old && !used && grew(old)) { used = true; continue }
+  console.log(line)
+}
+' "$PLUGIN" "$1" "$2"
 }
 # roadmap_ids <version> — the ticket ids of that version's items, one per line, in item order.
 roadmap_ids() { roadmap_rows | jq -r --arg v "$1" 'select(.version == $v) | .items[] | .id // empty'; }
