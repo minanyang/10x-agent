@@ -325,6 +325,14 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
     : section.includes("denyWrite") ? ok(name) : bad(name, "the batch sandbox section does not name denyWrite")
 }
 
+// gh-56 AC5 — docs/loop.md names where a ticket's decisions live.
+{
+  const name = "docs/loop.md names where a ticket's decisions live"
+  const loop = read("docs/loop.md") || ""
+  const missing = ["### Decisions", "## Decisions", "10x-land decisions"].filter((w) => !loop.includes(w))
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 // gh-7 AC22 — the changelog and both READMEs name /10x:batch auto; neither README keeps the trust sentence.
 {
   const name = "README and CHANGELOG mention batch auto mode"

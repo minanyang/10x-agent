@@ -218,6 +218,14 @@ prompt s15 "/10x:close gh-5" >/dev/null
 check "$T: issue" nothing "$(bash_ s15 "10x-land issue add-a-flag")"
 check "$T: comment" nothing "$(bash_ s15 "10x-land comment gh-5")"
 
+T="does not allow 10x-land decisions"
+prompt s15d "/10x:batch gh-5" >/dev/null
+prompt s15d "/10x:work gh-5" >/dev/null
+check "$T" nothing "$(bash_ s15d "10x-land decisions gh-5")"
+# A record an older SKILL.md wrote with a grant for it: the refusal is the hook's ALWAYS_ASK and not a missing grant.
+node -e 'const f = process.argv[1], r = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const p of Object.values(r.skills.batch)) p.grants.push("10x-land decisions *"); require("fs").writeFileSync(f, JSON.stringify(r))' "$CLAUDE_PLUGIN_DATA/sessions/s15d.json"
+check "$T: even from a record an older SKILL.md wrote" nothing "$(bash_ s15d "10x-land decisions gh-5")"
+
 T="does not record a grant from a task-notification prompt"
 prompt s16 "<task-notification>
 <task-id>b1</task-id>
