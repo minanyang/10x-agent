@@ -38,7 +38,7 @@ const readOnly = ["git log --name-only HEAD..origin/X", "git log -n 5 --oneline"
   "git diff --name-only X...X", "git diff origin/X...X -- .claude/agent-memory"]
 // Commands a skill's prose names for the user or as an explanation, never runs itself.
 const notRun = {
-  close: ["gh auth login", "glab auth login", "git rebase --skip", "git merge --ff-only", "git -C X …"],
+  close: ["gh auth login", "glab auth login", "git rebase --skip", "git merge --ff-only"],
   work: ["git -C X …"],
   open: ["gh auth login"],
   batch: [],
@@ -715,11 +715,35 @@ for (const skill of ["open", "work", "close", "batch", "roadmap", "audit", "feed
   missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
 }
 
-// gh-39 AC6 — work and close run git in a worktree with -C, never after cd.
+// gh-73 AC1 — close reads the uncommitted-changes stop from 10x-land check and runs no git -C <worktree> command.
 {
-  const name = "work and close: run git as git -C <worktree>, never after cd"
-  const read = (s) => (fs.existsSync(`${dir}/${s}/SKILL.md`) ? fs.readFileSync(`${dir}/${s}/SKILL.md`, "utf8") : "")
-  const missing = ["work", "close"].flatMap((s) => ["`git -C <worktree> …`", "never after `cd`"].filter((w) => !read(s).includes(w)).map((w) => `${s}: ${w}`))
+  const name = "close: the uncommitted-changes stop comes from 10x-land check, and no git -C <worktree> sentence"
+  const text = fs.existsSync(`${dir}/close/SKILL.md`) ? fs.readFileSync(`${dir}/close/SKILL.md`, "utf8") : ""
+  const missing = [
+    [!text.includes("`git -C <worktree> "), "close: no `git -C <worktree> ` span"],
+    [text.includes("`10x-land check`'s output"), "close: `10x-land check`'s output"],
+    [text.includes("`uncommitted changes in <worktree>:`"), "close: `uncommitted changes in <worktree>:`"],
+    [text.includes("runs no git command"), "close: runs no git command"],
+    [/^- `check` printed `uncommitted changes in <worktree>:`/m.test(text), "close: the Step 0 bullet naming check's line"],
+  ].filter(([c]) => !c).map(([, w]) => w)
+  missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
+}
+
+// gh-73 AC2 — work's git -C sentence is for Step 4's add and commit; uncommitted paths come from 10x-verify's tree: line.
+{
+  const name = "work: git -C <worktree> names Step 4's add and commit, and uncommitted paths come from 10x-verify's tree: line"
+  const text = fs.existsSync(`${dir}/work/SKILL.md`) ? fs.readFileSync(`${dir}/work/SKILL.md`, "utf8") : ""
+  const sentences = text.replace(/\s+/g, " ").split(/(?<=[.!?])\s+/).filter((s) => s.includes("`git -C <worktree> …`"))
+  const sentence = sentences.length === 1 ? sentences[0] : ""
+  const missing = [
+    [sentences.length === 1, "work: exactly one sentence holding `git -C <worktree> …`"],
+    [sentence.includes("never after `cd`"), "that sentence: never after `cd`"],
+    [sentence.includes("Step 4's"), "that sentence: Step 4's"],
+    [sentence.includes("`add`"), "that sentence: `add`"],
+    [sentence.includes("`commit`"), "that sentence: `commit`"],
+    [text.includes("`10x-verify`'s `tree:` line"), "work: `10x-verify`'s `tree:` line"],
+    [text.includes("never from a git command"), "work: never from a git command"],
+  ].filter(([c]) => !c).map(([, w]) => w)
   missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
 }
 

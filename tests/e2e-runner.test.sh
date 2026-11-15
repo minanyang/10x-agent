@@ -7,7 +7,9 @@
 # tool log that the fake never saw fails the flow; a plugin without bin/10x-land fails before claude runs; a
 # failing scenario makes the exit code non-zero; a failure after a checkpoint keeps the results judged at it; W3
 # counts a plan.md written by a Bash redirect; the fake gh answers a call with gh's global --hostname; a denied command
-# chained with |, ; or && is a note.
+# chained with |, ; or && is a note; F2 needs no plan.md for a small ticket whose work reached its report, a failure
+# naming the missing report when it did not, and still needs plan.md otherwise; R2 accepts a version row that gained
+# items at the end of its Contents cell and fails any other change to the first roadmap.
 # shellcheck disable=SC2015,SC2016  # `cond && ok || bad` is safe: ok always returns 0; $HOME is literal command text
 set -uo pipefail
 RUN_SH="$(cd "$(dirname "$0")" && pwd)/e2e/run.sh"
@@ -149,6 +151,60 @@ printf '%s\n' \
   '{"type":"result","subtype":"success","permission_denials":[],"total_cost_usd":0.01,"duration_ms":10}' >"$tmp/stream-wide-plan"
 if runner 0 "a plan written by Bash counts as written" "STUB_STREAM=$tmp/stream-wide-plan" "STUB_RUN=$tmp/writes-wide-plan" -- W3; then
   line_matches '^pass  W3  [0-9]+s$' && ok "W3 counts a plan.md written by a Bash redirect" || { bad "W3 counts a plan.md written by a Bash redirect"; sed 's/^/      /' "$tmp/out" "$tmp/err"; }
+fi
+
+# F2: a small ticket needs no plan.md, only a work session that reached its report; any other ticket still needs plan.md.
+# The stub opens a draft, approves it into .10x/greet-twice/ticket.md, then runs the work turn: STUB_SIZE=small puts
+# `Size: small` in the ticket, STUB_WORK is met (review.md and a met evidence line), pending or none.
+cat >"$tmp/f2-stub" <<'STUB'
+#!/bin/bash
+if [ -e .10x/greet-twice/ticket.md ]; then
+  case "${STUB_WORK:-none}" in
+    met) echo report >.10x/greet-twice/review.md; echo '- AC1 — met: test greet once' >.10x/greet-twice/evidence.md ;;
+    pending) echo report >.10x/greet-twice/review.md; echo '- AC1 — pending' >.10x/greet-twice/evidence.md ;;
+  esac
+elif [ -e .10x/drafts/greet-twice.md ]; then
+  mkdir -p .10x/greet-twice
+  mv .10x/drafts/greet-twice.md .10x/greet-twice/ticket.md
+else
+  mkdir -p .10x/drafts
+  { echo '# greet prints every greeting twice'; [ "${STUB_SIZE:-}" = small ] && echo 'Size: small'; printf '\n## Acceptance criteria\n- AC1 — greet prints each greeting once\n'; } >.10x/drafts/greet-twice.md
+fi
+STUB
+if runner 0 "F2 passes a small ticket with a report" "STUB_STREAM=$tmp/stream-empty" "STUB_RUN=$tmp/f2-stub" STUB_SIZE=small STUB_WORK=met -- F2; then
+  line_matches '^pass  F2  [0-9]+s$' && ok "F2 passes a small ticket with no plan.md once work reached its report" || { bad "F2 passes a small ticket with no plan.md once work reached its report"; sed 's/^/      /' "$tmp/out" "$tmp/err"; }
+fi
+if runner 1 "F2 fails a small ticket without a report" "STUB_STREAM=$tmp/stream-empty" "STUB_RUN=$tmp/f2-stub" STUB_SIZE=small STUB_WORK=pending -- F2; then
+  line_matches '^FAIL  F2  [0-9]+s  .*work did not reach its report' && ok "F2 fails a small ticket whose work did not reach its report" || { bad "F2 fails a small ticket whose work did not reach its report"; sed 's/^/      /' "$tmp/out" "$tmp/err"; }
+fi
+if runner 1 "F2 fails a ticket that is not small without a plan" "STUB_STREAM=$tmp/stream-empty" "STUB_RUN=$tmp/f2-stub" STUB_WORK=none -- F2; then
+  line_matches '^FAIL  F2  [0-9]+s  .*plan\.md is missing' && ! line_matches 'work did not reach its report' && ok "F2 still requires plan.md for a ticket that is not small" || { bad "F2 still requires plan.md for a ticket that is not small"; sed 's/^/      /' "$tmp/out" "$tmp/err"; }
+fi
+
+# R2: the stub's calls are the roadmap flow's turns: 1 writes the first draft, 2 approves it, 3 writes the second draft,
+# 4 applies it. v1's Contents gains `--from file` at the end; STUB_V2_WHY changes v2's Why this order cell.
+cat >"$tmp/r2-stub" <<'STUB'
+#!/bin/bash
+n="$(grep -c . "$STUB_MARK")"
+roadmap() {
+  printf '%s\n' '| Version | Contents | Why this order | State |' '|---|---|---|---|' \
+    "| v1 | $1 | smallest first | Planned |" "| v2 | --lang flag | $2 | Planned |" '' \
+    '## Not yet assigned' '' '## Later' '' '## Decided against' ''
+}
+mkdir -p .10x
+case "$n" in
+  1) roadmap '--shout flag; several names' 'needs v1' >.10x/roadmap.draft.md ;;
+  2) mv .10x/roadmap.draft.md .10x/roadmap.md ;;
+  3) roadmap '--shout flag; several names; --from file' 'needs v1' >.10x/roadmap.draft.md ;;
+  4) roadmap '--shout flag; several names; --from file' "${STUB_V2_WHY:-needs v1}" >.10x/roadmap.md; rm .10x/roadmap.draft.md ;;
+esac
+STUB
+if runner 0 "R2 accepts a grown Contents cell" "STUB_STREAM=$tmp/stream-empty" "STUB_RUN=$tmp/r2-stub" -- R2; then
+  line_matches '^pass  R2  [0-9]+s$' && ok "R2 accepts a first-run row that gained items at the end of its Contents cell" || { bad "R2 accepts a first-run row that gained items at the end of its Contents cell"; sed 's/^/      /' "$tmp/out" "$tmp/err"; }
+fi
+if runner 1 "R2 fails a row changed elsewhere" "STUB_STREAM=$tmp/stream-empty" "STUB_RUN=$tmp/r2-stub" "STUB_V2_WHY=needs nothing" -- R2; then
+  line_matches '^FAIL  R2  [0-9]+s  ' && grep -Fq 'roadmap.md lost the line: | v2 | --lang flag | needs v1 | Planned |' "$tmp/out" && ! grep -Fq 'lost the line: | v1 ' "$tmp/out" \
+    && ok "R2 fails a first-run row changed anywhere else" || { bad "R2 fails a first-run row changed anywhere else"; sed 's/^/      /' "$tmp/out" "$tmp/err"; }
 fi
 
 # the fake gh takes gh's global --hostname before the subcommand, as 10x-ticket issue-types sends it
