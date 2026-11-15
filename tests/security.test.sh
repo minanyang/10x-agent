@@ -302,6 +302,50 @@ need "another ticket is refused" exits 2 remove T9 "$FP2"
 need "the second is still there" test "$(entries)" = 1
 end
 
+# ---------------------------------------------------------------- line separators
+
+LS=$'\xe2\x80\xa8' # U+2028
+PS=$'\xe2\x80\xa9' # U+2029
+FPS="$(exp_fp "$RULE" lib/sep.sh go_sep)"
+
+reset
+printf '[{"verdict":"confirmed","severity":"high","rule":"%s","title":"%s","path":"lib/sep.sh","line":3,"snippet":"go_sep","trace":"%s"}]\n' \
+  "$RULE" 'Finding with a line separator in its title' 'argv reaches the sink' | put T1 sep.json
+begin "add stores a title and a trace holding U+2028 and U+2029, and the log still reads"
+need "add exit 0" exits 0 add T1 "$root/.10x/T1/sep.json"
+need "prints added:" out_is "added: $FPS"
+need "add again exit 0" exits 0 add T1 "$root/.10x/T1/sep.json"
+need "prints seen:" out_is "seen: $FPS"
+need "title byte for byte" field_is "$FPS" title "Finding with a line${LS}separator in its title"
+need "trace byte for byte" field_is "$FPS" trace "argv${PS}reaches the sink"
+need "set exit 0" exits 0 set T1 "$FPS" later
+need "list --plannable exit 0" exits 0 list --plannable
+need "one line printed" test "$(grep -c '' "$tmp/out")" = 1
+need "remove exit 0" exits 0 remove T1 "$FPS"
+end
+
+reset
+arr "$(r1)" | put T1 out.json
+begin "set stores a reason holding U+2028, and the log still reads"
+need "add exit 0" exits 0 add T1 "$root/.10x/T1/out.json"
+need "set with the reason exit 0" exits 0 set T1 "$FP1" accepted "not reachable${LS}from outside"
+need "reason byte for byte" field_is "$FP1" reason "not reachable${LS}from outside"
+need "set again exit 0" exits 0 set T1 "$FP1" later
+need "remove exit 0" exits 0 remove T1 "$FP1"
+end
+
+reset
+{
+  printf '# Security entries\n\n## %s\n' "$FP1"
+  printf '%s\n' $'- title: a\rb' '- verdict: confirmed' '- severity: high' "- rule: $RULE" '- location: bin/deploy.sh:12' \
+    '- trace: argv reaches the sink' '- status: later' '- reason:' '- found in: T1' '- seen in:' '- audit fingerprint:' '- not seen in:'
+} >"$S"
+begin "a raw carriage return in a value is a control-character fault of its field"
+need "exit 2" exits 2 list --plannable
+need "the title's line holds a control character" has 'security.md:4: "title" holds a control character'
+need "not a layout fault" not has 'want "- title:"'
+end
+
 # ---------------------------------------------------------------- TENX_BATCH
 
 # bsnap — every path under .10x/ with its checksum.

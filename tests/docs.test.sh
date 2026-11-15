@@ -18,6 +18,7 @@
 # every draft for security entries.
 # docs/scripts.md's refusal, `add` and `import` lines and the Unreleased changelog section must describe the title match
 # at word boundaries and the 20-character title floor.
+# The Unreleased changelog section must record that a security.md value holding U+2028 or U+2029 reads back.
 # README.zh-TW.md must have the same ## / ### headings, level by level, and the two READMEs must link to each other.
 # Every relative link in README.md, README.zh-TW.md and docs/*.md must resolve to a file, and an anchor to a heading
 # of that file as GitHub slugs it.
@@ -490,6 +491,19 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
   const unreleased = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
   for (const w of ["whole words", "20 characters"]) if (!unreleased.includes(w)) missing.push(`CHANGELOG.md ## Unreleased: ${w}`)
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
+// gh-47 AC3 — the Unreleased changelog section records the U+2028 / U+2029 read-back fix.
+{
+  const name = "CHANGELOG's Unreleased section records the line-separator fix"
+  const missing = []
+  const lines = (read("CHANGELOG.md") || "").split("\n")
+  const at = lines.findIndex((s) => /^##\s/.test(s))
+  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
+  if (at < 0 || lines[at].trim() !== "## Unreleased") missing.push("CHANGELOG.md: the first ## heading is not ## Unreleased")
+  const first = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
+  if (!first.includes("U+2028")) missing.push("CHANGELOG.md ## Unreleased: U+2028")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 

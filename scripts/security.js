@@ -20,9 +20,9 @@
 // An <id> is a ticket id or an audit run id, audit/run-<n>; `10x-security import` writes audit run ids to `not seen in`.
 //
 // One blank line between sections, one newline at the end. An empty field is `- <field>:`. Every value is one line:
-// `\` is stored as `\\`, newline as `\n`, carriage return as `\r`, tab as `\t`. Parse and serialise are exact inverses,
-// so rewriting one entry leaves every other byte as it was. Fault messages never quote a value: a refusal must not
-// publish an entry's title or location.
+// `\` is stored as `\\`, newline as `\n`, carriage return as `\r`, tab as `\t`. U+2028 and U+2029 are stored as they
+// are. Parse and serialise are exact inverses, so rewriting one entry leaves every other byte as it was. Fault messages
+// never quote a value: a refusal must not publish an entry's title or location.
 
 const crypto = require('node:crypto')
 const fs = require('node:fs')
@@ -110,7 +110,7 @@ function parse(text) {
     const values = {}
     for (const f of FIELDS) {
       const n = i + 1
-      const fm = /^- ([a-z ]+):(?: (.+))?$/.exec(lines[i] ?? '')
+      const fm = /^- ([a-z ]+):(?: (.+))?$/s.exec(lines[i] ?? '')
       if (!fm) return stop(n, `want "- ${f}:"`)
       if (fm[1] !== f) return stop(n, FIELDS.includes(fm[1]) ? `field "${fm[1]}" out of order; want "${f}"` : `unknown field; want "${f}"`)
       const bad = (why) => fault(n, `"${f}" ${why}`)
