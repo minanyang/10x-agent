@@ -158,7 +158,7 @@ gh issue list --state open --search "<key words>" --limit 10
 
 With `tickets: files`, search the titles — line 1 — of every `.10x/*/ticket.md` with the Grep tool. A match is offered for linking instead of a new ticket; on the user's yes, link it as in Step 4.
 
-Then grill once for the whole version: run `10x-grill` and ask the product questions of all its items in one round.
+Then grill once for the whole version: run `10x-grill` and ask the product questions of all its items in one round — every open question an item's own words state among them. These answers are the tickets' decisions (Step 3): `/10x:work` and the batch workers take them as settled and never ask them again.
 
 ### Step 2 — Classify
 
@@ -194,8 +194,13 @@ The outcome, in one or two sentences.
 What a reader might expect here but this ticket does not cover. Omit if nothing.
 
 ## Assumptions
-Decisions the grill did not settle with the user, each with the answer taken. Omit if none.
+Decisions taken without asking the user, each with the answer taken. Omit if none.
+
+### Decisions
+- Q — <title>: <answer>
 ```
+
+Every draft ends with its decisions section, last in the body: `### Decisions` with `tickets: github`, `## Decisions` with `tickets: files`, then one `- Q — <title>: <answer>` line per product question the grill asked about this item — a question the user skipped with the recommendation taken, a question shared by several items copied into each — or, when it asked none, the single line `- None — no product question open.`. The grill's number is dropped: `Q`, not `Q1`. A question asked goes here, never under `## Assumptions`.
 
 No `TBD`, `handle edge cases`, `as needed` or other phrase on `init`'s `banned:` line outside code: the create commands refuse them, as they refuse an unnumbered criterion.
 
@@ -205,6 +210,7 @@ A security item's draft differs, whatever its route:
 - Line 1 is `# Fix security entry <first 8 hex>`, and line 2 the header line `Security: <fp>`, the full fingerprint.
 - The body names neither the entry's title nor its `path:line` (read them from `.10x/security.md` to understand the fix, never to quote them). For the `advisory` and `ticket` routes, whose tickets stay local, the `## Context` paragraph reads "Security entry `<fp>` in `.10x/security.md`" plus the roadmap version. For the `issue` route it leaves the fingerprint out: "A security fix planned in roadmap version <v>; the entry is in `.10x/security.md`" — the issue is public, and `10x-land issue` refuses a title or body that names the entry.
 - An `advisory` draft has no `Labels:`, `Type:` or `Form:` line and the `## Acceptance criteria` layout; an `issue` draft takes them as any other.
+- Its decisions section is `## Decisions` for the `advisory` and `ticket` routes, whose tickets stay local, and `### Decisions` for the `issue` route.
 
 Show all the drafts together, each once: its item (`<n>. <item>`), one line `Kind: <kind> → <label, type or form file name>` (or `→ ticket file`; a security item's names its route: `→ advisory`, `→ issue` or `→ ticket file`), its path, then the file verbatim as rendered markdown. **Stop** until the user approves or edits them.
 

@@ -55,7 +55,7 @@
 // session in default with Edit(.10x/<id>/**) allowed, implement and close in acceptEdits. A run whose init event has
 // no 10x:work among its slash_commands is stopped, writes <nn>-plugin, is never rerun, and its ticket fails with
 // `10x plugin missing`. Every run gets
-// --disallowedTools for the commands hooks/grant.js always asks for (10x-land issue/comment/advisory, 10x-batch
+// --disallowedTools for the commands hooks/grant.js always asks for (10x-land issue/comment/decisions/advisory, 10x-batch
 // approve/init/accept-green/checked, 10x-security set/remove/ticket, 10x-feedback issue/comment), Edit of S and of the settings files (the main
 // checkout's .claude/, ~/.claude/ and, when set, $CLAUDE_CONFIG_DIR's settings.json and settings.local.json, each also
 // as a real path and its symlink target), and Edit of what
@@ -78,7 +78,9 @@
 // TENX_BATCH=1. SIGTERM and SIGINT are forwarded to the worker. It prints
 // `phase: <phase>` and `board: <path>`, exit 0 once the worker ran, whatever its exit code.
 // `status` writes and prints the board, then the actions allowed now: `plan <id>`, `implement <id>`, `close <id>`,
-// `answer <id>[ approvable]`, and `done` when every ticket is settled. The board ends with `## Hand checks pending`,
+// `answer <id>[ approvable]`, and `done` when every ticket is settled; after them, it and `init` print
+// `no decisions: <id>` for each ticket, in board order, whose ticket.md has no decisions section (md-check.js
+// hasDecisions), whose plan.md is not `Status: approved`, and with no run yet. The board ends with `## Hand checks pending`,
 // one line `- <version> — <id> AC<n>: <text>` per declared hand check whose last evidence.md line is `hand-check:`, of
 // every landed ticket and id of `versions.closed`, a ticket in no recorded version under `(no version)`; absent when
 // none is. `status` and `init` also set the State of each recorded version whose ids are all landed or closed, none
@@ -104,7 +106,8 @@
 // .10x/<id>, plan.md or evidence.md. It writes no state dir, so it runs no state-dir check. No skill grants it.
 // `loop` drives the batch until a human is needed: each pass writes the board, starts every plan, implement and close
 // action and every reply whose reply.md exists as a detached `run`, and in auto mode approves a draft that passes
-// 10x-plan-check (writing `auto-approved`) or sends a planning question FIXED_REPLY (at most 3 times), unless
+// 10x-plan-check (writing `auto-approved`) or sends a planning question FIXED_REPLY (at most 3 times; a question the
+// ticket's decisions section answers is settled by it, never listed as a product question), unless
 // .10x/<id>/comment.md or product-questions.md exists. It waits for one of its runs or 10 seconds between passes, and
 // once nothing runs prints one line, {"items":[…]}: per ticket `failed`, `answer`, `approve` or `denied` with its
 // evidence, or [{"need":"done"}] when every ticket is settled.
@@ -151,7 +154,7 @@ const USAGE =
   'usage: 10x-batch init [--auto] <ticket>... [--search "<query>"] | run <id> plan|reply|implement|close | status | drop <id> | replan <id> | approve <id>... | accept-green <id> <file> "<reason>" | checked <id> AC<n> "<what you saw>" | loop'
 const APPROVE_REPLY = 'Approved. Set `Status: approved` in plan.md and stop; the implementation runs in a new session.\n'
 const FIXED_REPLY =
-  "Auto mode: no human answers this batch's questions. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question (its number, the choice and why), and go on.\n"
+  "Auto mode: no human answers this batch's questions. A question the ticket's `Decisions` section answers is settled: take its answer, and neither ask it nor list it in `product-questions.md`. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question (its number, the choice and why), and go on.\n"
 const FIXED_MAX = 3
 const POLL_MS = 10000
 
@@ -1111,7 +1114,17 @@ function report(rows) {
   const text = writeBoard(rows)
   const acts = actions(rows)
   const done = markDone(rows)
-  process.stdout.write(text + (acts.length ? '\n' + acts.join('\n') + '\n' : '') + done.map((l) => l + '\n').join(''))
+  const open = undecided(rows).map((id) => `no decisions: ${id}\n`).join('')
+  process.stdout.write(text + (acts.length ? '\n' + acts.join('\n') + '\n' : '') + open + done.map((l) => l + '\n').join(''))
+}
+
+// The tickets whose product questions were never settled up front, in board order: no decisions section in ticket.md,
+// no approved plan and no run yet.
+function undecided(rows) {
+  return rows
+    .filter((r) => !r.last && !md.hasDecisions(readOr(path.join(tdir(r.id), 'ticket.md')) || ''))
+    .filter((r) => !/^Status:\s*approved\s*$/m.test(readOr(path.join(tdir(r.id), 'plan.md')) || ''))
+    .map((r) => r.id)
 }
 
 // Sets `Done <date>` on each recorded version whose ids have all landed or were closed at init and have no hand check
@@ -1212,6 +1225,7 @@ async function run(argv, replan = false) {
   const denied = [
     '10x-land issue',
     '10x-land comment',
+    '10x-land decisions',
     '10x-land advisory',
     '10x-batch approve',
     '10x-batch init',

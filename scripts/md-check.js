@@ -85,6 +85,20 @@ function ticketCriteria(text) {
   return from < 0 ? [] : acBullets(lines, b, from, lines.length)
 }
 
+// Whether a ticket has a decisions section: a `## Decisions` or `### Decisions` heading (any case, closing #s allowed)
+// outside code, before the first `## Comments` heading — a commenter cannot settle a question.
+function hasDecisions(text) {
+  const b = blank(text.split('\n'))
+  for (const s of b) {
+    const m = s !== null && s.match(/^(#{2,3})\s+(.*?)\s*#*\s*$/)
+    if (!m) continue
+    const name = m[2].toLowerCase()
+    if (m[1].length === 2 && name === 'comments') return false
+    if (name === 'decisions') return true
+  }
+  return false
+}
+
 // A ticket's size: `small` when its header declares it and ticketCriteria() is not empty, else `normal`. The header is
 // the non-blank lines under the title, holding the line `Size: small` (a draft, a files ticket); or, when line 2 is
 // blank and line 3 starts `- source: `, that list block, holding `- size: small` (what bin/10x-ticket writes). Trailing
@@ -209,4 +223,4 @@ function reviewOpen(text) {
   return out.sort((x, y) => x.line - y.line)
 }
 
-module.exports = { blank, bannedHits, phrases, sections, criteria, ticketCriteria, size, files, testFiles, handChecks, reviewOpen }
+module.exports = { blank, bannedHits, phrases, sections, criteria, ticketCriteria, hasDecisions, size, files, testFiles, handChecks, reviewOpen }
