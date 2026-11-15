@@ -12,13 +12,13 @@
 # docs/scripts.md's `10x-batch run` entry must name the main checkout's `.claude/10x.json` a worker is denied.
 # docs/loop.md must name the `--plugin-dir` a batch worker loads and `10x plugin missing`, and the `10x-batch run` entry
 # of docs/scripts.md `--plugin-dir`, `10x plugin missing` and `-plugin`.
-# README.md, README.zh-TW.md, docs/configuration.md and the Unreleased changelog section must give `batch.parallel`'s
+# README.md, README.zh-TW.md, docs/configuration.md and the 0.3.0 changelog section must give `batch.parallel`'s
 # default as 2, and docs/loop.md must say a roadmap follow-up joins the next version.
-# docs/scripts.md's `- A draft may carry` line and the Unreleased changelog section must say `10x-land issue` checks
+# docs/scripts.md's `- A draft may carry` line and the 0.3.0 changelog section must say `10x-land issue` checks
 # every draft for security entries.
-# docs/scripts.md's refusal, `add` and `import` lines and the Unreleased changelog section must describe the title match
+# docs/scripts.md's refusal, `add` and `import` lines and the 0.3.0 changelog section must describe the title match
 # at word boundaries and the 20-character title floor.
-# The Unreleased changelog section must record that a security.md value holding U+2028 or U+2029 reads back.
+# The 0.3.0 changelog section must record that a security.md value holding U+2028 or U+2029 reads back.
 # README.zh-TW.md must have the same ## / ### headings, level by level, and the two READMEs must link to each other.
 # Every relative link in README.md, README.zh-TW.md and docs/*.md must resolve to a file, and an anchor to a heading
 # of that file as GitHub slugs it.
@@ -358,11 +358,11 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   need("CHANGELOG.md", ["10x-batch checked"])
   const log = read("CHANGELOG.md")
   const first = ((log || "").split("\n").find((s) => /^##\s/.test(s)) || "").trim()
-  if (first !== "## Unreleased") missing.push(`CHANGELOG.md: newest section is "${first}", not "## Unreleased"`)
+  if (!first.startsWith("## 0.3.0 ")) missing.push(`CHANGELOG.md: newest section is "${first}", not "## 0.3.0"`)
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
-// gh-36 AC11 — small tickets and security.paths in the docs and the Unreleased changelog section.
+// gh-36 AC11 — small tickets and security.paths in the docs and the 0.3.0 changelog section.
 {
   const name = "docs and CHANGELOG describe Size: small and security.paths"
   const missing = []
@@ -372,10 +372,10 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   need("docs/configuration.md", read("docs/configuration.md"), ["security.paths"])
   need("docs/hooks.md", read("docs/hooks.md"), ["Size: small", "ticket.md"])
   const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => s.trim() === "## Unreleased")
+  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
   const unreleased = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
-  need("CHANGELOG.md ## Unreleased", unreleased, ["Size: small", "security.paths"])
+  need("CHANGELOG.md ## 0.3.0", unreleased, ["Size: small", "security.paths"])
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
@@ -387,13 +387,13 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   need("docs/loop.md", read("docs/loop.md"), ["denied (see", "instead of `failed`"])
   need("docs/scripts.md", read("docs/scripts.md"), ["denied (see", "instead of `failed`"])
   const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => s.trim() === "## Unreleased")
+  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  need("CHANGELOG.md ## Unreleased", at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n"), ["denied (see"])
+  need("CHANGELOG.md ## 0.3.0", at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n"), ["denied (see"])
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
-// gh-40 AC5 — decisions taken on a recommendation in docs/loop.md and the Unreleased changelog section.
+// gh-40 AC5 — decisions taken on a recommendation in docs/loop.md and the 0.3.0 changelog section.
 {
   const name = "docs describe decisions taken on a recommendation"
   const missing = []
@@ -401,13 +401,13 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   for (const w of ["Decided:", "decided:"]) if (loop === null || !loop.includes(w)) missing.push(`docs/loop.md: ${w}`)
   if (loop !== null && loop.includes("is asked, not left")) missing.push(`docs/loop.md: still says "is asked, not left"`)
   const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => s.trim() === "## Unreleased")
+  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  if (!(at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")).includes("Decided:")) missing.push("CHANGELOG.md ## Unreleased: Decided:")
+  if (!(at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")).includes("Decided:")) missing.push("CHANGELOG.md ## 0.3.0: Decided:")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
-// gh-41 AC3 — the batch.parallel default of 2 in the docs and the Unreleased changelog section; the roadmap follow-up in
+// gh-41 AC3 — the batch.parallel default of 2 in the docs and the 0.3.0 changelog section; the roadmap follow-up in
 // docs/loop.md.
 {
   const name = "docs and CHANGELOG give the batch.parallel default as 2"
@@ -420,8 +420,8 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   const lines = (read("CHANGELOG.md") || "").split("\n")
   const at = lines.findIndex((s) => /^##\s/.test(s))
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  if (at < 0 || lines[at].trim() !== "## Unreleased") missing.push("CHANGELOG.md: the first ## heading is not ## Unreleased")
-  need("CHANGELOG.md ## Unreleased", at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n"), ["`batch.parallel`", "defaults to `2`"])
+  if (at < 0 || !lines[at].startsWith("## 0.3.0 ")) missing.push("CHANGELOG.md: the first ## heading is not ## 0.3.0")
+  need("CHANGELOG.md ## 0.3.0", at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n"), ["`batch.parallel`", "defaults to `2`"])
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
@@ -458,7 +458,7 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
-// gh-45 AC3 — docs/scripts.md and the Unreleased changelog section say `10x-land issue` checks every draft.
+// gh-45 AC3 — docs/scripts.md and the 0.3.0 changelog section say `10x-land issue` checks every draft.
 {
   const name = "docs say 10x-land issue checks every draft for security entries"
   const missing = []
@@ -468,13 +468,13 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   const lines = (read("CHANGELOG.md") || "").split("\n")
   const at = lines.findIndex((s) => /^##\s/.test(s))
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  if (at < 0 || lines[at].trim() !== "## Unreleased") missing.push("CHANGELOG.md: the first ## heading is not ## Unreleased")
+  if (at < 0 || !lines[at].startsWith("## 0.3.0 ")) missing.push("CHANGELOG.md: the first ## heading is not ## 0.3.0")
   const first = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
-  for (const w of ["10x-land issue", "every draft"]) if (!first.includes(w)) missing.push(`CHANGELOG.md ## Unreleased: ${w}`)
+  for (const w of ["10x-land issue", "every draft"]) if (!first.includes(w)) missing.push(`CHANGELOG.md ## 0.3.0: ${w}`)
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
-// gh-46 AC6 — the title match at word boundaries and the 20-character title floor in docs/scripts.md and the Unreleased
+// gh-46 AC6 — the title match at word boundaries and the 20-character title floor in docs/scripts.md and the 0.3.0
 // changelog section.
 {
   const name = "docs and CHANGELOG describe the title match and the title floor"
@@ -487,23 +487,23 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
     else if (!entry.includes(w)) missing.push(`docs/scripts.md \`${start}\` line: ${w}`)
   }
   const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => s.trim() === "## Unreleased")
+  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
   const unreleased = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
-  for (const w of ["whole words", "20 characters"]) if (!unreleased.includes(w)) missing.push(`CHANGELOG.md ## Unreleased: ${w}`)
+  for (const w of ["whole words", "20 characters"]) if (!unreleased.includes(w)) missing.push(`CHANGELOG.md ## 0.3.0: ${w}`)
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
-// gh-47 AC3 — the Unreleased changelog section records the U+2028 / U+2029 read-back fix.
+// gh-47 AC3 — the 0.3.0 changelog section records the U+2028 / U+2029 read-back fix.
 {
-  const name = "CHANGELOG's Unreleased section records the line-separator fix"
+  const name = "CHANGELOG's 0.3.0 section records the line-separator fix"
   const missing = []
   const lines = (read("CHANGELOG.md") || "").split("\n")
   const at = lines.findIndex((s) => /^##\s/.test(s))
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  if (at < 0 || lines[at].trim() !== "## Unreleased") missing.push("CHANGELOG.md: the first ## heading is not ## Unreleased")
+  if (at < 0 || !lines[at].startsWith("## 0.3.0 ")) missing.push("CHANGELOG.md: the first ## heading is not ## 0.3.0")
   const first = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
-  if (!first.includes("U+2028")) missing.push("CHANGELOG.md ## Unreleased: U+2028")
+  if (!first.includes("U+2028")) missing.push("CHANGELOG.md ## 0.3.0: U+2028")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
