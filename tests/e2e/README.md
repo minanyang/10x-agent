@@ -48,7 +48,7 @@ model has to find out by itself because no command prints the answer:
 - **Flows, not one run per scenario.** A flow is one sequence of turns on one fixture; each scenario is an assertion
   bound to a flow and a checkpoint (`bindings` in `scenarios.sh`). Naming scenarios runs only the flows they need, up
   to the last checkpoint needed. Skills that grill the user are answered with `go with your recommendations` until
-  the checkpoint state exists (a draft, `plan.md`, the memory commit, a PR), at most 6 turns per checkpoint.
+  the checkpoint state exists (a draft, `plan.md` — or, for a small ticket, the work report —, the memory commit, a PR), at most 6 turns per checkpoint.
 - **The batch flow** (`batch-two`, B1–B6) types `/10x:batch gh-5 gh-6` with `batch.parallel: 2` and `close: local`. The
   workers `10x-batch` starts are `$RUN/claude-worker`, named by `TENX_BATCH_CLAUDE`: the same `claude` with the flags
   of the other flows. The conductor is answered with `go with your recommendations; approve every plan that can be
@@ -82,10 +82,11 @@ model has to find out by itself because no command prints the answer:
   probes whatever the result, and `~/Library/pnpm` and its store if it created them.
 - **The roadmap flows.** `roadmap-files` (no origin, so `tickets: files`) types `/10x:roadmap <requirements>` and
   approves the draft (R1: no `roadmap.md` before the approval, its shape and `git status` after), merges more
-  requirements (R2: every line of the first file still there), shows it with no arguments (R3: nothing written), then
+  requirements (R2: every line of the first file still there, except that one version row may have gained items at the end of its Contents, as a follow-up does), shows it with no arguments (R3: nothing written), then
   types `/10x:roadmap tickets <first version>` and approves (R4: one ticket file per item, linked into the row), each
   typed command in its own session. `roadmap-gh` starts from a prepared `roadmap.md` with one version of two items and
   runs `tickets v1` against the fake `gh` (R5: two issues, their `gh-<n>` linked into the row).
+- **`open-files`** (F1, F2) types `/10x:open` with no origin and approves the ticket file (F1), then `/10x:work <slug>` in a new session (F2): a `Size: small` ticket must reach its report — `review.md`, and every criterion `met` or `deferred` in `evidence.md` — with no `plan.md`; any other must reach `plan.md`.
 - **`work-approved`** (W8) starts from an approved `plan.md` and `ticket.md` for gh-5 and no worktree (`prep_plan`), as an
   earlier session leaves them, and types `/10x:work gh-5` once in a new session: Step 0 must go to the worktree
   without fetching the ticket or grilling again.
