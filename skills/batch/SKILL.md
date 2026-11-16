@@ -84,7 +84,7 @@ On `done`, end with the board.
 
 ## Step 4 — Auto mode
 
-Start `10x-batch loop` with `run_in_background` and `timeout: 7200000`, then end your turn. It plans, approves a plan with no product question, implements and closes by itself, and exits when a human is needed. When it wakes you:
+Start `10x-batch loop` with `run_in_background` and `timeout: 7200000`, then end your turn. It plans, approves a plan that passes `10x-plan-check` — except one whose issue has a comment by someone other than its author, and a `security-<8 hex>` ticket's plan with a `comment.md` or `product-questions.md` — implements and closes by itself, and exits when a human is needed. When it wakes you:
 
 - No JSON line (it was stopped at its limit): start `10x-batch loop` again the same way.
 - Exit 2: quote its `10x-batch:` line and ask the user how to go on.
@@ -96,7 +96,7 @@ Start `10x-batch loop` with `run_in_background` and `timeout: 7200000`, then end
 
 After the user's reply, write each `reply.md` or approve as in Step 2, then start `10x-batch loop` again (not `10x-batch run`). After a background `replan`, end your turn instead, and start `10x-batch loop` again only when the replan wakes you: a `loop` started before the replan's run is recorded would report the ticket `failed` again and exit.
 
-On `done`, run `10x-batch status`. The final reply is the board, then, for each ticket under its id, the `## Auto decisions` section of `.10x/<id>/plan.md` verbatim, or `(none)` when the plan has no such section.
+On `done`, run `10x-batch status`. The final reply is the board, then, for each ticket under its id, the lines of the `## Auto decisions` section of `.10x/<id>/plan.md`, each verbatim, the `(product)` lines first and the others after them, or `(none)` when the plan has no such section.
 
 ## Replies
 
