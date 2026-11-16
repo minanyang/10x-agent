@@ -877,7 +877,10 @@ six_runs() {
   WORKER_MODE=default vb run t1 plan
   echo "go" >"$B/t1/reply.md"; vb run t1 reply
   approve_plan t1 a
+  # An implement run on an existing worktree fetches origin first: point it at the local bare repo for that run.
+  git remote set-url origin "$tmp/origin.git"
   WORKER_MODE=default vb run t1 implement
+  git remote set-url origin git@github.com:acme/batch.git
   evidence t1 "- AC1 — met: x"; mkdir -p "$1"
   vb run t1 close
 }
