@@ -107,8 +107,10 @@
 // `loop` drives the batch until a human is needed: each pass writes the board, starts every plan, implement and close
 // action and every reply whose reply.md exists as a detached `run`, and in auto mode approves a draft that passes
 // 10x-plan-check (writing `auto-approved`) or sends a planning question FIXED_REPLY (at most 3 times; a question the
-// ticket's decisions section answers is settled by it, never listed as a product question), unless
-// .10x/<id>/comment.md or product-questions.md exists. It waits for one of its runs or 10 seconds between passes, and
+// ticket's decisions section answers is settled by it; the worker answers product questions too, marked `(product)`
+// under `## Auto decisions`). A gh-<n> plan whose issue has a comment by someone other than its author is not
+// approved. A security-<8 hex> ticket gets SECURITY_FIXED_REPLY instead, and gets neither while .10x/<id>/comment.md
+// or product-questions.md exists. It waits for one of its runs or 10 seconds between passes, and
 // once nothing runs prints one line, {"items":[…]}: per ticket `failed`, `answer`, `approve` or `denied` with its
 // evidence, or [{"need":"done"}] when every ticket is settled.
 // `drop` sends SIGTERM to the ticket's open worker (a process whose command line holds the run's session), marks it
@@ -152,8 +154,10 @@ const RUNNING = { plan: 'planning', implement: 'implementing', close: 'closing' 
 const SETTLED = new Set(['landed', 'pr-open', 'failed', 'held', 'dropped'])
 const USAGE =
   'usage: 10x-batch init [--auto] <ticket>... [--search "<query>"] | run <id> plan|reply|implement|close | status | drop <id> | replan <id> | approve <id>... | accept-green <id> <file> "<reason>" | checked <id> AC<n> "<what you saw>" | loop'
-const APPROVE_REPLY = 'Approved. Set `Status: approved` in plan.md and stop; the implementation runs in a new session.\n'
+const APPROVE_REPLY = 'Approved. Set `Status: approved` in plan.md and stop; the implementation runs in a new session. Do not post `comment.md`: /10x:close carries it in the PR body.\n'
 const FIXED_REPLY =
+  "Auto mode: no human answers this batch's questions. A question the ticket's `Decisions` section answers is settled: take its answer, and neither ask it nor write it to `comment.md`. Answer every other question you asked with your own recommendation, product questions too — a question the ticket itself asks, what the user gets, the outcome of an edge case, what counts as done. Record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question: `- <its number> — <the choice and why>`, or `- (product) <its number> — <the choice and why>` for a product question. For a GitHub issue, also write the product answers to `comment.md` as /10x:work says; it is not posted now, /10x:close carries it in the PR body. Then go on.\n"
+const SECURITY_FIXED_REPLY =
   "Auto mode: no human answers this batch's questions. A question the ticket's `Decisions` section answers is settled: take its answer, and neither ask it nor list it in `product-questions.md`. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question (its number, the choice and why), and go on.\n"
 const FIXED_MAX = 3
 const POLL_MS = 10000
@@ -1506,15 +1510,20 @@ function checked(argv) {
 
 // ---------------------------------------------------------------- loop
 
-// A product question is the human's: the worker's comment for the issue, or its list of product questions.
-const heldBack = (id) => fs.existsSync(path.join(tdir(id), 'comment.md')) || fs.existsSync(path.join(tdir(id), 'product-questions.md'))
+// Only a security ticket's product question is the human's: its comment for the issue, or its list of product
+// questions. Any other ticket's product questions are answered by the worker under auto mode's fixed reply.
+const SECURITY_ID = /^security-[0-9a-f]{8}$/
+const heldBack = (id) =>
+  SECURITY_ID.test(id) && (fs.existsSync(path.join(tdir(id), 'comment.md')) || fs.existsSync(path.join(tdir(id), 'product-questions.md')))
+
+const fixedReply = (id) => (SECURITY_ID.test(id) ? SECURITY_FIXED_REPLY : FIXED_REPLY)
 
 const fixedSent = (id) => {
   let names = []
   try {
     names = fs.readdirSync(bdir(id))
   } catch {}
-  return names.filter((f) => /^[0-9]+-reply\.md$/.test(f) && readOr(path.join(bdir(id), f)) === FIXED_REPLY).length
+  return names.filter((f) => /^[0-9]+-reply\.md$/.test(f) && readOr(path.join(bdir(id), f)) === fixedReply(id)).length
 }
 
 async function loop(argv) {
@@ -1587,7 +1596,7 @@ async function loop(argv) {
             mkd(sdir(id))
             put(path.join(sdir(id), 'auto-approved'), hash + '\n')
           }
-        } else if (fixedSent(id) < FIXED_MAX) put(replyFile, FIXED_REPLY)
+        } else if (fixedSent(id) < FIXED_MAX) put(replyFile, fixedReply(id))
       }
       if (fs.existsSync(replyFile)) started = (await start(id, 'reply')) || started
     }

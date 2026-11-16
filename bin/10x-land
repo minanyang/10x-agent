@@ -60,11 +60,13 @@
 # `pr` opens the ticket's PR/MR from .10x/<id>/pr-title and pr-body.md, or, when the branch already
 # has an open one, replaces only its body; on GitHub it refuses a branch whose PR is already merged. It refuses,
 # before any gh or glab call, a pr-body.md lacking any `##` heading of the worktree's template (as `check` finds it),
-# naming the missing ones; headings match trimmed, in any case, without closing #s, fenced ones ignored. The repo is
-# pinned to origin; no auto-merge, push or fill flags.
+# naming the missing ones; headings match trimmed, in any case, without closing #s, fenced ones ignored. When an
+# unposted .10x/<id>/comment.md exists it is checked as a disclosure source too, and, before any gh or glab call, a
+# pr-body.md not holding its text (trailing newlines trimmed) byte for byte is refused; comment.md is left in place.
+# The repo is pinned to origin; no auto-merge, push or fill flags.
 # `push`, `merge` and `pr` refuse when an origin push URL names a different repo than its fetch URL.
-# `push` (each commit message in <base>..<branch>), `pr` (pr-title, pr-body.md and each commit message in
-# <base>..<branch>), `squash` (commit-msg), `comment` (comment.md) and `decisions` (decisions.pending.md) refuse, before any git push, gh, glab or
+# `push` (each commit message in <base>..<branch>), `pr` (pr-title, pr-body.md, an unposted comment.md and each
+# commit message in <base>..<branch>), `squash` (commit-msg), `comment` (comment.md) and `decisions` (decisions.pending.md) refuse, before any git push, gh, glab or
 # commit-tree call, text that names an entry of .10x/security.md, whatever
 # its status: its fingerprint, its title in any case, not glued to an ASCII word character on a side where the title
 # has one, or its location verbatim when not preceded by a path character
@@ -611,8 +613,22 @@ case "$cmd" in
     title="$(head -n 1 "$td/pr-title")"
     [ -n "${title//[[:space:]]/}" ] || die "$td/pr-title has an empty first line"
     sources=("$td/pr-title" "$td/pr-title" "$td/pr-body.md" "$td/pr-body.md")
+    comment=""
+    if [ -e "$td/comment.md" ] || [ -L "$td/comment.md" ]; then
+      need_file "$td/comment.md"
+      comment="$td/comment.md"
+      sources+=("$comment" "$comment")
+    fi
     commit_sources
     disclosure_check "${sources[@]}"
+    if [ -n "$comment" ]; then
+      # shellcheck disable=SC2016
+      node -e '
+        const fs = require("fs")
+        const [body, comment] = process.argv.slice(1).map((f) => fs.readFileSync(f, "utf8"))
+        process.exit(body.includes(comment.replace(/\n+$/, "")) ? 0 : 1)
+      ' "$td/pr-body.md" "$comment" || die "$td/pr-body.md lacks the text of $td/comment.md"
+    fi
     pr_template
     if [ -n "$tpl" ]; then
       # shellcheck disable=SC2016
