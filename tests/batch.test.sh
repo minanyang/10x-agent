@@ -2179,7 +2179,7 @@ git branch -D "$br" >/dev/null 2>&1
 base_reset "$base0"
 
 begin "set aside: a rebase conflict or uncommitted change refuses the implement run and leaves the branch"
-for scenario in conflict dirty; do
+for scenario in conflict dirty in-progress; do
   reset; ticket t1
   vb init t1
   git remote set-url origin "$tmp/origin.git"
@@ -2188,28 +2188,44 @@ for scenario in conflict dirty; do
   git remote set-url origin git@github.com:acme/batch.git
   wt1="$root/.worktrees/t1"; br="$(git -C "$wt1" rev-parse --abbrev-ref HEAD)"
   base0="$(git rev-parse main)"
-  if [ "$scenario" = conflict ]; then
+  if [ "$scenario" != dirty ]; then
     echo mine >"$wt1/clash.txt"; git -C "$wt1" add clash.txt; git -C "$wt1" commit -qm "feat: clash"
     base_moves clash.txt theirs
   else
     echo mine >"$wt1/README.md"
     base_moves newbase.txt one
   fi
+  # A rebase the worker left stopped on a conflict.
+  [ "$scenario" = in-progress ] && git -C "$wt1" rebase -q main >/dev/null 2>&1
   approved t1 a
-  head0="$(git -C "$wt1" rev-parse HEAD)"; : >"$WORKER_LOG"
+  head0="$(git -C "$wt1" rev-parse HEAD)"; tip0="$(git rev-parse "$br")"; : >"$WORKER_LOG"
   git remote set-url origin "$tmp/origin.git"
   vb run t1 implement; rc=$?
   git remote set-url origin git@github.com:acme/batch.git
   need "$scenario: exit 2" test "$rc" -eq 2
   need "$scenario: refusal line" has "10x-batch: implement t1 refused: "
-  if [ "$scenario" = conflict ]; then need "$scenario: names the file" has "conflicts in clash.txt"
-  else need "$scenario: names the file" has "uncommitted changes in $wt1: README.md"; fi
-  need "$scenario: the branch is unchanged" test "$(git -C "$wt1" rev-parse HEAD)" = "$head0"
-  need "$scenario: no rebase left in progress" test -z "$(git -C "$wt1" diff --name-only --diff-filter=U)"
+  case $scenario in
+    conflict) need "$scenario: names the file" has "conflicts in clash.txt"; why=clash ;;
+    dirty) need "$scenario: names the file" has "uncommitted changes in $wt1: README.md"; why=README ;;
+    in-progress) need "$scenario: names the rebase in progress" has "a rebase is already in progress in $wt1"; why='in progress' ;;
+  esac
+  need "$scenario: the branch is unchanged" test "$(git -C "$wt1" rev-parse HEAD)/$(git rev-parse "$br")" = "$head0/$tip0"
+  if [ "$scenario" = in-progress ]; then
+    need "$scenario: the worker's rebase is left as it was" test -d "$(git -C "$wt1" rev-parse --git-path rebase-merge)"
+  else
+    need "$scenario: no rebase left in progress" test -z "$(git -C "$wt1" diff --name-only --diff-filter=U)"
+  fi
   need "$scenario: no worker started" test ! -s "$WORKER_LOG"
   need "$scenario: t1 is failed" phase_is t1 failed
-  need "$scenario: status names the file" grep -qE -- "^- t1 — failed: .*(clash|README)" "$B/board.md"
+  need "$scenario: status names the file" grep -qE -- "^- t1 — failed: .*$why" "$B/board.md"
+  if [ "$scenario" = conflict ]; then
+    lp 60
+    need "$scenario: loop finished" finished
+    need "$scenario: loop reports it as a failed item" grep -qF '{"id":"t1","need":"failed","evidence":"' "$tmp/loop.out"
+    need "$scenario: with the file" grep -qF 'conflicts in clash.txt' "$tmp/loop.out"
+  fi
   need "$scenario: replan takes the failed ticket back" exits 0 replan t1
+  git -C "$wt1" rebase --abort 2>/dev/null
   git -C "$wt1" checkout -q -- . 2>/dev/null
   git remote set-url origin "$tmp/origin.git"; 10x-worktree rm t1 >/dev/null 2>&1; git remote set-url origin git@github.com:acme/batch.git
   git branch -D "$br" >/dev/null 2>&1
