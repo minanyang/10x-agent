@@ -74,13 +74,23 @@
 // It and replan refuse a PATH entry or PNPM_HOME that is or contains the main checkout or an allowWrite path.
 // It refuses a plan, implement or close that `status` does not list, a reply to a planning session while a plan-session run that started before the
 // ticket's latest run ended is open, and a
-// reply whose first line starts with `/`, and a gh-<n> ticket whose issue is no longer the user's. Every worker gets
+// reply whose first line starts with `/`, and a gh-<n> ticket whose issue is no longer the user's. Before an implement
+// run on an existing <worktree dir>/<id>, never before its auto-mode fallback rerun, it rebases the worktree's branch
+// onto the base ref, git pinned with worktree.pin, after fetching origin/<base> when origin exists. A pin refusal, a
+// failed fetch, a rebase in progress, uncommitted tracked changes (`uncommitted changes in <worktree>: <files>`) or a
+// failed rebase (`rebase onto <ref> conflicts in <files>`, aborted) starts no worker: the branch is left as it was, a
+// run row with exit 2 and no pid and <nn>-rebase (the reason) are recorded, so the ticket is `failed` with that reason,
+// and it refuses (`implement <id> refused: <reason>`). Every worker gets
 // TENX_BATCH=1. SIGTERM and SIGINT are forwarded to the worker. It prints
 // `phase: <phase>` and `board: <path>`, exit 0 once the worker ran, whatever its exit code.
 // `status` writes and prints the board, then the actions allowed now: `plan <id>`, `implement <id>`, `close <id>`,
 // `answer <id>[ approvable]`, and `done` when every ticket is settled; after them, it and `init` print
 // `no decisions: <id>` for each ticket, in board order, whose ticket.md has no decisions section (md-check.js
-// hasDecisions), whose plan.md is not `Status: approved`, and with no run yet. The board ends with `## Hand checks pending`,
+// hasDecisions), whose plan.md is not `Status: approved`, and with no run yet. A ticket `failed`, or `waiting` on a
+// plan or implement session for over 30 minutes since its latest run ended (else started), is set aside: it holds no
+// batch.parallel slot, no ticket waits on its Files and it holds back no later close. The board lists each under
+// `## Set aside`, after `## Needs the human`, as `- <id> — <phase>, waiting <h>h <mm>m: <evidence>`; absent when none
+// is. The board ends with `## Hand checks pending`,
 // one line `- <version> — <id> AC<n>: <text>` per declared hand check whose last evidence.md line is `hand-check:`, of
 // every landed ticket and id of `versions.closed`, a ticket in no recorded version under `(no version)`; absent when
 // none is. `status` and `init` also set the State of each recorded version whose ids are all landed or closed, none
@@ -770,27 +780,25 @@ function overlap(a, b) {
   return null
 }
 
+// A ticket failed, or waiting on the user (a plan or an implement session) for over 30 minutes since its latest run, is
+// set aside: it holds no batch.parallel slot, no Files and no later close.
+const SET_ASIDE_MS = 30 * 60 * 1000
+
 function deriveAll(ids) {
-  const rows = []
-  for (const id of ids) {
+  const now = Date.now()
+  const rows = ids.map((id) => {
     const r = derive(id)
-    if (!r.implemented && ['queued', 'waiting', 'approved'].includes(r.phase)) {
-      for (const e of rows) {
-        if (e.phase !== 'failed' && e.phase !== 'held') continue
-        const p = overlap(r.files, e.files)
-        if (p) {
-          Object.assign(r, { phase: 'held', evidence: `shares ${p} with ${e.id} (${e.phase})`, approvable: false })
-          break
-        }
-      }
-    }
-    rows.push(r)
-  }
-  // An approved ticket whose files a later ticket already holds — implemented, not landed — waits for it to land.
+    const t = Number(r.last?.end || r.last?.start) || 0
+    r.waited = t ? Math.max(0, now - t) : 0
+    r.setAside = r.phase === 'failed' || (r.phase === 'waiting' && ['plan', 'implement'].includes(r.last.session_kind) && r.waited > SET_ASIDE_MS)
+    return r
+  })
+  // An approved ticket whose files a later ticket already holds — implemented, not landed nor set aside — waits for it
+  // to land.
   rows.forEach((r, i) => {
     if (r.phase !== 'approved' || r.implemented) return
     for (const e of rows.slice(i + 1)) {
-      if (!e.implemented || ['landed', 'pr-open', 'dropped'].includes(e.phase)) continue
+      if (!e.implemented || e.setAside || ['landed', 'pr-open', 'dropped'].includes(e.phase)) continue
       const p = overlap(r.files, e.files)
       if (p) {
         Object.assign(r, { phase: 'held', evidence: `shares ${p} with ${e.id} (${e.phase}), which implemented first` })
@@ -846,6 +854,8 @@ function derive(id) {
     return set('failed', 'sandbox unavailable')
   }
   if ((readOr(path.join(bdir(id), `${pad(last.n)}-plugin`)) || '').trim() === 'missing') return set('failed', '10x plugin missing')
+  const rebase = (readOr(path.join(bdir(id), `${pad(last.n)}-rebase`)) || '').trim()
+  if (rebase) return set('failed', rebase)
   if (exit !== '0') return set('failed', exit === '?' ? `${tag} ended without an exit code` : `${tag} exited ${exit}`)
 
   if (last.session_kind === 'plan') {
@@ -999,14 +1009,14 @@ function prOpen(id) {
 // ---------------------------------------------------------------- schedule
 
 // Why ticket <i> cannot implement now, or null: an earlier unsettled ticket whose `## Files` are not known yet, or a
-// shared path with a running ticket or an earlier one that has not landed.
+// shared path with a running ticket or an earlier one that has not landed; a set-aside ticket blocks neither way.
 function implementBlock(rows, i) {
   const r = rows[i]
-  const unknown = rows.slice(0, i).find((e) => !SETTLED.has(e.phase) && !e.files.length)
+  const unknown = rows.slice(0, i).find((e) => !SETTLED.has(e.phase) && !e.setAside && !e.files.length)
   if (unknown) return `${unknown.id} (${unknown.phase}) has no plan with ## Files yet`
   for (const [j, e] of rows.entries()) {
     if (j === i) continue
-    const busy = Object.values(RUNNING).includes(e.phase) || (j < i && !['landed', 'pr-open', 'dropped'].includes(e.phase))
+    const busy = !e.setAside && (Object.values(RUNNING).includes(e.phase) || (j < i && !['landed', 'pr-open', 'dropped'].includes(e.phase)))
     const p = busy && overlap(r.files, e.files)
     if (p) return `${r.id} shares ${p} with ${e.id} (${e.phase})`
   }
@@ -1031,13 +1041,14 @@ function actions(rows) {
   return out
 }
 
-// The tickets holding a batch.parallel slot: implementing, or waiting on a question of their implement session.
-const implementing = (rows) => rows.filter((r) => r.phase === 'implementing' || (r.phase === 'waiting' && r.last.session_kind === 'implement'))
+// The tickets holding a batch.parallel slot: implementing, or waiting on a question of their implement session and not
+// set aside.
+const implementing = (rows) => rows.filter((r) => r.phase === 'implementing' || (r.phase === 'waiting' && r.last.session_kind === 'implement' && !r.setAside))
 
 function closeCandidate(rows) {
   if (rows.some((r) => r.phase === 'closing')) return null
   const i = rows.findIndex((r) => r.phase === 'implemented')
-  return i >= 0 && rows.slice(0, i).every((r) => SETTLED.has(r.phase)) ? rows[i] : null
+  return i >= 0 && rows.slice(0, i).every((r) => SETTLED.has(r.phase) || r.setAside) ? rows[i] : null
 }
 
 // Why `status` does not list <kind> for ticket <i>.
@@ -1055,7 +1066,7 @@ function refusal(rows, i, kind) {
   if (kind === 'close') {
     const closing = rows.find((e) => e.phase === 'closing')
     if (closing) return `close ${r.id} refused: ${closing.id} is closing`
-    const early = rows.slice(0, i).find((e) => !SETTLED.has(e.phase))
+    const early = rows.slice(0, i).find((e) => !SETTLED.has(e.phase) && !e.setAside)
     if (early) return `close ${r.id} refused: the earlier ticket ${early.id} is ${early.phase}`
   }
   return `${kind} ${r.id} refused`
@@ -1079,6 +1090,10 @@ function board(rows) {
     if (r.phase !== 'landed') for (const x of r.decided) need.push(`- ${r.id} — decided: ${x}`)
   }
   lines.push('', '## Needs the human', ...(need.length ? need : ['- none']))
+  const aside = rows
+    .filter((r) => r.setAside)
+    .map((r) => `- ${r.id} — ${r.phase}, waiting ${Math.floor(r.waited / 3600000)}h ${pad(Math.floor(r.waited / 60000) % 60)}m: ${r.evidence ? flat(r.evidence) : 'no turn recorded'}`)
+  if (aside.length) lines.push('', '## Set aside', ...aside)
   // Landed tickets and the ids closed at init, under the first recorded version whose row lists them, then the rest.
   const closed = (readOr(CLOSED) || '').split('\n').map((s) => s.trim()).filter((s) => ID.test(s))
   const pool = [...new Set([...rows.filter((r) => r.phase === 'landed').map((r) => r.id), ...closed])]
@@ -1212,6 +1227,19 @@ async function run(argv, replan = false) {
 
   fs.mkdirSync(bdir(id), { recursive: true })
   mkd(sdir(id))
+  if (kind === 'implement' && fs.existsSync(path.join(WT_DIR, id, '.git'))) {
+    const why = rebaseOntoBase(path.join(WT_DIR, id))
+    if (why) {
+      // Recorded as a failed implement run, so the ticket is failed (set aside) and `loop` takes the run as started.
+      const prev = runs(id)
+      const n = String(prev.length + 1)
+      const now = String(Date.now())
+      put(path.join(bdir(id), `${pad(n)}-rebase`), flat(why) + '\n')
+      writeRuns(id, [...prev, { n, kind, session, session_kind: sessionKind, start: now, end: now, exit: '2', pid: '' }])
+      writeBoard(deriveAll(ids))
+      die(`implement ${id} refused: ${flat(why)}`)
+    }
+  }
   const turn = path.join(bdir(id), 'turn.md')
   const bin = process.env.TENX_BATCH_CLAUDE || 'claude'
   // Every worker starts in auto mode. A plan session's writes are kept under .10x/<id>/ by hooks/plan-boundary.js, which
@@ -1331,6 +1359,32 @@ async function run(argv, replan = false) {
   if (res.code === null) process.exit(2)
   process.stdout.write(`phase: ${after[i].phase}\nboard: ${BOARD}\n`)
   process.exit(0)
+}
+
+// Moves worktree <wt>'s branch onto the current base, fetched first when origin exists; null when it is there, else why
+// not, the branch left as it was. git runs pinned, as in accept-green: config and hooks come from the common dir.
+function rebaseOntoBase(wt) {
+  const pin = worktree.pin(wt, common)
+  if (pin.reason) return pin.reason
+  const b = baseBranch()
+  if (git(['remote', 'get-url', 'origin']) !== null && git(['fetch', '--quiet', 'origin', `+refs/heads/${b}:refs/remotes/origin/${b}`]) === null)
+    return `could not fetch origin/${b}`
+  const ref = baseRef()
+  const sha = git(['rev-parse', '--verify', '-q', `${ref}^{commit}`])
+  if (!sha) return `no commit for ${ref}`
+  const wtGit = (a) => git(['-C', wt, ...a], pin.env)
+  const gitDir = wtGit(['rev-parse', '--git-dir'])
+  if (gitDir === null) return `rebase onto ${ref} failed`
+  const inProgress = () => ['rebase-merge', 'rebase-apply'].some((d) => fs.existsSync(path.resolve(wt, gitDir, d)))
+  if (inProgress()) return `a rebase is already in progress in ${wt}`
+  const dirty = wtGit(['diff', '--name-only', 'HEAD'])
+  if (dirty === null) return `rebase onto ${ref} failed`
+  if (dirty) return `uncommitted changes in ${wt}: ${dirty.split('\n').join(', ')}`
+  if (wtGit(['merge-base', '--is-ancestor', sha, 'HEAD']) !== null) return null
+  if (wtGit(['rebase', sha]) !== null) return null
+  const unmerged = wtGit(['diff', '--name-only', '--diff-filter=U']) || ''
+  if (inProgress()) wtGit(['rebase', '--abort'])
+  return unmerged ? `rebase onto ${ref} conflicts in ${unmerged.split('\n').join(', ')}` : `rebase onto ${ref} failed`
 }
 
 // A stream-json log's init event, read from its complete lines: other system events (SessionStart hooks) may come
