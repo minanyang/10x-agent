@@ -2156,15 +2156,23 @@ printf -- '- Q — Again: no\n' >"$gd/decisions.pending.md"
 : >"$tmp/stub.log"
 STUB_ISSUE_BODY=$'old body\n\n### Decisions\n\n- Q — Flag name: --fast' expect "decisions refuses an issue body that already has a decisions section" 2 10x-land decisions gh-7
 ! grep -q '^issue edit' "$tmp/stub.log" && [ -s "$gd/decisions.pending.md" ] && ok "a refused issue is not edited and keeps its pending file" || { bad "a refused issue is not edited and keeps its pending file"; cat "$tmp/stub.log"; }
-rm "$gd/decisions.pending.md"
+sec_disclosed
+printf -- '- Q — Tracking: %s is tracked.\n' "$sec_fp1" >"$gd/decisions.pending.md"
+: >"$tmp/stub.log"
+refused "decisions refuses a decisions.pending.md naming a security entry" "$gd/decisions.pending.md" 10x-land decisions gh-7
+[ ! -s "$tmp/stub.log" ] && [ -s "$gd/decisions.pending.md" ] && [ -s "$gd/decisions.posted.md" ] && ! grep -qF "$sec_fp1" "$gd/decisions.posted.md" &&
+  ok "a refused decisions.pending.md is neither posted nor moved" || { bad "a refused decisions.pending.md is neither posted nor moved"; cat "$tmp/stub.log"; }
+rm "$tmp/land/.10x/security.md"
+printf -- '- Q — Again: no\n' >"$gd/decisions.pending.md"
 
-# TENX_BATCH: inside a batch worker issue, comment and advisory refuse before reading or writing anything, however invoked
+# TENX_BATCH: inside a batch worker issue, comment, advisory and decisions refuse before reading or writing anything,
+# however invoked
 printf '# Add the thing\nLabels: bug, ui\nType: Bug\n\n## Context\nbody\n\n## Acceptance criteria\n- [ ] AC1 — it exists\n' >"$tmp/land/.10x/drafts/thing.md"
 : >"$tmp/stub.log"
 snap10x() { find "$tmp/land/.10x" -print0 | sort -z | xargs -0 cksum 2>&1; }
 snap10x >"$tmp/batch.before"
 batch_bad=0
-for args in "issue thing" "comment gh-7" "advisory thing"; do
+for args in "issue thing" "comment gh-7" "advisory thing" "decisions gh-7"; do
   # shellcheck disable=SC2086  # $args is split on purpose
   for form in name path shell; do
     case "$form" in
@@ -2176,12 +2184,13 @@ for args in "issue thing" "comment gh-7" "advisory thing"; do
     { [ "$rc" -eq 2 ] && [ "$(cat "$tmp/out")" = "10x: refused inside a batch worker" ]; } || { batch_bad=1; echo "      $args ($form): exit $rc"; cat "$tmp/out"; }
   done
 done
-[ "$batch_bad" = 0 ] && ok "TENX_BATCH: issue, comment and advisory refuse by name, by absolute path and through sh -c" ||
-  bad "TENX_BATCH: issue, comment and advisory refuse by name, by absolute path and through sh -c"
+[ "$batch_bad" = 0 ] && ok "TENX_BATCH: issue, comment, advisory and decisions refuse by name, by absolute path and through sh -c" ||
+  bad "TENX_BATCH: issue, comment, advisory and decisions refuse by name, by absolute path and through sh -c"
 snap10x >"$tmp/batch.after"
-[ ! -s "$tmp/stub.log" ] && cmp -s "$tmp/batch.before" "$tmp/batch.after" && [ -f "$tmp/land/.10x/drafts/thing.md" ] && [ -s "$gd/comment.md" ] &&
-  ok "TENX_BATCH: a refused issue, comment or advisory creates, posts, renames or deletes nothing" ||
-  { bad "TENX_BATCH: a refused issue, comment or advisory creates, posts, renames or deletes nothing"; cat "$tmp/stub.log"; diff "$tmp/batch.before" "$tmp/batch.after"; }
+[ ! -s "$tmp/stub.log" ] && cmp -s "$tmp/batch.before" "$tmp/batch.after" && [ -f "$tmp/land/.10x/drafts/thing.md" ] && [ -s "$gd/comment.md" ] && [ -s "$gd/decisions.pending.md" ] &&
+  ok "TENX_BATCH: a refused issue, comment, advisory or decisions creates, posts, renames or deletes nothing" ||
+  { bad "TENX_BATCH: a refused issue, comment, advisory or decisions creates, posts, renames or deletes nothing"; cat "$tmp/stub.log"; diff "$tmp/batch.before" "$tmp/batch.after"; }
+rm "$gd/decisions.pending.md"
 TENX_BATCH=1 10x-land comment L1 >"$tmp/out" 2>&1; rc=$?
 [ "$rc" -eq 2 ] && [ "$(cat "$tmp/out")" = "10x: refused inside a batch worker" ] && ! grep -qF "comment needs a GitHub issue ticket id" "$tmp/out" &&
   ok "TENX_BATCH: comment with a bad id reports the batch refusal" || { bad "TENX_BATCH: comment with a bad id reports the batch refusal"; cat "$tmp/out"; }
