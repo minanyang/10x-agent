@@ -154,7 +154,7 @@ const RUNNING = { plan: 'planning', implement: 'implementing', close: 'closing' 
 const SETTLED = new Set(['landed', 'pr-open', 'failed', 'held', 'dropped'])
 const USAGE =
   'usage: 10x-batch init [--auto] <ticket>... [--search "<query>"] | run <id> plan|reply|implement|close | status | drop <id> | replan <id> | approve <id>... | accept-green <id> <file> "<reason>" | checked <id> AC<n> "<what you saw>" | loop'
-const APPROVE_REPLY = 'Approved. Set `Status: approved` in plan.md and stop; the implementation runs in a new session.\n'
+const APPROVE_REPLY = 'Approved. Set `Status: approved` in plan.md and stop; the implementation runs in a new session. Do not post `comment.md`: /10x:close carries it in the PR body.\n'
 const FIXED_REPLY =
   "Auto mode: no human answers this batch's questions. A question the ticket's `Decisions` section answers is settled: take its answer, and neither ask it nor write it to `comment.md`. Answer every other question you asked with your own recommendation, product questions too — a question the ticket itself asks, what the user gets, the outcome of an edge case, what counts as done. Record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question: `- <its number> — <the choice and why>`, or `- (product) <its number> — <the choice and why>` for a product question. For a GitHub issue, also write the product answers to `comment.md` as /10x:work says; it is not posted now, /10x:close carries it in the PR body. Then go on.\n"
 const SECURITY_FIXED_REPLY =
