@@ -1409,6 +1409,18 @@ land_log "pr create --repo github.com/acme/land --base main --head feat/L1 --tit
 : >"$tmp/stub.log"
 STUB_VIEW="main OPEN false" expect "pr updates via gh" 0 10x-land pr L1
 land_log "pr edit feat/L1 --repo github.com/acme/land --body-file $td/pr-body.md" "gh pr edit argv"
+# an unposted comment.md must be in the body verbatim
+printf 'Decisions from planning:\n- (product) 1 — keep it simple.\n' >"$td/comment.md"
+: >"$tmp/stub.log"
+STUB_VIEW_RC=1 expect "pr refuses a body without the unposted comment.md" 2 10x-land pr L1
+grep -qF "$td/pr-body.md lacks the text of $td/comment.md" "$tmp/out" && ok "pr: names the body and the comment.md" || { bad "pr: names the body and the comment.md"; cat "$tmp/out"; }
+[ ! -s "$tmp/stub.log" ] && ok "pr: no gh call for a body lacking the comment.md" || { bad "pr: no gh call for a body lacking the comment.md"; cat "$tmp/stub.log"; }
+printf 'Closes #1\n\nDecisions from planning:\n- (product) 1 — keep it simple.\n' >"$td/pr-body.md"
+: >"$tmp/stub.log"
+STUB_VIEW_RC=1 expect "pr opens a PR whose body holds the unposted comment.md" 0 10x-land pr L1
+land_log "pr create --repo github.com/acme/land --base main --head feat/L1 --title feat: the feature --body-file $td/pr-body.md" "gh pr create argv with the comment.md in the body"
+[ -e "$td/comment.md" ] && ok "pr: comment.md is not renamed" || bad "pr: comment.md is not renamed"
+rm "$td/comment.md"; printf 'Closes #1\n' >"$td/pr-body.md"
 : >"$tmp/stub.log"
 STUB_VIEW="develop OPEN false" expect "pr refuses an open PR into another base" 2 10x-land pr L1
 ! grep -qE 'pr (edit|create)' "$tmp/stub.log" && ok "no edit or create for a wrong base" || bad "no edit or create for a wrong base"

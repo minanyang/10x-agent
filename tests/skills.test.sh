@@ -262,6 +262,23 @@ for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/S
     : bad("close: does not fill the template check names or add the sections pr names")
 }
 
+// close carries an unposted comment.md in the PR body, verbatim; no separate 10x-land comment runs.
+{
+  const text = fs.readFileSync(`${dir}/close/SKILL.md`, "utf8")
+  const step3 = (/^## Step 3\b[\s\S]*?(?=^## Step )/m.exec(text) || [""])[0].replace(/\s+/g, " ")
+  step3.includes("`comment.md`") && step3.includes("verbatim") && step3.includes("`pr-body.md`") && /unposted/.test(step3)
+    ? ok("close: copies an unposted comment.md into the PR body")
+    : bad("close: copies an unposted comment.md into the PR body (Step 3 lacks `comment.md`, unposted, verbatim and `pr-body.md`)")
+}
+
+// the batch skill's final auto reply lists each ticket's ## Auto decisions, the (product) ones first.
+{
+  const text = fs.readFileSync(`${dir}/batch/SKILL.md`, "utf8").replace(/\s+/g, " ")
+  text.includes("`(product)`") && /`\(product\)`[^.]*first/.test(text)
+    ? ok("batch: the final auto reply lists (product) decisions first")
+    : bad("batch: the final auto reply lists (product) decisions first (SKILL.md lacks `(product)` ... first)")
+}
+
 // .10x/<id>/ paths resolve against the printed ticket dir, never the worktree, and the base comes from base:.
 {
   const text = fs.readFileSync(`${dir}/work/SKILL.md`, "utf8")

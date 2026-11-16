@@ -512,6 +512,14 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
+// gh-57 — auto mode approves a plan that passes 10x-plan-check; the old "no product question" wording is gone.
+{
+  const name = "docs: auto mode approves a plan that passes 10x-plan-check"
+  const gone = ["plan with no product question", "plans with no product question", "while no product question is open", "沒有產品問題的計畫"]
+  const left = ["README.md", "README.zh-TW.md", "docs/loop.md", "skills/batch/SKILL.md"].flatMap((f) => gone.filter((p) => (read(f) || "").includes(p)).map((p) => `${f}: still says "${p}"`))
+  left.length ? bad(name, left.join("; ")) : ok(name)
+}
+
 // AC5 — relative links.
 {
   const name = "every relative link in README.md, README.zh-TW.md and docs/*.md resolves"

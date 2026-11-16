@@ -202,6 +202,10 @@ snap() { find .10x .git "$XDG_STATE_HOME" -type f -print0 2>/dev/null | sort -z 
 fetched() { grep "^issue view $1 " "$STUB_LOG" | grep -v -- '--json author' | grep -q .; }
 # The fixed reply of auto mode, byte for byte.
 cat >"$tmp/fixed" <<'EOF'
+Auto mode: no human answers this batch's questions. A question the ticket's `Decisions` section answers is settled: take its answer, and neither ask it nor write it to `comment.md`. Answer every other question you asked with your own recommendation, product questions too — a question the ticket itself asks, what the user gets, the outcome of an edge case, what counts as done. Record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question: `- <its number> — <the choice and why>`, or `- (product) <its number> — <the choice and why>` for a product question. For a GitHub issue, also write the product answers to `comment.md` as /10x:work says; it is not posted now, /10x:close carries it in the PR body. Then go on.
+EOF
+# The fixed reply of a security-<8 hex> ticket, byte for byte (the old text).
+cat >"$tmp/fixed_security" <<'EOF'
 Auto mode: no human answers this batch's questions. A question the ticket's `Decisions` section answers is settled: take its answer, and neither ask it nor list it in `product-questions.md`. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question (its number, the choice and why), and go on.
 EOF
 # A worker turn that asks a question and writes no plan.
@@ -2113,7 +2117,18 @@ begin "loop: the fixed reply settles what the decisions section answers"
 vb init --auto t1
 WORKER_OUT="$tmp/question.jsonl" lp 90
 need "loop finished" finished
-need "the reply sent says a question the section answers is settled" grep -qF 'A question the ticket'"'"'s `Decisions` section answers is settled: take its answer, and neither ask it nor list it in `product-questions.md`.' "$B/t1/02-reply.md"
+need "the reply sent says a question the section answers is settled" grep -qF 'A question the ticket'"'"'s `Decisions` section answers is settled: take its answer, and neither ask it nor write it to `comment.md`.' "$B/t1/02-reply.md"
+end
+
+reset; ticket t1
+begin "loop: the fixed reply answers product questions and marks them (product)"
+vb init --auto t1
+WORKER_OUT="$tmp/question.jsonl" lp 90
+need "loop finished" finished
+need "the reply is the new fixed reply byte for byte" cmp -s "$tmp/fixed" "$B/t1/02-reply.md"
+need "it tells the worker to answer product questions too" grep -qF 'Answer every other question you asked with your own recommendation, product questions too' "$B/t1/02-reply.md"
+need "it marks a product answer (product)" grep -qF '`- (product) <its number> — <the choice and why>` for a product question' "$B/t1/02-reply.md"
+need "it no longer stops for product-questions.md" not grep -qF 'write their numbers, one per line' "$B/t1/02-reply.md"
 end
 
 reset; ticket t1
@@ -2121,7 +2136,24 @@ begin "loop: the fixed reply puts Auto decisions below the Appendix"
 vb init --auto t1
 WORKER_OUT="$tmp/question.jsonl" lp 90
 need "loop finished" finished
-need "the fixed reply says where Auto decisions go" grep -qF 'record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question' "$B/t1/02-reply.md"
+need "the fixed reply says where Auto decisions go" grep -qF 'Record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question' "$B/t1/02-reply.md"
+end
+
+reset; ticket security-0a1b2c3d
+begin "loop: a security ticket keeps the old fixed reply and its hold"
+vb init --auto security-0a1b2c3d
+WORKER_OUT="$tmp/question.jsonl" lp 90
+need "loop finished" finished
+need "the reply sent is the old fixed reply byte for byte" cmp -s "$tmp/fixed_security" "$B/security-0a1b2c3d/02-reply.md"
+reset; ticket security-0a1b2c3d
+echo "a comment" >.10x/security-0a1b2c3d/comment.md
+vb init --auto security-0a1b2c3d
+WORKER_SCRIPT=flow lp 90
+need "loop finished with a comment.md" finished
+need "a security ticket with a comment.md is an approve item" \
+  printed '{"items":[{"id":"security-0a1b2c3d","need":"approve","evidence":".10x/_batch/security-0a1b2c3d/turn.md"}]}'
+need "no approval record" test ! -e "$S/security-0a1b2c3d.approved"
+need "no auto-approved" test ! -e "$SB/security-0a1b2c3d/auto-approved"
 end
 
 reset; ticket t1
@@ -2141,16 +2173,39 @@ end
 reset; ticket t1 t2
 echo "a comment" >.10x/t1/comment.md
 echo 1 >.10x/t2/product-questions.md
-begin "loop: comment.md or product-questions.md stops auto approval"
+begin "loop: an auto plan with a comment.md or product-questions.md is approved and implemented"
 vb init --auto t1 t2
 WORKER_SCRIPT=flow lp 90
 need "loop finished" finished
-need "both are approve items, with their turn as evidence" \
-  printed '{"items":[{"id":"t1","need":"approve","evidence":".10x/_batch/t1/turn.md"},{"id":"t2","need":"approve","evidence":".10x/_batch/t2/turn.md"}]}'
-need "no approval record" test ! -e "$S/t1.approved" -a ! -e "$S/t2.approved"
-need "no auto-approved" test ! -e "$SB/t1/auto-approved" -a ! -e "$SB/t2/auto-approved"
-need "no reply" test ! -e "$B/t1/reply.md" -a ! -e "$B/t2/reply.md"
-need "both wait on their plan" eval 'phase_is t1 waiting && phase_is t2 waiting'
+need "no item is left" printed '{"items":[{"need":"done"}]}'
+need "both approvals are recorded" test -s "$S/t1.approved" -a -s "$S/t2.approved"
+need "both are auto-approved" test -s "$SB/t1/auto-approved" -a -s "$SB/t2/auto-approved"
+need "both implemented and landed" eval 'phase_is t1 landed && phase_is t2 landed'
+need "plan, approve reply, implement and close for each" test "$(sed 1d "$SB/t1/runs.tsv" | cut -f2 | tr '\n' ' ')" = "plan reply implement close "
+end
+
+reset; ticket t1
+echo "a comment" >.10x/t1/comment.md
+begin "loop: default mode still makes a plan with a comment.md an approve item"
+vb init t1
+WORKER_SCRIPT=flow lp 60
+need "loop finished" finished
+need "t1 is an approve item" \
+  printed '{"items":[{"id":"t1","need":"approve","evidence":".10x/_batch/t1/turn.md"}]}'
+need "no approval record" test ! -e "$S/t1.approved"
+need "no reply.md" test ! -e "$B/t1/reply.md"
+end
+
+reset
+begin "loop: a stranger's comment holds an auto plan that has a comment.md"
+STUB_COMMENTERS="5:other" vb init --auto gh-5
+echo "a comment" >.10x/gh-5/comment.md
+WORKER_SCRIPT=flow lp 90
+need "loop finished" finished
+need "gh-5 is an approve item" \
+  printed '{"items":[{"id":"gh-5","need":"approve","evidence":".10x/_batch/gh-5/turn.md"}]}'
+need "no approval record" test ! -e "$S/gh-5.approved"
+need "no auto-approved" test ! -e "$SB/gh-5/auto-approved"
 end
 
 reset
@@ -2328,7 +2383,7 @@ need "t0 answers; t1 is denied with the board's evidence; a landed ticket is no 
 end
 
 reset; ticket t1
-begin "loop: a fourth question stop or a comment.md is an answer item"
+begin "loop: a fourth question stop is an answer item"
 vb init --auto t1
 WORKER_OUT="$tmp/question.jsonl" lp 90
 need "loop finished" finished
@@ -2336,13 +2391,6 @@ need "three fixed replies and a fourth stop make four runs" test "$(wc -l <"$SB/
 need "the fourth stop is an answer item" printed '{"items":[{"id":"t1","need":"answer","evidence":".10x/_batch/t1/turn.md"}]}'
 need "no reply.md for it" test ! -e "$B/t1/reply.md"
 need "no fourth fixed reply" test ! -e "$B/t1/05-reply.md"
-reset; ticket t1
-echo "a comment" >.10x/t1/comment.md
-vb init --auto t1
-WORKER_OUT="$tmp/question.jsonl" lp 60
-need "loop finished with a comment.md" finished
-need "a comment.md ticket is an answer item" printed '{"items":[{"id":"t1","need":"answer","evidence":".10x/_batch/t1/turn.md"}]}'
-need "no fixed reply is written or sent" eval 'test ! -e "$B/t1/reply.md" && test "$(wc -l <"$SB/t1/runs.tsv" | tr -d " ")" = 2'
 end
 
 # ---------------------------------------------------------------- the state dir
