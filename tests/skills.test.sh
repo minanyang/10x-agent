@@ -26,7 +26,7 @@ const userOwn = {
   close: [],
   work: ["git -C X add ", "git -C X commit ", "10x-land comment ", "10x-security set ", "10x-security remove "],
   open: ["10x-land issue "],
-  batch: ["10x-land comment ", "10x-batch approve ", "10x-batch accept-green ", "10x-batch checked "],
+  batch: ["10x-land comment ", "10x-land decisions ", "10x-batch approve ", "10x-batch accept-green ", "10x-batch checked "],
   roadmap: ["10x-land issue ", "10x-land advisory "],
   audit: ["10x-security set ", "10x-security ticket "],
   feedback: ["10x-feedback issue ", "10x-feedback comment "],
@@ -51,7 +51,7 @@ const forbidden = ["git push", "git rebase", "git merge", "git log", "gh pr merg
 const bareGrants = ["10x-worktree *", "10x-land *", "git *"]
 // Commands that must always ask: the public writes, and a batch's plan approval, which text a worker wrote must
 // never be able to give.
-const publicWrites = ["10x-land issue", "10x-land comment", "10x-batch approve", "10x-batch accept-green", "10x-batch checked", "10x-land advisory", "10x-feedback issue", "10x-feedback comment"]
+const publicWrites = ["10x-land issue", "10x-land comment", "10x-land decisions", "10x-batch approve", "10x-batch accept-green", "10x-batch checked", "10x-land advisory", "10x-feedback issue", "10x-feedback comment"]
 
 const norm = (s) => s.replace(/<[^>]*>/g, "X")
 
@@ -145,7 +145,7 @@ for (const skill of fs.readdirSync(dir).filter((d) => fs.existsSync(`${dir}/${d}
 // plugin root is outside the workspace and a Read rule takes only an absolute path), so they run the granted 10x-grill.
 const grill = `${dir}/../references/grill.md`
 fs.existsSync(grill) ? ok("references/grill.md exists") : bad("references/grill.md is missing")
-for (const skill of ["open", "work", "roadmap"]) {
+for (const skill of ["open", "work", "roadmap", "batch"]) {
   const text = fs.readFileSync(`${dir}/${skill}/SKILL.md`, "utf8")
   text.includes("run `10x-grill`") && /^  - Bash\(10x-grill\)$/m.test(text)
     ? ok(`${skill}: loads the grill through a granted 10x-grill`) : bad(`${skill}: does not load the grill through a granted 10x-grill`)
@@ -214,6 +214,32 @@ for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/S
   step1.includes("`.10x/<id>/comment.md` — every open question the ticket itself states among them, whether the user answered it or accepted the recommendation")
     ? ok("work: posts the answers to the ticket's own questions through comment.md")
     : bad("work: does not post the answers to the ticket's own questions through comment.md")
+}
+
+// A version's product questions are settled once, when its tickets are created or its batch starts, and the answers live
+// in the ticket body: roadmap drafts carry them, work treats them as settled, batch writes them for older tickets.
+{
+  const roadmap = fs.readFileSync(`${dir}/roadmap/SKILL.md`, "utf8")
+  const tickets = (/^## Tickets\b[\s\S]*?(?=^## Replies)/m.exec(roadmap) || [""])[0]
+  const name = "roadmap: tickets writes every answer into the draft's decisions section"
+  ;["### Decisions", "## Decisions", "- Q — <title>: <answer>", "- None — no product question open."].every((w) => tickets.includes(w))
+    ? ok(name) : bad(name)
+
+  const work = fs.readFileSync(`${dir}/work/SKILL.md`, "utf8")
+  const step1 = (/^## Step 1\b[\s\S]*?(?=^## Step )/m.exec(work) || [""])[0]
+  const settled = step1.split("\n\n").filter((p) => /## Decisions/.test(p) && /settled/.test(p) && p.includes("comment.md"))
+  const wname = "work: a ticket's decisions section is settled, with no comment.md for it"
+  settled.length >= 2 && settled.some((p) => p.includes("small path"))
+    ? ok(wname) : bad(wname)
+
+  const batch = fs.readFileSync(`${dir}/batch/SKILL.md`, "utf8")
+  const at0a = batch.search(/^## Step 0a\b/m)
+  const step0a = at0a < 0 ? "" : batch.slice(at0a, batch.search(/^## Step 1\b/m))
+  const bname = "batch: grills the tickets init names and runs 10x-land decisions before the first plan run"
+  at0a >= 0 && at0a < batch.search(/^## Step 1\b/m) && at0a < batch.search(/^## Step 4\b/m) &&
+    ["no decisions:", "10x-grill", "10x-land decisions", "decisions.pending.md"].every((w) => step0a.includes(w)) &&
+    (/^## Never[\s\S]*decisions\.pending\.md/m.test(batch))
+    ? ok(bname) : bad(bname)
 }
 
 // close takes its mode from check's mode: line, never from reading the config itself.

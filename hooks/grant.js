@@ -35,12 +35,12 @@ const META = /[;&|<>$`\n\r]/
 // later turn cannot start a new batch the user never named.
 const TYPED_ONLY = new Set(['10x-batch init *'])
 // Commands that always ask, whatever a session's record holds — one saved by an older SKILL.md included: the public
-// writes (a security advisory and `10x-feedback issue` and `comment` included), a batch's plan approval, starting a batch, accepting a GREEN test file for a
+// writes (a security advisory, a ticket's decisions section and `10x-feedback issue` and `comment` included), a batch's plan approval, starting a batch, accepting a GREEN test file for a
 // batch ticket, recording the user's hand check, and settling, removing or opening a
 // ticket for a security entry (a session can put its own ticket into any entry's `seen in` with `10x-security add`, so
 // the ticket binding alone does not protect them). Every command here is also passed to batch workers as
 // --disallowedTools and refuses on its own under TENX_BATCH.
-const ALWAYS_ASK = /^(10x-land (issue|comment|advisory)|10x-feedback (issue|comment)|10x-batch (approve|init|accept-green|checked)|10x-security (set|remove|ticket))(\s|$)/
+const ALWAYS_ASK = /^(10x-land (issue|comment|advisory|decisions)|10x-feedback (issue|comment)|10x-batch (approve|init|accept-green|checked)|10x-security (set|remove|ticket))(\s|$)/
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 // The word that carries the ticket id: `10x-land <sub> <id>`, `10x-verify <id>`, ….
 const ID_WORD = {

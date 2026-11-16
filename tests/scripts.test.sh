@@ -967,7 +967,14 @@ case "$1 $2" in
     prev=""; for a in "$@"; do [ "$prev" = --input ] && [ -n "${STUB_ADV_COPY-}" ] && cp "$a" "$STUB_ADV_COPY"; prev=$a; done
     if [ "${STUB_ADV_RC:-0}" != 0 ]; then echo "gh: Resource not accessible by integration" >&2; exit "$STUB_ADV_RC"; fi
     echo '{"ghsa_id":"GHSA-abcd-efgh-ijkl","html_url":"https://github.com/acme/adv/security/advisories/GHSA-abcd-efgh-ijkl"}'; exit 0 ;; esac ;;
-  "issue view") echo '{"number":7,"title":"T","body":"b","url":"https://github.com/acme/land/issues/7","state":"OPEN","labels":[],"issueType":null,"comments":[]}' ;;
+  "issue edit")
+    # STUB_EDIT_COPY: where to keep the --body-file the issue was edited with.
+    prev=""; for a in "$@"; do [ "$prev" = --body-file ] && [ -n "${STUB_EDIT_COPY-}" ] && cp "$a" "$STUB_EDIT_COPY"; prev=$a; done
+    exit "${STUB_EDIT_RC:-0}" ;;
+  "issue view")
+    # STUB_ISSUE_BODY: the raw body printed for `--json body --jq .body`.
+    case "$*" in *"--json body --jq .body"*) printf '%s\n' "${STUB_ISSUE_BODY-b}"; exit 0 ;; esac
+    echo '{"number":7,"title":"T","body":"b","url":"https://github.com/acme/land/issues/7","state":"OPEN","labels":[],"issueType":null,"comments":[]}' ;;
 esac
 exit 0
 STUB
@@ -2118,13 +2125,54 @@ git remote set-url origin https://gitlab.example.com/grp/land.git
 expect "comment refuses a GitLab origin" 2 10x-land comment gh-7
 git remote set-url origin git@github.com:acme/land.git
 
-# TENX_BATCH: inside a batch worker issue, comment and advisory refuse before reading or writing anything, however invoked
+# decisions: appends .10x/<id>/decisions.pending.md to the issue body (### Decisions) or to a local ticket.md (## Decisions)
+printf '# T\n\n- source: GitHub issue #7 (open)\n- url: https://github.com/acme/land/issues/7\n' >"$gd/ticket.md"
+printf -- '- Q — Flag name: --fast\n- Q — Scope: only the CLI\n' >"$gd/decisions.pending.md"
+: >"$tmp/stub.log"
+rm -f "$tmp/decisions-body.md"
+STUB_ISSUE_BODY=$'old body\nsecond line' STUB_EDIT_COPY="$tmp/decisions-body.md" expect "decisions appends a ### Decisions section to the issue body" 0 10x-land decisions gh-7
+grep -qE '^issue edit 7 --repo github.com/acme/land --body-file ' "$tmp/stub.log" && ok "gh issue edit argv" || { bad "gh issue edit argv"; cat "$tmp/stub.log"; }
+[ "$(cat "$tmp/decisions-body.md")" = $'old body\nsecond line\n\n### Decisions\n\n- Q — Flag name: --fast\n- Q — Scope: only the CLI' ] &&
+  ok "decisions: the body is the old body, a blank line, ### Decisions, a blank line and the lines" ||
+  { bad "decisions: the body is the old body, a blank line, ### Decisions, a blank line and the lines"; cat "$tmp/decisions-body.md"; }
+[ ! -e "$gd/decisions.pending.md" ] && [ -s "$gd/decisions.posted.md" ] && ok "decisions.pending.md becomes decisions.posted.md" || bad "decisions.pending.md becomes decisions.posted.md"
+grep -qxF 'issue view 7 --repo github.com/acme/land --json number,title,body,url,state,labels,issueType,comments' "$tmp/stub.log" && ok "decisions fetches ticket.md again" || { bad "decisions fetches ticket.md again"; cat "$tmp/stub.log"; }
+
+mkdir -p "$tmp/land/.10x/L9"
+printf '# L9\n\n## Acceptance criteria\n- [ ] AC1 — it exists\n' >"$tmp/land/.10x/L9/ticket.md"
+printf -- '- None — no product question open.\n' >"$tmp/land/.10x/L9/decisions.pending.md"
+expect "decisions appends a ## Decisions section to a local ticket" 0 10x-land decisions L9
+[ "$(cat "$tmp/land/.10x/L9/ticket.md")" = $'# L9\n\n## Acceptance criteria\n- [ ] AC1 — it exists\n\n## Decisions\n\n- None — no product question open.' ] &&
+  ok "decisions: a local ticket.md gains ## Decisions and the lines" ||
+  { bad "decisions: a local ticket.md gains ## Decisions and the lines"; cat "$tmp/land/.10x/L9/ticket.md"; }
+[ ! -e "$tmp/land/.10x/L9/decisions.pending.md" ] && [ -s "$tmp/land/.10x/L9/decisions.posted.md" ] && ok "a local decisions.pending.md becomes decisions.posted.md" || bad "a local decisions.pending.md becomes decisions.posted.md"
+
+printf -- '- Q — Again: no\n' >"$tmp/land/.10x/L9/decisions.pending.md"
+cp "$tmp/land/.10x/L9/ticket.md" "$tmp/L9.before"
+expect "decisions refuses a ticket that already has a decisions section" 2 10x-land decisions L9
+grep -qi "decisions section" "$tmp/out" && ok "the refusal names the decisions section" || { bad "the refusal names the decisions section"; cat "$tmp/out"; }
+cmp -s "$tmp/L9.before" "$tmp/land/.10x/L9/ticket.md" && [ -s "$tmp/land/.10x/L9/decisions.pending.md" ] && ok "a refused local ticket is unchanged" || bad "a refused local ticket is unchanged"
+printf -- '- Q — Again: no\n' >"$gd/decisions.pending.md"
+: >"$tmp/stub.log"
+STUB_ISSUE_BODY=$'old body\n\n### Decisions\n\n- Q — Flag name: --fast' expect "decisions refuses an issue body that already has a decisions section" 2 10x-land decisions gh-7
+! grep -q '^issue edit' "$tmp/stub.log" && [ -s "$gd/decisions.pending.md" ] && ok "a refused issue is not edited and keeps its pending file" || { bad "a refused issue is not edited and keeps its pending file"; cat "$tmp/stub.log"; }
+sec_disclosed
+printf -- '- Q — Tracking: %s is tracked.\n' "$sec_fp1" >"$gd/decisions.pending.md"
+: >"$tmp/stub.log"
+refused "decisions refuses a decisions.pending.md naming a security entry" "$gd/decisions.pending.md" 10x-land decisions gh-7
+[ ! -s "$tmp/stub.log" ] && [ -s "$gd/decisions.pending.md" ] && [ -s "$gd/decisions.posted.md" ] && ! grep -qF "$sec_fp1" "$gd/decisions.posted.md" &&
+  ok "a refused decisions.pending.md is neither posted nor moved" || { bad "a refused decisions.pending.md is neither posted nor moved"; cat "$tmp/stub.log"; }
+rm "$tmp/land/.10x/security.md"
+printf -- '- Q — Again: no\n' >"$gd/decisions.pending.md"
+
+# TENX_BATCH: inside a batch worker issue, comment, advisory and decisions refuse before reading or writing anything,
+# however invoked
 printf '# Add the thing\nLabels: bug, ui\nType: Bug\n\n## Context\nbody\n\n## Acceptance criteria\n- [ ] AC1 — it exists\n' >"$tmp/land/.10x/drafts/thing.md"
 : >"$tmp/stub.log"
 snap10x() { find "$tmp/land/.10x" -print0 | sort -z | xargs -0 cksum 2>&1; }
 snap10x >"$tmp/batch.before"
 batch_bad=0
-for args in "issue thing" "comment gh-7" "advisory thing"; do
+for args in "issue thing" "comment gh-7" "advisory thing" "decisions gh-7"; do
   # shellcheck disable=SC2086  # $args is split on purpose
   for form in name path shell; do
     case "$form" in
@@ -2136,12 +2184,13 @@ for args in "issue thing" "comment gh-7" "advisory thing"; do
     { [ "$rc" -eq 2 ] && [ "$(cat "$tmp/out")" = "10x: refused inside a batch worker" ]; } || { batch_bad=1; echo "      $args ($form): exit $rc"; cat "$tmp/out"; }
   done
 done
-[ "$batch_bad" = 0 ] && ok "TENX_BATCH: issue, comment and advisory refuse by name, by absolute path and through sh -c" ||
-  bad "TENX_BATCH: issue, comment and advisory refuse by name, by absolute path and through sh -c"
+[ "$batch_bad" = 0 ] && ok "TENX_BATCH: issue, comment, advisory and decisions refuse by name, by absolute path and through sh -c" ||
+  bad "TENX_BATCH: issue, comment, advisory and decisions refuse by name, by absolute path and through sh -c"
 snap10x >"$tmp/batch.after"
-[ ! -s "$tmp/stub.log" ] && cmp -s "$tmp/batch.before" "$tmp/batch.after" && [ -f "$tmp/land/.10x/drafts/thing.md" ] && [ -s "$gd/comment.md" ] &&
-  ok "TENX_BATCH: a refused issue, comment or advisory creates, posts, renames or deletes nothing" ||
-  { bad "TENX_BATCH: a refused issue, comment or advisory creates, posts, renames or deletes nothing"; cat "$tmp/stub.log"; diff "$tmp/batch.before" "$tmp/batch.after"; }
+[ ! -s "$tmp/stub.log" ] && cmp -s "$tmp/batch.before" "$tmp/batch.after" && [ -f "$tmp/land/.10x/drafts/thing.md" ] && [ -s "$gd/comment.md" ] && [ -s "$gd/decisions.pending.md" ] &&
+  ok "TENX_BATCH: a refused issue, comment, advisory or decisions creates, posts, renames or deletes nothing" ||
+  { bad "TENX_BATCH: a refused issue, comment, advisory or decisions creates, posts, renames or deletes nothing"; cat "$tmp/stub.log"; diff "$tmp/batch.before" "$tmp/batch.after"; }
+rm "$gd/decisions.pending.md"
 TENX_BATCH=1 10x-land comment L1 >"$tmp/out" 2>&1; rc=$?
 [ "$rc" -eq 2 ] && [ "$(cat "$tmp/out")" = "10x: refused inside a batch worker" ] && ! grep -qF "comment needs a GitHub issue ticket id" "$tmp/out" &&
   ok "TENX_BATCH: comment with a bad id reports the batch refusal" || { bad "TENX_BATCH: comment with a bad id reports the batch refusal"; cat "$tmp/out"; }

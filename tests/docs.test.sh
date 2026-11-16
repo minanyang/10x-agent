@@ -325,6 +325,14 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
     : section.includes("denyWrite") ? ok(name) : bad(name, "the batch sandbox section does not name denyWrite")
 }
 
+// gh-56 AC5 — docs/loop.md names where a ticket's decisions live.
+{
+  const name = "docs/loop.md names where a ticket's decisions live"
+  const loop = read("docs/loop.md") || ""
+  const missing = ["### Decisions", "## Decisions", "10x-land decisions"].filter((w) => !loop.includes(w))
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 // gh-7 AC22 — the changelog and both READMEs name /10x:batch auto; neither README keeps the trust sentence.
 {
   const name = "README and CHANGELOG mention batch auto mode"
@@ -355,10 +363,10 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   need("docs/loop.md", ["hand-check:", "## Hand checks pending", "10x-batch checked", "### Hand checks", "deep link", "screenshot"])
   need("docs/scripts.md", ["## Hand checks pending", "10x-batch checked"])
   need("docs/hooks.md", ["hand-check", "10x-batch checked"])
-  need("CHANGELOG.md", ["10x-batch checked"])
-  const log = read("CHANGELOG.md")
-  const first = ((log || "").split("\n").find((s) => /^##\s/.test(s)) || "").trim()
-  if (!first.startsWith("## 0.3.0 ")) missing.push(`CHANGELOG.md: newest section is "${first}", not "## 0.3.0"`)
+  const lines = (read("CHANGELOG.md") || "").split("\n")
+  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
+  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
+  if (!(at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")).includes("10x-batch checked")) missing.push("CHANGELOG.md ## 0.3.0: 10x-batch checked")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
@@ -418,9 +426,8 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   need("docs/configuration.md", read("docs/configuration.md"), ["| `batch.parallel` | `2`."])
   need("docs/loop.md", read("docs/loop.md"), ["follow-up"])
   const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => /^##\s/.test(s))
+  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  if (at < 0 || !lines[at].startsWith("## 0.3.0 ")) missing.push("CHANGELOG.md: the first ## heading is not ## 0.3.0")
   need("CHANGELOG.md ## 0.3.0", at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n"), ["`batch.parallel`", "defaults to `2`"])
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
@@ -439,7 +446,7 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   en && back ? ok(name) : bad(name, `${en ? "" : "README.md lacks its link; "}${back ? "" : "README.zh-TW.md lacks its link"}`)
 }
 
-// gh-38 AC6 — 10x-batch replan in docs/scripts.md, docs/loop.md and the changelog's first section.
+// gh-38 AC6 — 10x-batch replan in docs/scripts.md, docs/loop.md and the 0.3.0 changelog section.
 {
   const name = "docs describe 10x-batch replan"
   const missing = []
@@ -451,10 +458,10 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   if (!refused || !refused.includes("`replan`")) missing.push("docs/scripts.md: `replan` in the paragraph naming `refused inside a batch worker`")
   if (!(read("docs/loop.md") || "").includes("10x-batch replan")) missing.push("docs/loop.md: 10x-batch replan")
   const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => /^##\s/.test(s))
+  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
   const first = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
-  if (!first.includes("10x-batch replan")) missing.push("CHANGELOG.md: 10x-batch replan under the first ## heading")
+  if (!first.includes("10x-batch replan")) missing.push("CHANGELOG.md ## 0.3.0: 10x-batch replan")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
@@ -466,9 +473,8 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   if (!entry) missing.push("docs/scripts.md: no `- A draft may carry` line")
   else if (!entry.includes("every draft")) missing.push("docs/scripts.md `- A draft may carry` line: every draft")
   const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => /^##\s/.test(s))
+  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  if (at < 0 || !lines[at].startsWith("## 0.3.0 ")) missing.push("CHANGELOG.md: the first ## heading is not ## 0.3.0")
   const first = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
   for (const w of ["10x-land issue", "every draft"]) if (!first.includes(w)) missing.push(`CHANGELOG.md ## 0.3.0: ${w}`)
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
@@ -499,9 +505,8 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   const name = "CHANGELOG's 0.3.0 section records the line-separator fix"
   const missing = []
   const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => /^##\s/.test(s))
+  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
   const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  if (at < 0 || !lines[at].startsWith("## 0.3.0 ")) missing.push("CHANGELOG.md: the first ## heading is not ## 0.3.0")
   const first = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
   if (!first.includes("U+2028")) missing.push("CHANGELOG.md ## 0.3.0: U+2028")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)

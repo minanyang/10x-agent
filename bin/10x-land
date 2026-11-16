@@ -14,6 +14,7 @@
 #   10x-land ticket <slug>
 #   10x-land advisory <slug>
 #   10x-land comment <id>
+#   10x-land decisions <id>
 #
 # `check` first prints the configured close mode, `mode: <close>` (exit 2 on a value other than pr, pr-merge or local,
 # before looking for the worktree), then, still before the worktree lookup, `ticket dir: <abs .10x/<id>>`,
@@ -63,7 +64,7 @@
 # pinned to origin; no auto-merge, push or fill flags.
 # `push`, `merge` and `pr` refuse when an origin push URL names a different repo than its fetch URL.
 # `push` (each commit message in <base>..<branch>), `pr` (pr-title, pr-body.md and each commit message in
-# <base>..<branch>), `squash` (commit-msg) and `comment` (comment.md) refuse, before any git push, gh, glab or
+# <base>..<branch>), `squash` (commit-msg), `comment` (comment.md) and `decisions` (decisions.pending.md) refuse, before any git push, gh, glab or
 # commit-tree call, text that names an entry of .10x/security.md, whatever
 # its status: its fingerprint, its title in any case, not glued to an ASCII word character on a side where the title
 # has one, or its location verbatim when not preceded by a path character
@@ -104,7 +105,17 @@
 # `comment` (github.com only) posts .10x/<id>/comment.md as a comment on issue <n> of id gh-<n>, in origin's
 # repo, only when the url in .10x/<id>/ticket.md's header is that issue's, then renames it to comment.posted.md;
 # it needs no worktree, since /10x:work posts it while planning.
-# With TENX_BATCH set (every /10x:batch worker has it), `issue`, `comment` and `advisory` print
+# `decisions` appends .10x/<id>/decisions.pending.md — non-blank lines each `- Q — <title>: <answer>` or exactly
+# `- None — no product question open.`, at least one, naming no security entry (as `comment`) — to the ticket as its
+# decisions section, then renames it to decisions.posted.md and prints `decisions: <id>`; no worktree. For gh-<n>
+# (tickets: github, github.com origin, ticket.md's header url that issue's, as `comment`) it rewrites the issue body
+# with `gh issue edit --body-file`: the body, CRs and trailing blank lines dropped, a blank line, `### Decisions`, a blank
+# line and the lines; on a gh failure it exits with gh's code, the pending file kept. It then re-fetches ticket.md
+# with 10x-ticket; when that fails the pending file is still renamed (the issue has the section) and it exits 1. For
+# any other id it appends `## Decisions`, a blank line and the lines to .10x/<id>/ticket.md, after a blank line. Either
+# way a ticket that already has a decisions section (scripts/md-check.js hasDecisions: a `##` or `###` Decisions
+# heading above `## Comments`) is refused, exit 2, nothing written.
+# With TENX_BATCH set (every /10x:batch worker has it), `issue`, `comment`, `decisions` and `advisory` print
 # `10x: refused inside a batch worker` and exit 2 before checking their arguments or reading anything, whatever path
 # or wrapper runs the script; the other subcommands run as without it.
 
@@ -114,10 +125,10 @@ source "$(dirname "$(readlink -f "$0")")/../scripts/lib.sh"
 SECURITY_JS="$(dirname "$(readlink -f "$0")")/../scripts/security.js"
 BIN_DIR="$(dirname "$(readlink -f "$0")")"
 
-usage="usage: 10x-land check|rebase|push|merge|wait|squash|pr|comment <id> | issue|ticket|advisory <slug>"
+usage="usage: 10x-land check|rebase|push|merge|wait|squash|pr|comment|decisions <id> | issue|ticket|advisory <slug>"
 cmd="${1:-}"; id="${2:-}"
 if [ -n "${TENX_BATCH:-}" ]; then
-  case "$cmd" in issue|comment|advisory) die "refused inside a batch worker" ;; esac
+  case "$cmd" in issue|comment|advisory|decisions) die "refused inside a batch worker" ;; esac
 fi
 [ $# -eq 2 ] || die "$usage"
 if [ "$cmd" = issue ] || [ "$cmd" = ticket ] || [ "$cmd" = advisory ]; then
@@ -130,6 +141,10 @@ if [ "$cmd" = issue ] || [ "$cmd" = ticket ] || [ "$cmd" = advisory ]; then
 elif [ "$cmd" = comment ]; then
   [[ "$id" =~ ^gh-([1-9][0-9]*)$ ]] || die "comment needs a GitHub issue ticket id gh-<n>, got '$id'"
   number="${BASH_REMATCH[1]}"
+elif [ "$cmd" = decisions ]; then
+  check_id "$id"
+  number=""
+  if [[ "$id" =~ ^gh-([1-9][0-9]*)$ ]]; then number="${BASH_REMATCH[1]}"; fi
 else
   check_id "$id"
   if [ "$cmd" = check ]; then
@@ -410,6 +425,25 @@ small_paths() {
 sec_route() {
   route_line="$("$BIN_DIR/10x-security" route "$1")" || exit 2
   route="${route_line#route: }"; route="${route%% *}"
+}
+# append_decisions <ticket text> <out> <heading> <pending> — writes to <out> the text with <heading>, a blank line and
+# the non-blank lines of <pending> appended: an issue body (`### Decisions`) with CRs and trailing whitespace dropped,
+# a blank line before it; a ticket.md (`## Decisions`) ending in one newline, then a blank line. Exit 3, writing
+# nothing, when the text already has a decisions section (scripts/md-check.js hasDecisions).
+append_decisions() {
+  # shellcheck disable=SC2016
+  node -e '
+    const fs = require("fs")
+    const [mdCheck, src, out, heading, pending] = process.argv.slice(1)
+    let text = fs.readFileSync(src, "utf8")
+    if (require(mdCheck).hasDecisions(text)) process.exit(3)
+    const lines = fs.readFileSync(pending, "utf8").split("\n").map((s) => s.replace(/\r$/, "")).filter((s) => s.trim())
+    const section = heading + "\n\n" + lines.join("\n") + "\n"
+    if (heading === "### Decisions") {
+      text = text.replace(/\r/g, "").replace(/\s+$/, "")
+      fs.writeFileSync(out, (text ? text + "\n\n" : "") + section)
+    } else fs.writeFileSync(out, text.replace(/\n*$/, "\n") + "\n" + section)
+  ' "$BIN_DIR/../scripts/md-check.js" "$@"
 }
 
 case "$cmd" in
@@ -784,6 +818,53 @@ case "$cmd" in
     # removed first, so a symlink there cannot make mv write outside .10x/ (rm removes the link, not its target).
     rm -f "$td/comment.posted.md"
     mv -f "$td/comment.md" "$td/comment.posted.md"
+    ;;
+
+  decisions)
+    td="$(task_dir "$id")"
+    pending="$td/decisions.pending.md"
+    need_file "$pending"
+    n=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line%$'\r'}"
+      [[ ! "$line" =~ ^[[:space:]]*$ ]] || continue
+      [[ "$line" == "- Q — "* || "$line" == "- None — no product question open." ]] ||
+        die "$pending: '$(shown "$line")' is neither '- Q — <title>: <answer>' nor '- None — no product question open.'"
+      n=$((n + 1))
+    done <"$pending"
+    [ "$n" -gt 0 ] || die "$pending has no '- Q — <title>: <answer>' or '- None — no product question open.' line"
+    disclosure_check "$pending" "$pending"
+    if [ -n "$number" ]; then
+      tickets_need github decisions
+      has_origin || die "no origin"
+      origin_parts
+      [ "$o_host" = github.com ] || die "decisions needs a github.com origin"
+      need_file "$td/ticket.md"
+      repo="$(gh_repo)"
+      # As in comment: only line 4, the url 10x-ticket writes in the header, counts.
+      sed -n 4p "$td/ticket.md" | grep -Fixq -- "- url: https://$repo/issues/$number" || die "$td/ticket.md is not issue #$number of $repo; not editing it"
+      work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+      gh issue view "$number" --repo "$repo" --json body --jq .body >"$work/old.md" || die "could not read the body of issue #$number of $repo"
+      rc=0; append_decisions "$work/old.md" "$work/body.md" "### Decisions" "$pending" || rc=$?
+      [ "$rc" -ne 3 ] || die "issue #$number of $repo already has a decisions section; not editing it"
+      [ "$rc" -eq 0 ] || die "could not write the new body of issue #$number"
+      gh issue edit "$number" --repo "$repo" --body-file "$work/body.md"
+      # The issue now holds the section: it is never appended twice, even when the re-fetch below fails.
+      rm -f "$td/decisions.posted.md"
+      mv -f "$pending" "$td/decisions.posted.md"
+      if ! "$BIN_DIR/10x-ticket" github "$number" --out "$td/ticket.md"; then
+        say "10x: issue #$number has its decisions section, but re-fetching $(shown "$td/ticket.md") failed; run 10x-ticket github $number --out $(shown "$td/ticket.md")" >&2
+        exit 1
+      fi
+    else
+      need_file "$td/ticket.md"
+      rc=0; append_decisions "$td/ticket.md" "$td/ticket.md" "## Decisions" "$pending" || rc=$?
+      [ "$rc" -ne 3 ] || die "$td/ticket.md already has a decisions section; not editing it"
+      [ "$rc" -eq 0 ] || die "could not write $td/ticket.md"
+      rm -f "$td/decisions.posted.md"
+      mv -f "$pending" "$td/decisions.posted.md"
+    fi
+    say "decisions: $id"
     ;;
 
   *) die "$usage" ;;

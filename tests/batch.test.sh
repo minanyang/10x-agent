@@ -202,7 +202,7 @@ snap() { find .10x .git "$XDG_STATE_HOME" -type f -print0 2>/dev/null | sort -z 
 fetched() { grep "^issue view $1 " "$STUB_LOG" | grep -v -- '--json author' | grep -q .; }
 # The fixed reply of auto mode, byte for byte.
 cat >"$tmp/fixed" <<'EOF'
-Auto mode: no human answers this batch's questions. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question (its number, the choice and why), and go on.
+Auto mode: no human answers this batch's questions. A question the ticket's `Decisions` section answers is settled: take its answer, and neither ask it nor list it in `product-questions.md`. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question (its number, the choice and why), and go on.
 EOF
 # A worker turn that asks a question and writes no plan.
 cat >"$tmp/question.jsonl" <<'EOF'
@@ -296,6 +296,15 @@ need "a search with no match exits 2" test $? -eq 2
 need "names the search" has '10x-batch: no ticket: --search "label:none" (no open issue matches)'
 need "still no _batch" test ! -e "$B"
 need "two searches are a usage error" exits 2 init --search a --search b
+end
+
+reset; ticket t1 t2
+printf '# t2\n\n## Decisions\n\n- None — no product question open.\n' >.10x/t2/ticket.md
+begin "init: names each ticket with no decisions section"
+need "exit 0" exits 0 init t1 t2
+need "t1 has no section and is named" line "no decisions: t1"
+need "t2 has one and is not named" not has "no decisions: t2"
+need "status names t1 again" eval 'vb status && line "no decisions: t1"'
 end
 
 reset; ticket t1
@@ -663,7 +672,7 @@ end
 reset; ticket t1 t2
 begin "run: every worker is denied the commands that always ask" # gh-35: 10x-batch checked is among them
 want=""
-for c in "10x-land issue" "10x-land comment" "10x-land advisory" "10x-batch approve" "10x-batch init" "10x-batch accept-green" "10x-batch checked" \
+for c in "10x-land issue" "10x-land comment" "10x-land decisions" "10x-land advisory" "10x-batch approve" "10x-batch init" "10x-batch accept-green" "10x-batch checked" \
   "10x-security set" "10x-security remove" "10x-security ticket" "10x-feedback issue" "10x-feedback comment"; do
   want+="${want:+|}Bash($c:*)|Bash($c *)"
 done
@@ -2097,6 +2106,14 @@ for n in 02 03 04; do
   need "reply $n holds none of the turn" not grep -qF "Which flag name" "$B/t1/$n-reply.md"
 done
 need "no reply.md is left" test ! -e "$B/t1/reply.md"
+end
+
+reset; ticket t1
+begin "loop: the fixed reply settles what the decisions section answers"
+vb init --auto t1
+WORKER_OUT="$tmp/question.jsonl" lp 90
+need "loop finished" finished
+need "the reply sent says a question the section answers is settled" grep -qF 'A question the ticket'"'"'s `Decisions` section answers is settled: take its answer, and neither ask it nor list it in `product-questions.md`.' "$B/t1/02-reply.md"
 end
 
 reset; ticket t1
