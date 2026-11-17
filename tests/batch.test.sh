@@ -3063,5 +3063,116 @@ reset; ticket t1; vb init t1; vb status
 need "absent with no rerun" not grep -q '^## Host reruns' "$B/board.md"
 end
 
+# ---------------------------------------------------------------- security entries of a landed ticket
+
+FPA="sha256:$(printf 'a%.0s' $(seq 1 64))"; FPB="sha256:$(printf 'b%.0s' $(seq 1 64))"
+# sec_md <fp>:<found in>:<seen in>... — the main checkout's .10x/security.md, one entry per argument (seen in may be empty).
+sec_md() {
+  local a fp found seen
+  mkdir -p .10x
+  { printf '# Security entries\n'
+    for a in "$@"; do
+      fp="${a:0:71}"; a="${a:72}"; found="${a%%:*}"; seen="${a#*:}"; [ "$seen" = "$a" ] && seen=""
+      printf '\n## %s\n- title: unsanitised argv reaches the shell\n- verdict: confirmed\n- severity: high\n- rule: shell-injection\n- location: src/run.js:10\n- trace: argv reaches the sink\n- status: fix-now\n- reason:\n- found in: %s\n- seen in:%s\n- audit fingerprint:\n- not seen in:\n' "$fp" "$found" "${seen:+ $seen}"
+    done; } >.10x/security.md
+}
+# sec_review <id> <reviewers> [<finding text>] — a review.md with one full round.
+sec_review() {
+  printf '## Round 1 — full\n\nVerdict: pass\nCriteria: AC1\nReviewers: %s\n\n### Findings\n%s\n\n### Plan checks\nnone\n' "$2" "${3:-none}" >".10x/$1/review.md"
+}
+# sec_ticket <id> [<fp>] — a landed ticket whose ticket.md carries `Security: <fp>`.
+sec_ticket() {
+  landed "$1" a
+  printf '# %s\n' "$1" >".10x/$1/ticket.md"; [ -n "${2-}" ] && printf 'Security: %s\n' "$2" >>".10x/$1/ticket.md"
+  return 0
+}
+has_entry() { grep -qxF "## $1" .10x/security.md; }
+board_has() { grep -qxF -- "$1" "$B/board.md"; }
+
+reset
+begin "security: loop removes a landed ticket's own entry after a clean security round"
+ticket t1; vb init t1
+sec_md "$FPA:t1:"; sec_ticket t1 "$FPA"; sec_review t1 "10x:code-reviewer, 10x:security-reviewer"
+lp 10
+need "the entry is gone" not has_entry "$FPA"
+need "the claim record exists" test -f "$SB/t1/security"
+need "the board lists the removal" board_has "- t1 — removed $FPA (review.md round 1)"
+need "nothing for the user" not grep -q 'security entry kept' "$B/board.md"
+end
+
+reset
+begin "security: an audit fix-now ticket's entry counts as its own"
+SID=security-aaaaaaaa
+ticket "$SID"; vb init "$SID"
+sec_md "$FPA:audit/run-1:$SID"; sec_ticket "$SID"; sec_review "$SID" "10x:security-reviewer"
+lp 10
+need "the entry is gone" not has_entry "$FPA"
+need "the board lists the removal" board_has "- $SID — removed $FPA (review.md round 1)"
+end
+
+reset
+begin "security: keeps an entry that is not the ticket's own"
+ticket t1; vb init t1
+sec_md "$FPB:t1:"; sec_ticket t1 "$FPA"; sec_review t1 "10x:security-reviewer"
+sed -i.bak "s/the change works/the change works $FPB/" .10x/t1/plan.md
+lp 10
+need "the entry stays" has_entry "$FPB"
+need "the board names the reason" board_has "- t1 — kept $FPB: not the ticket's own"
+need "it is under Needs the human" board_has "- t1 — security entry kept $FPB: not the ticket's own"
+end
+
+reset
+begin "security: keeps an entry found in another ticket"
+ticket t1; vb init t1
+sec_md "$FPA:t9:"; sec_ticket t1 "$FPA"; sec_review t1 "10x:security-reviewer"
+lp 10
+need "the entry stays" has_entry "$FPA"
+need "the board names the reason" board_has "- t1 — kept $FPA: found in t9 is neither t1 nor an audit run"
+end
+
+reset
+begin "security: keeps an entry the last round has a finding against"
+ticket t1; vb init t1
+sec_md "$FPA:t1:"; sec_ticket t1 "$FPA"; sec_review t1 "10x:security-reviewer" "#### F1 — [high] shell injection $FPA"
+lp 10
+need "the entry stays" has_entry "$FPA"
+need "the board names the reason" board_has "- t1 — kept $FPA: review.md round 1 has a finding against it"
+end
+
+reset
+begin "security: keeps an entry when the last round ran no security reviewer"
+ticket t1; vb init t1
+sec_md "$FPA:t1:"; sec_ticket t1 "$FPA"; sec_review t1 "10x:code-reviewer"
+lp 10
+need "the entry stays" has_entry "$FPA"
+need "the board names the reason" board_has "- t1 — kept $FPA: review.md round 1 ran no security reviewer"
+end
+
+reset
+begin "security: the board lists each removal and kept entry"
+ticket t1 t2; vb init t1 t2
+sec_md "$FPA:t1:" "$FPB:t2:"; sec_ticket t1 "$FPA"; sec_review t1 "10x:security-reviewer"
+sec_ticket t2 "$FPB"; sec_review t2 "10x:code-reviewer"
+lp 10
+need "the section" board_has "## Security entries"
+need "the removal line" board_has "- t1 — removed $FPA (review.md round 1)"
+need "the kept line" board_has "- t2 — kept $FPB: review.md round 1 ran no security reviewer"
+need "the kept entry is under Needs the human" board_has "- t2 — security entry kept $FPB: review.md round 1 ran no security reviewer"
+need "the removal is not under Needs the human" not board_has "- t1 — security entry kept $FPA: review.md round 1 ran no security reviewer"
+need "the section follows Needs the human" eval '
+  a="$(grep -nx "## Needs the human" "$B/board.md" | cut -d: -f1)"; b="$(grep -nx "## Security entries" "$B/board.md" | cut -d: -f1)"
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]'
+end
+
+reset
+begin "security: keeps an entry named after a fenced comment line in the last round"
+ticket t1; vb init t1
+sec_md "$FPA:t1:"; sec_ticket t1 "$FPA"
+sec_review t1 "10x:security-reviewer" "$(printf '#### F1 — [minor] the fixture resets\n```sh\n# reset the fixture\necho reset\n```\n\n#### F2 — [high] shell injection %s' "$FPA")"
+lp 10
+need "the entry stays" has_entry "$FPA"
+need "the board names the reason" board_has "- t1 — kept $FPA: review.md round 1 has a finding against it"
+end
+
 [ "$fail" -eq 0 ] && echo "batch: all cases pass"
 exit "$fail"

@@ -554,5 +554,13 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
+// gh-70 AC5 — docs/loop.md says when a batch removes a landed ticket's own security entry and what the board shows.
+{
+  const name = "docs: loop.md says when a batch removes a security entry"
+  const loop = (read("docs/loop.md") || "").replace(/\s+/g, " ")
+  const missing = ["removes a landed ticket's own security entry", "`10x:security-reviewer`", "## Security entries"].filter((w) => !loop.includes(w))
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 process.exit(fail)
 JS
