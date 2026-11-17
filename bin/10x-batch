@@ -30,7 +30,7 @@
 // The rest lives in the main checkout's .10x/_batch/: `board.md`, and per ticket <id>/: <nn>-<kind>.jsonl (the
 // worker's stream-json), <nn>-denials.tsv (`<tool>\t<command, file or tool>`), turn.md (every assistant text of the
 // latest run), reply.md (the next reply, moved to <nn>-reply.md once sent), <nn>-landed (the base and sha a close run
-// left), <nn>-fallback (the mode a run started in when auto mode was unavailable), <nn>-sandbox (`unavailable` when
+// left), <nn>-cleanup (the host cleanup after a close run, below), <nn>-fallback (the mode a run started in when auto mode was unavailable), <nn>-sandbox (`unavailable` when
 // the worker's sandbox was), <nn>-plugin (`missing` when the worker's init event listed no 10x:work), <nn>-rerun-<k>.log
 // (the output of the k-th gate rerun on the host for run <nn>) and run.err (the stderr of loop's latest run). A phase is never stored: every command derives it from these files and
 // .10x/<id>/.
@@ -84,6 +84,15 @@
 // and it refuses (`implement <id> refused: <reason>`). Every worker gets
 // TENX_BATCH=1. SIGTERM and SIGINT are forwarded to the worker. It prints
 // `phase: <phase>` and `board: <path>`, exit 0 once the worker ran, whatever its exit code.
+// When the final run of a close session (a reply in one included, after any host rerun) exits 0, `run` finishes on the
+// host what the worker's sandbox may have left: when <worktree dir>/<id>/.git exists or git lists a record for that
+// path, `10x-worktree rm <id> --landed-only` (cwd the main checkout, TENX_BATCH unset), each output line as `cleanup:
+// <line>` plus `cleanup: exited <n>` when it fails, else `cleanup: nothing left behind`; then the base: `base: skipped
+// (close: local)`, `(not landed)` while <worktree dir>/<id> exists, `(no origin/<b>)`, `(no local <b>)`, `base: <b> is
+// up to date` when the local base contains origin/<b>, else each line of `10x-worktree sync-base` as `base: <line>`.
+// The lines go to <nn>-cleanup, follow the ticket's evidence in every phase but dropped and pr-open, and a kept
+// worktree or branch, an `10x:` refusal, a failed exit and a base `not updated` or `refused` are also listed under
+// `## Needs the human` as `- <id> — <line>`.
 // With batch.hostRerun true, after an implement or close session's run (a reply in one included) exits 0, and while the
 // ticket is not dropped and no signal came, each free `- asked: sandbox-red: <gate>` line of evidence.md is handled in
 // order: refused (`refused: <why>`, recorded) when worktree.pin fails (head `-`) or <gate> is not exactly an entry of
@@ -137,7 +146,9 @@
 // none of which starts with a mark — `(security)`, `(cost)`, `(product)`, `(human)` — or is a sandbox-red ask gets
 // PROCEED_REPLY, to take its recommendations (at most 3 times). It waits for one of its runs or 10 seconds between
 // passes, and once nothing runs prints one line, {"items":[…]}: per ticket `failed`, `answer` or `approve` with its
-// evidence — a ticket's denials make no item of their own — or [{"need":"done"}] when every ticket is settled.
+// evidence — a ticket's denials make no item of their own — or `cleanup` for a landed ticket whose host cleanup left
+// something to the human (those lines as its evidence), then {"need":"done"} when there is no other item and every
+// ticket is settled.
 // `drop` sends SIGTERM to the ticket's open worker (a process whose command line holds the run's session) and to a
 // `10x-batch run <id>` rerunning a gate (the pid in S/batch/<id>/rerun), marks it dropped and rewrites the board.
 // `replan` sends a `failed` ticket back to planning without a new batch; any other phase is refused (`replan <id>
@@ -891,8 +902,12 @@ function derive(id) {
     implemented: rs.some((r) => r.session_kind === 'implement'),
     approvable: false,
   }
-  const set = (phase, evidence = fs.existsSync(turn) ? rel(turn) : '') =>
-    Object.assign(row, { phase, evidence: row.denied ? [evidence, row.denied].filter(Boolean).join('; ') : evidence })
+  // The latest run's cleanup record follows, in every phase but dropped and pr-open, whose open PR is the expected leftover.
+  const set = (phase, evidence = fs.existsSync(turn) ? rel(turn) : '') => {
+    const done = last && !['dropped', 'pr-open'].includes(phase) ? cleanupLines(id, last.n) : []
+    row.cleanup = done.filter(cleanupFlagged)
+    return Object.assign(row, { phase, evidence: [evidence, row.denied, ...done].filter(Boolean).join('; ') })
+  }
   if (fs.existsSync(path.join(sdir(id), 'dropped'))) return set('dropped', 'dropped by the user')
   if (!last) return set('queued', '')
   // A gate of its latest session's report rerunning on the host: the session is still at work.
@@ -1321,6 +1336,7 @@ function board(rows) {
     else if (r.denied) need.push(`- ${r.id} — ${r.phase}: ${flat(r.denied)}`)
     if (r.phase !== 'landed') for (const x of r.relocked) need.push(`- ${r.id} — relocked: ${flat(x)}`)
     if (r.phase !== 'landed') for (const x of r.decided) need.push(`- ${r.id} — decided: ${x}`)
+    for (const x of r.cleanup || []) need.push(`- ${r.id} — ${x}`)
     need.push(...s.need)
   }
   lines.push('', '## Needs the human', ...(need.length ? need : ['- none']))
@@ -1585,7 +1601,7 @@ async function run(argv, replan = false) {
     writeRuns(id, now)
     // Where it landed, read now: the base moves on as later tickets land.
     if (kind === 'close' && code === 0 && !fs.existsSync(path.join(WT_DIR, id))) put(path.join(bdir(id), `${nn}-landed`), landedOn() + '\n')
-    return { code, unavailable }
+    return { code, unavailable, n }
   }
 
   const dropped = () => fs.existsSync(path.join(sdir(id), 'dropped'))
@@ -1605,6 +1621,7 @@ async function run(argv, replan = false) {
     if (!reply || live.signalled || dropped()) break
     res = await turnOf('reply', '--resume', runs(id).at(-1).session, reply, true)
   }
+  if (res.code === 0 && sessionKind === 'close') finishClose(id, res.n)
   const after = deriveAll(ids)
   settleSecurity(after)
   writeBoard(after)
@@ -1692,6 +1709,46 @@ async function rerunGates(id, live, dropped) {
     'Remove each `- asked: sandbox-red:` line it answers, use this as that gate\'s evidence, and go on. A 10x-verify FAIL of these gates at this commit is not a failure.\n',
   ].join('\n')
 }
+
+// After a close session's run exits 0, on the host: what a worker's sandbox left of ticket <id>'s worktree (its folder
+// with a .git, or only git's record of it) is removed with `10x-worktree rm <id> --landed-only`, which keeps a branch
+// whose changes are not on the base; then, in pr and pr-merge mode, the main checkout's base is fast-forwarded with
+// `10x-worktree sync-base` when it is behind origin/<base>. Every step, taken or skipped, is a `cleanup:` or `base:`
+// line of .10x/_batch/<id>/<nn>-cleanup.
+function finishClose(id, n) {
+  const nn = pad(n)
+  const wt = path.join(WT_DIR, id)
+  const lines = []
+  const env = { ...process.env }
+  delete env.TENX_BATCH
+  delete env.TENX_BATCH_PLAN_DIR
+  const script = (prefix, argv) => {
+    const r = spawnSync(path.join(__dirname, '10x-worktree'), argv, { cwd: ROOT, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    for (const l of `${r.stdout || ''}\n${r.stderr || ''}`.split('\n')) if (l.trim()) lines.push(`${prefix}: ${flat(l.trim())}`)
+    return r
+  }
+  const real = path.join(fs.existsSync(WT_DIR) ? fs.realpathSync(WT_DIR) : WT_DIR, id)
+  const recorded = (git(['worktree', 'list', '--porcelain']) || '').split('\n').includes(`worktree ${real}`)
+  const before = fs.existsSync(wt)
+  if (fs.existsSync(path.join(wt, '.git')) || recorded) {
+    const r = script('cleanup', ['rm', id, '--landed-only'])
+    if (r.status !== 0) lines.push(r.status === null ? `cleanup: exited by ${r.signal || flat(r.error?.message || 'an error')}` : `cleanup: exited ${r.status}`)
+  } else lines.push('cleanup: nothing left behind')
+  if (before && !fs.existsSync(wt) && !fs.existsSync(path.join(bdir(id), `${nn}-landed`))) put(path.join(bdir(id), `${nn}-landed`), landedOn() + '\n')
+  const b = baseBranch()
+  if (CLOSE === 'local') lines.push('base: skipped (close: local)')
+  else if (fs.existsSync(wt)) lines.push('base: skipped (not landed)')
+  else if (git(['show-ref', '--verify', '--quiet', `refs/remotes/origin/${b}`]) === null) lines.push(`base: skipped (no origin/${b})`)
+  else if (git(['show-ref', '--verify', '--quiet', `refs/heads/${b}`]) === null) lines.push(`base: skipped (no local ${b})`)
+  else if (git(['merge-base', '--is-ancestor', `refs/remotes/origin/${b}`, `refs/heads/${b}`]) !== null) lines.push(`base: ${b} is up to date`)
+  else script('base', ['sync-base'])
+  put(path.join(bdir(id), `${nn}-cleanup`), lines.map((l) => l + '\n').join(''))
+}
+
+// The lines of ticket <id>'s run <n> cleanup record that leave something to the human: a kept worktree or branch, a
+// refused or failed removal, a base not updated.
+const cleanupLines = (id, n) => (readOr(path.join(bdir(id), `${pad(n)}-cleanup`)) || '').split('\n').filter(Boolean)
+const cleanupFlagged = (l) => /^cleanup: (kept|10x:|exited)/.test(l) || l.startsWith('base: 10x:') || (l.startsWith('base: ') && /not updated|refused/.test(l))
 
 // Moves worktree <wt>'s branch onto the current base, fetched first when origin exists; null when it is there, else why
 // not, the branch left as it was. git runs pinned, as in accept-green: config and hooks come from the common dir.
@@ -2035,9 +2092,11 @@ function items(rows, auto, refused, held) {
     if (refused.has(r.id)) item('failed', refused.get(r.id))
     else if (r.phase === 'failed') item('failed', r.evidence)
     else if (r.phase === 'waiting') item(r.approvable && (!auto || heldBack(r.id) || held.has(r.id)) ? 'approve' : 'answer', r.evidence)
+    // What the host cleanup after its close left for the human; it holds nothing, so `done` still follows it.
+    else if (r.phase === 'landed' && r.cleanup?.length) out.push({ need: 'cleanup', id: r.id, evidence: r.cleanup.join('; ') })
   }
-  if (out.length) return out
-  return rows.every((r) => SETTLED.has(r.phase)) ? [{ need: 'done' }] : []
+  if (out.some((x) => x.need !== 'cleanup')) return out
+  return rows.every((r) => SETTLED.has(r.phase)) ? [...out, { need: 'done' }] : out
 }
 
 const [cmd, ...args] = process.argv.slice(2)
