@@ -193,6 +193,8 @@ A question that comes up from here on stops the session with an `asked` line onl
 
 Every other question proceeds on its recommended answer, in an interactive session and a batch worker alike: take the recommendation, append one line `- Decided: <question> — <answer taken>; alternative: <each option not taken>` to the `## Assumptions` section of `plan.md` (add the section below `# Appendix`, before `## Out of scope`, or at the end when the plan has none), run `10x-plan-check <id>` and reword the line if it is at fault, write no `asked` line, and go on. On the small path, which has no `plan.md`, append the same line to `.10x/<id>/decisions.md` instead, with no `10x-plan-check`. The user reads these lines in the report (Step 8) and on the batch board before the ticket is closed.
 
+In a `/10x:batch` worker (`TENX_BATCH` set), each `asked` text starts with one mark, which is part of the asked text and so of the message that ends the turn: `(security)` for a question about security, Step 8's security entries and an `## Out of diff` array that does not parse or is refused; `(cost)` for one whose answer adds a paid service or a real-model e2e beyond the configured gates; `(product)` for one that changes, defers or adds to a criterion; `(human)` for every other stop above. A fixed text this skill gives (`Step 8 security entries: <fp>…`, `accept GREEN <file>?`) follows the mark unchanged; a `sandbox-red:` line takes no mark. In auto mode the conductor answers an unmarked ask by telling you to take your recommendation. An interactive session writes no marks.
+
 A criterion is never deferred on your own recommendation: `deferred` carries the user's own words, always.
 
 ### Tests half
