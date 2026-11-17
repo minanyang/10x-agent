@@ -84,19 +84,28 @@ On `done`, end with the board.
 
 ## Step 4 — Auto mode
 
-Start `10x-batch loop` with `run_in_background` and `timeout: 7200000`, then end your turn. It plans, approves a plan that passes `10x-plan-check` — except one whose issue has a comment by someone other than its author, and a `security-<8 hex>` ticket's plan with a `comment.md` or `product-questions.md` — implements and closes by itself, and exits when a human is needed. When it wakes you:
+Start `10x-batch loop` with `run_in_background` and `timeout: 7200000`, then end your turn. It plans, approves a plan that passes `10x-plan-check` — except one whose issue has a comment by someone other than its author, one held for a security or cost question (`held-questions.md`), and any `security-<8 hex>` ticket's plan — implements, tells an implementation session to take its recommendation on an unmarked question, closes by itself, and exits when a human is needed.
+
+The batch wakes you for exactly four reasons:
+1. **Security** — a `(security)` question, a security entry, a `security-<8 hex>` ticket's plan, or a plan held because someone other than the issue's author commented.
+2. **Cost** — a `(cost)` question: a paid service or a real-model e2e beyond the configured gates.
+3. **A real failure** — a failed run or gate, a refused merge or a close that did not land, or a stop only you can settle (`(product)`, `(human)`, a plan held for its questions or comment).
+4. **The end** — `done`.
+
+When it wakes you:
 
 - No JSON line (it was stopped at its limit): start `10x-batch loop` again the same way.
 - Exit 2: quote its `10x-batch:` line and ask the user how to go on.
 - Otherwise read its one line, `{"items":[…]}`, and relay only the items it printed, grouped by ticket, in one message:
-  - `answer`: Read and show `.10x/_batch/<id>/turn.md`, and `.10x/<id>/product-questions.md` when it exists; for a ticket whose session is not a plan session, first its Evidence from the board.
+  - `answer`: Read and show `.10x/_batch/<id>/turn.md`, and `.10x/<id>/product-questions.md` and `.10x/<id>/held-questions.md` when they exist; for a ticket whose session is not a plan session, first its Evidence from the board.
   - `approve`: as in Step 2 — show the turn and the lines of `plan.md` above its `# Appendix` line verbatim, under its path; on the user's `approve`, `10x-land comment <id>` when `.10x/<id>/comment.md` exists, then `10x-batch approve <id>`, which still asks permission; `approve all` as in Step 2.
   - `failed`: show its evidence and offer `replan` and `drop`, as in Step 1.
-  - `denied`: show its evidence, for the user to decide on.
+
+  After relaying them, call `PushNotification` once (load it with ToolSearch `select:PushNotification` when it is deferred) with the message `10x batch: <n> need you — <id> <need>, <id> <need>…`: `<n>` the number of items, the ids in item order, cut with `…` to stay under 200 characters. Never push for a restart without a JSON line or for an exit 2.
 
 After the user's reply, write each `reply.md` or approve as in Step 2, then start `10x-batch loop` again (not `10x-batch run`). After a background `replan`, end your turn instead, and start `10x-batch loop` again only when the replan wakes you: a `loop` started before the replan's run is recorded would report the ticket `failed` again and exit.
 
-On `done`, run `10x-batch status`. The final reply is the board, then, for each ticket under its id, the lines of the `## Auto decisions` section of `.10x/<id>/plan.md`, each verbatim, the `(product)` lines first and the others after them, or `(none)` when the plan has no such section.
+On `done`, run `10x-batch status`, then call `PushNotification` once with `10x batch done: <n> landed, <n> PR open, <n> failed, <n> dropped`, counted from the board's Phase column, leaving out each zero count. The final reply is the board, then, for each ticket under its id, the lines of the `## Auto decisions` section of `.10x/<id>/plan.md`, each verbatim, the `(product)` lines first and the others after them, or `(none)` when the plan has no such section.
 
 ## Replies
 

@@ -215,11 +215,15 @@ snap() { find .10x .git "$XDG_STATE_HOME" -type f -print0 2>/dev/null | sort -z 
 fetched() { grep "^issue view $1 " "$STUB_LOG" | grep -v -- '--json author' | grep -q .; }
 # The fixed reply of auto mode, byte for byte.
 cat >"$tmp/fixed" <<'EOF'
-Auto mode: no human answers this batch's questions. A question the ticket's `Decisions` section answers is settled: take its answer, and neither ask it nor write it to `comment.md`. Answer every other question you asked with your own recommendation, product questions too — a question the ticket itself asks, what the user gets, the outcome of an edge case, what counts as done. Record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question: `- <its number> — <the choice and why>`, or `- (product) <its number> — <the choice and why>` for a product question. For a GitHub issue, also write the product answers to `comment.md` as /10x:work says; it is not posted now, /10x:close carries it in the PR body. Then go on.
+Auto mode: no human answers this batch's questions. A question the ticket's `Decisions` section answers is settled: take its answer, and neither ask it nor write it to `comment.md`. A question about security, or about a cost the batch would add — a paid service, or a real-model e2e beyond the configured gates — is not yours to answer: if you asked one, answer none of your questions, write the numbers of those questions, one per line, to `held-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Answer every other question you asked with your own recommendation, product questions too — a question the ticket itself asks, what the user gets, the outcome of an edge case, what counts as done. Record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question: `- <its number> — <the choice and why>`, or `- (product) <its number> — <the choice and why>` for a product question. For a GitHub issue, also write the product answers to `comment.md` as /10x:work says; it is not posted now, /10x:close carries it in the PR body. Then go on.
 EOF
 # The fixed reply of a security-<8 hex> ticket, byte for byte (the old text).
 cat >"$tmp/fixed_security" <<'EOF'
-Auto mode: no human answers this batch's questions. A question the ticket's `Decisions` section answers is settled: take its answer, and neither ask it nor list it in `product-questions.md`. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question (its number, the choice and why), and go on.
+Auto mode: no human answers this batch's questions. A question the ticket's `Decisions` section answers is settled: take its answer, and neither ask it nor list it in `product-questions.md`. A question the ticket itself asks, and any product question — what the user gets, the outcome of an edge case, what counts as done — is a product question. A question about security, or about a cost the batch would add — a paid service, or a real-model e2e beyond the configured gates — counts as a product question here. If any question you asked is a product question, answer none of them: write their numbers, one per line, to `product-questions.md` in this ticket's `.10x/<id>/` directory, and stop. Otherwise answer every question with your own recommendation, record each in plan.md under `## Auto decisions`, below `# Appendix`, one line per question (its number, the choice and why), and go on.
+EOF
+# The reply of auto mode to an implementation session's unmarked questions, byte for byte.
+cat >"$tmp/proceed" <<'EOF'
+Auto mode: no human answers this batch's questions. For each question you asked, take your recommended answer: append its `- Decided: <question> — <answer taken>; alternative: <each option not taken>` line to plan.md's `## Assumptions` as the work skill's Stop or proceed says, replace its asked line in evidence.md with the criterion's new state (remove a free `- asked:` line), and go on. A question about security, a cost the batch would add, a product decision or one only the user can settle is never answered this way: write its asked line again, starting with its mark, and stop.
 EOF
 # A worker turn that asks a question and writes no plan.
 cat >"$tmp/question.jsonl" <<'EOF'
@@ -2569,15 +2573,89 @@ fi
 end
 
 reset; ticket t0 t1 t2
-begin "loop: a denied item's evidence is the count and the denials file"
+begin "loop: a ticket not blocked by its denials is no item"
 vb init t0 t1 t2
 row t0 plan plan 0; echo q >"$B/t0/turn.md"
 implemented t1 b; printf 'Bash\tgit push\n' >"$B/t1/02-denials.tsv"
 landed t2 c; printf 'Bash\tgit push\n' >"$B/t2/03-denials.tsv"
 lp 30
 need "loop finished" finished
-need "t0 answers; t1 is denied with the board's evidence; a landed ticket is no item" \
-  printed '{"items":[{"id":"t0","need":"answer","evidence":".10x/_batch/t0/turn.md"},{"id":"t1","need":"denied","evidence":"1 denied (see .10x/_batch/t1/02-denials.tsv)"}]}'
+need "only t0's answer item: neither t1's nor t2's denials make an item" \
+  printed '{"items":[{"id":"t0","need":"answer","evidence":".10x/_batch/t0/turn.md"}]}'
+need "the board still shows t1's count" grep -qF "1 denied (see .10x/_batch/t1/02-denials.tsv)" "$B/board.md"
+end
+
+reset; ticket t1
+begin "loop: auto answers an unmarked implementation question with its recommendation"
+vb init --auto t1
+approved t1 b
+vb run t1 implement
+mkdir -p .worktrees/t1
+evidence t1 "- AC1 — asked: Which name?" "- asked: Keep the old name?"
+echo 1 >.10x/t1/held-questions.md; echo 2 >.10x/t1/product-questions.md; echo c >.10x/t1/comment.md
+lp 90
+need "loop finished" finished
+for n in 03 04 05; do
+  need "reply $n is the proceed reply byte for byte" cmp -s "$tmp/proceed" "$B/t1/$n-reply.md"
+done
+need "no fourth proceed reply" test ! -e "$B/t1/06-reply.md"
+need "the replies were sent to the implement session" test "$(sed 1d "$SB/t1/runs.tsv" | cut -f2 | tr '\n' ' ')" = "plan implement reply reply reply "
+need "after three, an answer item" has '{"id":"t1","need":"answer","evidence":"Keep the old name?; Which name?'
+need "no reply.md is left" test ! -e "$B/t1/reply.md"
+end
+
+reset; ticket t1
+begin "loop: a marked implementation question is an answer item"
+for ask in "(security) Log the token?" "(cost) Use the paid API?" "(product) Drop AC2?" "(human) Accept GREEN tests/a.sh?" "sandbox-red: npm test"; do
+  reset; ticket t1
+  vb init --auto t1
+  implemented t1 b
+  evidence t1 "- AC1 — met: x" "- asked: Keep the old name?" "- asked: $ask"
+  lp 30
+  need "$ask: loop finished" finished
+  need "$ask: an answer item" has '{"id":"t1","need":"answer","evidence":"Keep the old name?; '"$ask"
+  need "$ask: no reply was sent" test "$(sed 1d "$SB/t1/runs.tsv" | wc -l | tr -d ' ')" = 2
+  need "$ask: no reply.md" test ! -e "$B/t1/reply.md"
+done
+end
+
+reset; ticket t1
+begin "loop: the planning fixed reply holds security and cost questions"
+vb init --auto t1
+WORKER_OUT="$tmp/question.jsonl" lp 90
+need "loop finished" finished
+need "the fixed reply is sent byte for byte" cmp -s "$tmp/fixed" "$B/t1/02-reply.md"
+need "it holds a security or cost question in held-questions.md" grep -qF 'write the numbers of those questions, one per line, to `held-questions.md`' "$B/t1/02-reply.md"
+reset; ticket security-0a1b2c3d
+vb init --auto security-0a1b2c3d
+WORKER_OUT="$tmp/question.jsonl" lp 90
+need "a security ticket's fixed reply is sent byte for byte" cmp -s "$tmp/fixed_security" "$B/security-0a1b2c3d/02-reply.md"
+need "it counts a security or cost question as a product question" grep -qF 'counts as a product question here' "$B/security-0a1b2c3d/02-reply.md"
+reset; ticket t1
+echo 1 >.10x/t1/held-questions.md
+vb init --auto t1
+WORKER_OUT="$tmp/question.jsonl" lp 90
+need "held: loop finished" finished
+need "held: no fixed reply" test ! -e "$B/t1/02-reply.md"
+need "held: an answer item" printed '{"items":[{"id":"t1","need":"answer","evidence":".10x/_batch/t1/turn.md"}]}'
+reset; ticket t1
+echo 1 >.10x/t1/held-questions.md
+vb init --auto t1
+WORKER_SCRIPT=flow lp 90
+need "held, approvable: loop finished" finished
+need "held, approvable: an approve item" printed '{"items":[{"id":"t1","need":"approve","evidence":".10x/_batch/t1/turn.md"}]}'
+need "held, approvable: no approval record" test ! -e "$S/t1.approved"
+end
+
+reset; ticket security-0a1b2c3d
+begin "loop: a security ticket's plan is an approve item in auto mode"
+vb init --auto security-0a1b2c3d
+WORKER_SCRIPT=flow lp 90
+need "loop finished" finished
+need "an approve item" printed '{"items":[{"id":"security-0a1b2c3d","need":"approve","evidence":".10x/_batch/security-0a1b2c3d/turn.md"}]}'
+need "no approval record" test ! -e "$S/security-0a1b2c3d.approved"
+need "no auto-approved" test ! -e "$SB/security-0a1b2c3d/auto-approved"
+need "no reply.md" test ! -e "$B/security-0a1b2c3d/reply.md"
 end
 
 reset; ticket t1
