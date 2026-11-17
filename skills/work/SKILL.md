@@ -249,11 +249,11 @@ git -C <worktree> commit -m "<message>"
 10x-red-proof <id>
 ```
 
-Every changed test file must go **red** with the implementation reverted. A `GREEN` file does not test the change: fix the test, commit, run again. Never send a diff to review with a `GREEN` in it. (It runs jest, vitest and `node --test` out of the box, and any other test runner the project declares as `redProof.command` / `redProof.tests` in `.claude/10x.json`; without either it says unsupported — then ask the user whether to go on without it, as an `asked` line.) Exit 2 naming test files that do not pass at HEAD is not a pass either: the test is broken, its environment is missing, or the runner is one red-proof does not support — fix it, or ask the user, as an `asked` line naming why red-proof could not run. Exit 2 naming a locked file means a relock is missing: restore the file from the lock, or go through Step 3's relock.
+Every changed test file must go **red** with the implementation reverted. A `red at lock <sha>` file counts as `RED`: the first `--lock` proved it red and it has not changed since. A `note` file is a modified test file expected to stay green, and passes. A `GREEN` file does not test the change: fix the test, commit, run again. Never send a diff to review with a `GREEN` in it. (It runs jest, vitest and `node --test` out of the box, and any other test runner the project declares as `redProof.command` / `redProof.tests` in `.claude/10x.json`; without either it says unsupported — then ask the user whether to go on without it, as an `asked` line.) Exit 2 naming test files that do not pass at HEAD is not a pass either: the test is broken, its environment is missing, or the runner is one red-proof does not support — fix it, or ask the user, as an `asked` line naming why red-proof could not run. Exit 2 naming a locked file means a relock is missing: restore the file from the lock, or go through Step 3's relock.
 
 A `GREEN` file the change legitimately leaves untested (a portability-only edit, say) is never accepted by you alone: add `- asked: accept GREEN <file>? <why it stays green>` to `evidence.md` and ask. Only on the user's explicit go for that file, in an interactive session, append an entry to `.10x/<id>/accepted-green.md` — `## Accepted <n>`, then `- file: <file>`, `- blob: <blob>` (the file's blob at HEAD, printed by git rev-parse HEAD:<file> run in the worktree) and `- reason: <the user's reason, one line>` — and run `10x-red-proof <id>` again: it prints `accepted <file>` with the reason instead of `GREEN`, until the file changes. In a batch worker, ask the same way and stop: the conductor records the user's go with 10x-batch accept-green and tells you to run red-proof again; red-proof ignores `.10x/<id>/accepted-green.md` there, so writing it has no effect. The same holds in an interactive session while the current batch still lists the ticket (10x-batch status shows it): record the go with 10x-batch accept-green <id> <file> "<reason>", which always asks for permission, instead of writing `.10x/<id>/accepted-green.md`.
 
-Once each test file is `RED`, mark the criteria its `## Tests` rows cover `met`, with the commit and the case — on the small path, the criteria its tests were written for.
+Once each test file is `RED` or `red at lock`, mark the criteria its `## Tests` rows cover `met`, with the commit and the case — on the small path, the criteria its tests were written for.
 
 ## Step 6 — Verify and review, concurrently
 
@@ -357,7 +357,7 @@ The report has this shape, in this order, with at most three lines of prose arou
 
 - `Branch: <branch>`, then one line per commit, `<short hash> <subject>`;
 - the final `10x-verify` summary as printed, in a code fence;
-- `Red-proof:` then the last run's per-file `RED` lines;
+- `Red-proof:` then the last run's per-file `RED` and `red at lock` lines;
 - one `Round <n>: <verdict> — <count> findings: <n> fixed, <n> answered` line per review round, plan checks and security findings counted in — `Round <n+1>: none — no commits after round <n>` when Step 7a exited 3 — then, for an escalated small ticket, `Escalated: <reasons>` (the packet's `security review: required` reasons, or the content trigger met), then `Review: .10x/<id>/review.md`;
 - `Memory:` then the branch's memory files and their whole diff in a `diff` fence — only when the branch touches `.claude/agent-memory`;
 - `Files added:` then the files added to `## Files` in Step 7 — only when there are any;

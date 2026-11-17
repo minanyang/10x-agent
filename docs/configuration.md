@@ -28,7 +28,7 @@ Optional `.claude/10x.json`, committed with the project:
 | `tickets` | `github` when `origin`'s host is exactly `github.com`, else `files` (another host, a local-path `origin`, or none). `github`: `/10x:open` files GitHub issues. `files`: it writes the approved draft to `.10x/<slug>/ticket.md` and runs no `gh` command. Any other value, an empty string included, is refused |
 | `worktreeDir` | `.worktrees` |
 | `generated` | paths left out of the review diff (lockfiles always are) |
-| `redProof.command` | JavaScript runners (jest, vitest, `node --test`) are detected. For any other stack, a shell command containing `{file}`, run once per changed test file in the worktree root with the shell-quoted path substituted; the file's exit code is the result |
+| `redProof.command` | JavaScript runners (jest, vitest, `node --test`) are detected. For any other stack, a shell command containing `{file}`, run once per changed test file in the worktree root with the shell-quoted path substituted; the file's exit code is the result. A modified test file that stays green is a `note` when the ticket has a `plan.md` and no `## Tests` row names it, else `GREEN` |
 | `redProof.tests` | required with `redProof.command`: git pathspec globs naming the test files (`tests/*.test.sh`) |
 | `preReviewGates` | none. Shell commands (quick gates: lint, typecheck) that `10x-review-packet` runs first; a failure exits 1 and no packet is built |
 | `tdd` | on. `/10x:work` writes, commits and locks the tests (`10x-red-proof <id> --lock`) before implementing, and a locked test changes only through a relock a fresh reviewer approved. `false` (or `"false"`) skips the tests half and the lock |
