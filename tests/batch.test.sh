@@ -3164,5 +3164,15 @@ need "the section follows Needs the human" eval '
   [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]'
 end
 
+reset
+begin "security: keeps an entry named after a fenced comment line in the last round"
+ticket t1; vb init t1
+sec_md "$FPA:t1:"; sec_ticket t1 "$FPA"
+sec_review t1 "10x:security-reviewer" "$(printf '#### F1 — [minor] the fixture resets\n```sh\n# reset the fixture\necho reset\n```\n\n#### F2 — [high] shell injection %s' "$FPA")"
+lp 10
+need "the entry stays" has_entry "$FPA"
+need "the board names the reason" board_has "- t1 — kept $FPA: review.md round 1 has a finding against it"
+end
+
 [ "$fail" -eq 0 ] && echo "batch: all cases pass"
 exit "$fail"
