@@ -177,6 +177,8 @@ Before implementing, write `.10x/<id>/evidence.md` with one line per criterion o
 
 A question not tied to a criterion is a line `- asked: <question>`, removed once answered. The last line for a criterion wins. Whenever this skill stops to ask the user something, write its `asked` line first and put the question, word for word, in the message that ends the turn: until the worktree is removed, a Stop hook refuses to end a turn while a criterion is missing or `pending`, or an `asked` question is not in that message.
 
+In a `/10x:batch` worker (`TENX_BATCH` set): when a gate of the main checkout's `.claude/10x.json` `gates` is red only because of the worker sandbox (a denied network, socket or path, not a fault in the code), write one line `- asked: sandbox-red: <gate>` per such gate to `evidence.md`, with `<gate>` copied verbatim from `gates` and nothing after it, put the same line in the message that ends the turn, and stop. With `batch.hostRerun` true the conductor reruns that gate outside the sandbox, in this worktree, and resumes this session with a reply starting `Host rerun by the conductor`: remove each `- asked: sandbox-red:` line it answers, use the reply's output as that gate's evidence, and go on; a `10x-verify` FAIL of those gates at that commit is not a failure. Without the setting the ticket waits for the user. A gate that fails for any other reason is a failure to fix, not a report.
+
 The tests are written, committed and locked before any implementation file: the tests half, then the implementation half, each on the path chosen above.
 
 ### Stop or proceed

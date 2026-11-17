@@ -101,6 +101,19 @@ if [ "${WORKER_SCRIPT:-}" = flow ]; then
     Approved.*) sed -i.bak 's/^Status: draft/Status: approved/' ".10x/$id/plan.md"; rm -f ".10x/$id/plan.md.bak" ;;
   esac
 fi
+# With $WORKER_SCRIPT=sandbox-red a /10x:work or /10x:close run reports each line of $WORKER_GATE as a sandbox-red gate in
+# .10x/<id>/evidence.md (/10x:work first writes AC1 as met), and a reply starting `Host rerun` removes those lines.
+if [ "${WORKER_SCRIPT:-}" = sandbox-red ]; then
+  case "$prompt" in
+    '/10x:work '*|'/10x:close '*)
+      id="${prompt#* }"; printf '%s %s\n' "$session" "$id" >>"$WORKER_LOG.sessions"
+      case "$prompt" in '/10x:work '*) printf -- '- AC1 — met: x\n' >".10x/$id/evidence.md" ;; esac
+      printf '%s\n' "$WORKER_GATE" | while IFS= read -r g; do printf -- '- asked: sandbox-red: %s\n' "$g"; done >>".10x/$id/evidence.md" ;;
+    'Host rerun'*)
+      id="$(awk -v s="$session" '$1 == s { print $2 }' "$WORKER_LOG.sessions")"
+      grep -v '^- asked: sandbox-red:' ".10x/$id/evidence.md" >"$WORKER_LOG.ev"; cp "$WORKER_LOG.ev" ".10x/$id/evidence.md" ;;
+  esac
+fi
 if [ -n "${WORKER_NOPLUGIN:-}" ]; then
   printf '%s\n{"type":"system","subtype":"init","permissionMode":"%s","slash_commands":["other"]}\n' "$hook" "${WORKER_MODE:-$mode}"
   trap 'kill "$s" 2>/dev/null; exit 143' TERM INT
@@ -2823,6 +2836,143 @@ vb init t1
 WORKER_OUT="$tmp/no-init.jsonl" WORKER_EXIT=1 vb run t1 plan
 need "no init event: no 01-plugin" test ! -e "$B/t1/01-plugin"
 need "no init event: judged by its exit" grep -qF "run 01 (plan) exited 1" "$B/board.md"
+end
+
+# ---------------------------------------------------------------- host reruns (gh-59)
+
+G_OK="echo gate-ran >>$tmp/ran.log; echo gate-ran"
+G_RED="echo boom-line; exit 1"
+# rr_config <hostRerun true|false|none> <gates JSON> — the main checkout's .claude/10x.json.
+rr_config() {
+  local h=""
+  [ "$1" = none ] || h=",\"batch\":{\"hostRerun\":$1}"
+  printf '{"close":"local"%s,"gates":%s}\n' "$h" "$2" >.claude/10x.json
+}
+# rr_ticket <id>… — approved tickets in one batch, each with a real worktree .worktrees/<id> and a plan run behind it.
+rr_ticket() {
+  local id
+  git worktree prune
+  ticket "$@"; vb init "$@"
+  for id in "$@"; do
+    approved "$id" "$id"
+    git worktree add -q --detach ".worktrees/$id" HEAD
+  done
+}
+# rr_summary <id> <gate> — a verify summary where <gate> is FAIL at the worktree's HEAD.
+rr_summary() {
+  mkdir -p ".10x/$1/verify"
+  {
+    printf '%-28s %-6s %6s  %s\n' gate result secs log
+    printf '%-28s %-6s %6s  %s\n' "${2:0:28}" FAIL 1 a.log
+    printf 'tree: HEAD %s, 0 uncommitted path(s)\n' "$(git -C ".worktrees/$1" rev-parse --short HEAD)"
+  } >".10x/$1/verify/summary.txt"
+}
+# An implement or close run on an existing worktree fetches origin first: point it at the local bare repo for that run.
+rr_run() { # <gate lines> <id> <implement|close>
+  git remote set-url origin "$tmp/origin.git"
+  WORKER_SCRIPT=sandbox-red WORKER_GATE="$1" vb run "$2" "$3"
+  git remote set-url origin git@github.com:acme/batch.git
+}
+rr_rec() { awk -F'\t' -v n="$2" -v c="$3" 'NR == n + 1 { print $c }' "$SB/$1/reruns.tsv"; } # <id> <record n> <column>
+replies() { grep -c '^--resume	.*Host rerun by the conductor' "$WORKER_LOG"; }
+
+reset; rm -f "$tmp/ran.log"
+begin "hostRerun reruns a reported gate outside the sandbox"
+rr_config true "[\"$G_OK\"]"; rr_ticket t1
+rr_run "$G_OK" t1 implement
+need "the gate ran" grep -qx gate-ran "$tmp/ran.log"
+need "one record: run 2, the gate, green, exit 0" eval '[ "$(rr_rec t1 1 1)" = 2 ] && [ "$(rr_rec t1 1 2)" = "$G_OK" ] && [ "$(rr_rec t1 1 4)" = green ] && [ "$(rr_rec t1 1 5)" = 0 ]'
+need "at the worktree HEAD" test "$(rr_rec t1 1 3)" = "$(git -C .worktrees/t1 rev-parse HEAD)"
+need "its log is 02-rerun-1.log with the output" eval '[ "$(rr_rec t1 1 6)" = 02-rerun-1.log ] && grep -qx gate-ran "$B/t1/02-rerun-1.log"'
+need "no pid file is left" test ! -e "$SB/t1/rerun"
+end
+
+reset; rm -f "$tmp/ran.log"
+begin "a reported gate not in the main checkout's gates is refused and named"
+rr_config true '["echo listed"]'; rr_ticket t1
+rr_run "$G_OK" t1 implement
+need "the gate did not run" test ! -e "$tmp/ran.log"
+need "recorded refused" eval '[ "$(rr_rec t1 1 2)" = "$G_OK" ] && [ "$(rr_rec t1 1 4)" = "refused: not in the main checkout'"'"'s gates" ]'
+need "the ticket is waiting" phase_is t1 waiting
+need "named on the board" grep -qF "host rerun refused: $G_OK" "$B/board.md"
+need "no reply sent" test "$(replies)" = 0
+end
+
+reset; rm -f "$tmp/ran.log"
+begin "without hostRerun a sandbox-red report is an answer item"
+rr_config none "[\"$G_OK\"]"; rr_ticket t1
+rr_summary t1 "$G_OK"
+rr_run "$G_OK" t1 implement
+need "nothing ran" test ! -e "$tmp/ran.log"
+need "no record" test ! -e "$SB/t1/reruns.tsv"
+need "waiting, not failed" phase_is t1 waiting
+need "status lists answer t1" acts_are "answer t1"
+rr_config false "[\"$G_OK\"]"; rr_run "$G_OK" t1 implement
+need "false is off too" test ! -e "$SB/t1/reruns.tsv"
+rr_config '"maybe"' "[\"$G_OK\"]"
+need "any other value exits 2" exits 2 status
+need "naming the value" has "batch.hostRerun must be true or false, got \"maybe\""
+end
+
+reset; rm -f "$tmp/ran.log"
+begin "a close worker's sandbox-red report is rerun"
+rr_config true "[\"$G_OK\"]"; rr_ticket t1
+row t1 implement implement 0; evidence t1 "- AC1 — met: x"
+rr_run "$G_OK" t1 close
+need "the gate ran" grep -qx gate-ran "$tmp/ran.log"
+need "recorded green for run 3" eval '[ "$(rr_rec t1 1 1)" = 3 ] && [ "$(rr_rec t1 1 4)" = green ] && [ "$(rr_rec t1 1 6)" = 03-rerun-1.log ]'
+need "the close session is resumed" test "$(grep -c "^--resume	$(field t1 3 3)	" "$WORKER_LOG")" = 1
+end
+
+reset; rm -f "$tmp/ran.log"
+begin "a green rerun resumes the worker with its output"
+rr_config true "[\"$G_OK\"]"; rr_ticket t1
+rr_run "$G_OK" t1 implement
+need "one reply, resuming the implement session" test "$(replies)" = 1
+need "the reply row is run 3 in the same session" test "$(field t1 3 2)/$(field t1 3 3)" = "reply/$(field t1 2 3)"
+need "it carries the gate, the place, the commit and the output" eval 'r="$(cat "$B/t1/03-reply.md")"
+  case "$r" in "Host rerun by the conductor, outside the sandbox."*) ;; *) false ;; esac
+  case "$r" in *"\`$G_OK\` in .worktrees/t1 at $(git -C .worktrees/t1 rev-parse --short HEAD): green (exit 0)."*) ;; *) false ;; esac
+  case "$r" in *"Last 40 lines of its output:"*gate-ran*"Remove each \`- asked: sandbox-red:\` line"*) ;; *) false ;; esac'
+need "the ticket goes on" phase_is t1 implemented
+need "with no answer item" eval 'vb status; ! grep -q "^answer " "$tmp/out"'
+end
+
+reset; rm -f "$tmp/ran.log"
+begin "a FAIL covered by a green rerun at the same HEAD does not fail the ticket"
+rr_config true "[\"$G_OK\"]"; rr_ticket t1 t2
+rr_summary t1 "$G_OK"
+rr_run "$G_OK" t1 implement
+need "implemented, not failed" phase_is t1 implemented
+rr_config true '[]'; rr_summary t2 "$G_OK"
+rr_run "$G_OK" t2 implement
+need "an uncovered FAIL still waits on the ask" phase_is t2 waiting
+end
+
+reset; rm -f "$tmp/ran.log"
+begin "a red rerun fails the ticket with its tail"
+rr_config true "[\"$G_RED\"]"; rr_ticket t1
+rr_run "$G_RED" t1 implement
+need "recorded red, exit 1" eval '[ "$(rr_rec t1 1 4)" = red ] && [ "$(rr_rec t1 1 5)" = 1 ]'
+need "the ticket is failed" phase_is t1 failed
+need "evidence names the gate and the tail" grep -qF "host rerun red: $G_RED: boom-line" "$B/board.md"
+need "no reply sent" test "$(replies)" = 0
+end
+
+reset; rm -f "$tmp/ran.log"
+begin "the board lists each rerun with its gate, place and result"
+rr_config true "[\"$G_OK\",\"$G_RED\"]"; rr_ticket t1 t2 t3
+rr_run "$G_OK" t1 implement; rr_run "echo other" t2 implement; rr_run "$G_RED" t3 implement
+vb status
+sha="$(git -C .worktrees/t1 rev-parse --short HEAD)"
+need "green line" grep -qxF -- "- t1 — $G_OK: green (run 02, .worktrees/t1 at $sha)" "$B/board.md"
+need "refused line" grep -qF -- "- t2 — echo other: refused: not in the main checkout's gates (run 02, .worktrees/t2 at " "$B/board.md"
+need "red line" grep -qxF -- "- t3 — $G_RED: red (run 02, .worktrees/t3 at $sha)" "$B/board.md"
+need "the section sits between Needs the human and Hand checks pending" eval '
+  a="$(grep -n "^## Needs the human" "$B/board.md" | cut -d: -f1)"; b="$(grep -n "^## Host reruns" "$B/board.md" | cut -d: -f1)"
+  c="$(grep -n "^## Hand checks pending" "$B/board.md" | cut -d: -f1)"; [ -n "$b" ] && [ "$a" -lt "$b" ] && { [ -z "$c" ] || [ "$b" -lt "$c" ]; }'
+reset; ticket t1; vb init t1; vb status
+need "absent with no rerun" not grep -q '^## Host reruns' "$B/board.md"
 end
 
 [ "$fail" -eq 0 ] && echo "batch: all cases pass"

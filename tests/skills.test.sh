@@ -881,5 +881,19 @@ for (const skill of ["open", "work", "close", "batch", "roadmap", "audit", "feed
     [never.includes("attach logs, transcripts or `.10x/` files") && /file to another repository/.test(never), "Never: attach logs, transcripts or .10x/ files; file to another repository"],
   ]))
 }
+
+// gh-59 AC5 — a batch worker is told how to report a check red only in its sandbox.
+{
+  const name = "work and close tell a batch worker how to report sandbox-red"
+  const read = (s) => (fs.existsSync(`${dir}/${s}/SKILL.md`) ? fs.readFileSync(`${dir}/${s}/SKILL.md`, "utf8") : "")
+  const missing = ["work", "close"].flatMap((s) => {
+    const t = read(s)
+    return [
+      [t.includes("- asked: sandbox-red: <gate>"), `${s}: \`- asked: sandbox-red: <gate>\``],
+      [t.includes("batch.hostRerun"), `${s}: \`batch.hostRerun\``],
+    ]
+  }).filter(([c]) => !c).map(([, w]) => w)
+  missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
+}
 process.exit(fail)
 JS

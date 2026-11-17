@@ -14,7 +14,7 @@ Optional `.claude/10x.json`, committed with the project:
   "redProof": { "command": "pytest {file}", "tests": ["tests/test_*.py"] },
   "preReviewGates": ["ruff check ."],
   "contextGate": { "maxTokens": 200000 },
-  "batch": { "parallel": 2 },
+  "batch": { "parallel": 2, "hostRerun": false },
   "security": { "blockClose": "high", "paths": ["src/auth/**", "src/billing/**"] }
 }
 ```
@@ -35,6 +35,7 @@ Optional `.claude/10x.json`, committed with the project:
 | `security.blockClose` | off. One of `critical`, `high`, `medium`, `low`, `informational`: `10x-land check` then refuses to close a ticket while `.10x/security.md` has a confirmed entry found in or seen in it, at or above that severity, whose status is `new` or `fix-now`. Any other value exits 2 |
 | `security.paths` | none. Git pathspec globs (`**` crosses directories) of the project's sensitive files: a diff touching one makes `10x-review-packet` require a security review (`<file> matches security.paths`), which escalates a `Size: small` ticket to the normal review, and `10x-land` refuses `Size: small` on a draft that names one in code. A value that is not an array of non-empty strings, none starting with `:`, exits 2 |
 | `batch.parallel` | `2`. The most implementation workers `/10x:batch` runs at once; an integer of 1 or more, else `10x-batch` exits 2. Planning always starts every ticket, and close is one at a time |
+| `batch.hostRerun` | `false`. When `true`, `10x-batch run` reruns a gate a worker reported with `- asked: sandbox-red: <gate>`, in the ticket's worktree and outside the worker sandbox, when `<gate>` is an entry of `gates` here, and lets the ticket go on or fail on the result. It runs code the worker wrote, which is why it is opt-in. Any value but `true` or `false` exits 2 with `batch.hostRerun must be true or false, got <json>` |
 | `contextGate.maxTokens` | `200000`; `0` turns the gate off. A file that does not parse, or a `maxTokens` that is not a number, gets the default and a warning |
 
 The close modes are described in [the loop](loop.md#10xclose-id). `tickets` and `close` are read independently: where tickets live does not decide how they land, so a repo on GitHub can keep its ticket files off GitHub with `"tickets": "files"` and still land each one by PR (the PR body still carries the plan's goal and acceptance criteria), and every combination of the two is valid.
