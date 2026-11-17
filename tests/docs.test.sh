@@ -537,5 +537,22 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
+// gh-62 AC4 — docs/loop.md's auto section lists the four reasons the batch wakes the user.
+{
+  const name = "docs/loop.md lists the four reasons the batch wakes the user"
+  const loop = read("docs/loop.md") || ""
+  const at = loop.search(/^### `\/10x:batch auto <tickets>`$/m)
+  const end = at < 0 ? -1 : loop.slice(at + 1).search(/\n##+ /)
+  const lines = (at < 0 ? "" : loop.slice(at, end < 0 ? undefined : at + 1 + end)).split("\n")
+  const k = lines.findIndex((l) => l.trim() === "The batch wakes you for exactly four reasons:")
+  const list = []
+  for (let i = k + 1; k >= 0 && i < lines.length && lines[i].trim() !== ""; i++) if (/^\d+\. /.test(lines[i])) list.push(lines[i])
+  const missing = []
+  if (k < 0) missing.push("the line `The batch wakes you for exactly four reasons:` in the auto section")
+  if (list.length !== 4) missing.push(`exactly four numbered reasons (found ${list.length})`)
+  ;["Security", "Cost", "real failure", "end"].forEach((w, i) => { if (!(list[i] || "").includes("**") || !(list[i] || "").includes(w)) missing.push(`reason ${i + 1}: ${w}`) })
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 process.exit(fail)
 JS

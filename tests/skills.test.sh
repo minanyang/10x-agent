@@ -596,7 +596,7 @@ for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/S
     [step0.includes("10x-batch init --auto <tickets>"), "Step 0 runs 10x-batch init --auto <tickets>"],
     [step0.includes("/10x:batch auto auto"), "Step 0: a ticket named auto is written /10x:batch auto auto"],
     [loopPara.includes("7200000"), "10x-batch loop runs with run_in_background and timeout: 7200000"],
-    [["answer", "approve", "failed", "denied", "done"].every((k) => text.includes(`\`${k}\``)), "the item kinds answer, approve, failed, denied and done"],
+    [["answer", "approve", "failed", "done"].every((k) => text.includes(`\`${k}\``)), "the item kinds answer, approve, failed and done"],
     [/only (the )?items/i.test(text), "relays only the items loop printed"],
     [text.includes("## Auto decisions") && text.includes("verbatim"), "the final reply holds each ticket's ## Auto decisions verbatim"],
   ].filter(([c]) => !c).map(([, w]) => w)
@@ -894,6 +894,43 @@ for (const skill of ["open", "work", "close", "batch", "roadmap", "audit", "feed
     ]
   }).filter(([c]) => !c).map(([, w]) => w)
   missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
+}
+// gh-62 — auto mode wakes the user for four reasons, with a push notification; a batch worker marks its asked lines.
+{
+  const batch = fs.existsSync(`${dir}/batch/SKILL.md`) ? fs.readFileSync(`${dir}/batch/SKILL.md`, "utf8") : ""
+  const at = batch.search(/^## Step 4\b/m)
+  const end = at < 0 ? -1 : batch.slice(at + 1).search(/\n## /)
+  const step4 = at < 0 ? "" : batch.slice(at, end < 0 ? undefined : at + 1 + end)
+  const rest = at < 0 ? batch : batch.slice(0, at) + batch.slice(at + step4.length)
+  const report = (n, checks) => {
+    const missing = checks.filter(([c]) => !c).map(([, w]) => w)
+    missing.length ? bad(`${n} (missing: ${missing.join("; ")})`) : ok(n)
+  }
+  report("batch: pushes a notification when loop exits with items or done, and at no other time", [
+    [step4.includes("PushNotification"), "Step 4 names PushNotification"],
+    [step4.includes("10x batch: <n> need you — <id> <need>"), "the items message `10x batch: <n> need you — <id> <need>`"],
+    [step4.includes("10x batch done: <n> landed, <n> PR open, <n> failed, <n> dropped"), "the done message"],
+    [!rest.includes("PushNotification"), "no other part of the skill names PushNotification"],
+  ])
+  const lines = step4.split("\n")
+  const k = lines.findIndex((l) => l.trim() === "The batch wakes you for exactly four reasons:")
+  const list = []
+  for (let i = k + 1; k >= 0 && i < lines.length && lines[i].trim() !== ""; i++) if (/^\d+\. /.test(lines[i])) list.push(lines[i])
+  const words = ["Security", "Cost", "real failure", "end"]
+  report("batch: lists the four reasons the batch wakes the user", [
+    [k >= 0, "Step 4: the line `The batch wakes you for exactly four reasons:`"],
+    [list.length === 4, `exactly four numbered reasons (found ${list.length})`],
+    ...words.map((w, i) => [(list[i] || "").includes(`**`) && (list[i] || "").includes(w), `reason ${i + 1}: ${w}`]),
+  ])
+  const work = fs.existsSync(`${dir}/work/SKILL.md`) ? fs.readFileSync(`${dir}/work/SKILL.md`, "utf8") : ""
+  const w0 = work.search(/^### Stop or proceed$/m)
+  const w1 = w0 < 0 ? -1 : work.slice(w0 + 1).search(/\n##+ /)
+  const rule = w0 < 0 ? "" : work.slice(w0, w1 < 0 ? undefined : w0 + 1 + w1).replace(/\s+/g, " ")
+  report("work: a batch worker marks each asked line", [
+    [rule.includes("TENX_BATCH"), "the rule names a batch worker (`TENX_BATCH`)"],
+    ...["(security)", "(cost)", "(product)", "(human)"].map((m) => [rule.includes(`\`${m}\``), `the mark \`${m}\``]),
+    [/starts? with (its|one) mark/.test(rule), "each asked text starts with its mark"],
+  ])
 }
 process.exit(fail)
 JS
