@@ -244,12 +244,27 @@ plan_md() {
 }
 # row <id> <kind> <session_kind> <exit | open:<pid>> — a run record written by hand.
 row() {
-  local f="$SB/$1/runs.tsv" n
+  local f="$SB/$1/runs.tsv" n now
   mkdir -p "$SB/$1"
   [ -f "$f" ] || printf 'n\tkind\tsession\tsession_kind\tstart\tend\texit\tpid\n' >"$f"
   n=$(($(wc -l <"$f")))
   if [[ $4 == open:* ]]; then printf '%s\t%s\ts-%s-%s\t%s\t1\t\t\t%s\n' "$n" "$2" "$1" "$n" "$3" "${4#open:}" >>"$f"
-  else printf '%s\t%s\ts-%s-%s\t%s\t1\t2\t%s\t1\n' "$n" "$2" "$1" "$n" "$3" "$4" >>"$f"; fi
+  else
+    now=$(node -p 'Date.now()')
+    printf '%s\t%s\ts-%s-%s\t%s\t1\t%s\t%s\t1\n' "$n" "$2" "$1" "$n" "$3" "$now" "$4" >>"$f"
+  fi
+}
+# aged <id> <minutes> — moves the end of <id>'s last run record to <minutes> ago, nothing else.
+aged() {
+  node -e '
+    const fs = require("fs"), f = process.argv[1]
+    const lines = fs.readFileSync(f, "utf8").split("\n")
+    const i = lines.length - 2
+    const c = lines[i].split("\t")
+    c[5] = String(Date.now() - Number(process.argv[2]) * 60000)
+    lines[i] = c.join("\t")
+    fs.writeFileSync(f, lines.join("\n"))
+  ' "$SB/$1/runs.tsv" "$2"
 }
 evidence() { local id=$1; shift; printf '%s\n' "$@" >".10x/$id/evidence.md"; }
 # approve_plan <id> [<file>...] — the user approves a draft (10x-batch approve), then the worker marks it approved.
@@ -862,7 +877,10 @@ six_runs() {
   WORKER_MODE=default vb run t1 plan
   echo "go" >"$B/t1/reply.md"; vb run t1 reply
   approve_plan t1 a
+  # An implement run on an existing worktree fetches origin first: point it at the local bare repo for that run.
+  git remote set-url origin "$tmp/origin.git"
   WORKER_MODE=default vb run t1 implement
+  git remote set-url origin git@github.com:acme/batch.git
   evidence t1 "- AC1 — met: x"; mkdir -p "$1"
   vb run t1 close
 }
@@ -1791,7 +1809,7 @@ end
 reset; ticket tf th tq tp tw ta ti tm tl td
 begin "replan: any phase but failed is refused with the phase named"
 vb init tf th tq tp tw ta ti tm tl td
-approved th src/a.js
+approved th m.txt
 approved tf src/a.js; row tf implement implement 1
 sleeper; row tp plan plan "open:$SLEEPER"
 row tw plan plan 0; plan_md tw draft w.txt
@@ -2044,18 +2062,175 @@ need "none of them is answerable: the batch is settled" acts_are "done"
 end
 
 reset; ticket t1 t2 t3 t4
-begin "held: a later ticket sharing a Files path with a failed one"
+begin "set aside: a ticket sharing a Files path with a failed one implements"
 vb init t1 t2 t3 t4
 approved t2 src/a.js lib/b.js
 approved t3 lib/
 approved t4 docs/
 approved t1 src/a.js; row t1 implement implement 1
-need "t2 held" phase_is t2 held
-need "t3 held behind the held t2" phase_is t3 held
-need "with why" grep -qxF -- "- t2 — held: shares src/a.js with t1 (failed)" "$B/board.md"
-need "held behind held" grep -qxF -- "- t3 — held: shares lib/ with t2 (held)" "$B/board.md"
-need "an unrelated ticket implements" acts_are "implement t4"
-need "a held ticket is refused" exits 2 run t2 implement
+need "t1 is failed" phase_is t1 failed
+need "t2 is approved, not held" phase_is t2 approved
+need "t3 is approved, not held" phase_is t3 approved
+need "no ticket is held" not grep -qF -- ": held" "$B/board.md"
+need "t2 and t4 implement, t3 waits for t2's slot and Files" acts_are "implement t2,implement t4"
+need "status lists implement t2" eval 'vb status && line "implement t2"'
+need "a ticket sharing a file with the failed one is not refused" exits 0 run t2 implement
+end
+
+reset; ticket t1 t2 t3 t4
+begin "set aside: a failed ticket holds back neither a later close nor an earlier approved ticket"
+vb init t1 t2 t3 t4
+approved t1 x; row t1 implement implement 1
+implemented t2 y
+approved t3 z
+approved t4 z; row t4 implement implement 1
+need "t1 and t4 are failed" eval 'phase_is t1 failed && phase_is t4 failed'
+need "t2 closes and t3 implements" acts_are "implement t3,close t2"
+need "t3 is not held by the later failed t4" phase_is t3 approved
+need "close t2 is not refused behind the earlier failed t1" exits 0 run t2 close
+need "implement t3 is not refused" exits 0 run t3 implement
+end
+
+reset; ticket t1 t2 t3
+begin "set aside: a ticket waiting over 30 minutes gives up its batch.parallel slot and its Files"
+echo '{"close":"local","batch":{"parallel":3}}' >.claude/10x.json
+vb init t1 t2 t3
+approved t1 a; row t1 implement implement 0; evidence t1 "- AC1 — asked: Which flag name?"; mkdir -p .worktrees/t1
+approved t2 b
+approved t3 a
+aged t1 29
+need "under 30 minutes t1 still holds its Files" acts_are "answer t1,implement t2"
+need "t3 refused" exits 2 run t3 implement
+need "names the shared path" has "t3 shares a with t1 (waiting)"
+aged t1 31
+need "over 30 minutes t1 holds no Files" acts_are "answer t1,implement t2,implement t3"
+echo '{"close":"local","batch":{"parallel":1}}' >.claude/10x.json
+aged t1 29
+need "under 30 minutes t1 holds the slot" exits 2 run t2 implement
+need "names t1's slot" has "batch.parallel is 1 and t1 (waiting) holds the slots"
+aged t1 31
+need "over 30 minutes t1 holds no slot" acts_are "answer t1,implement t2"
+need "t2 is not refused" exits 0 run t2 implement
+reset; ticket t4 t5
+vb init t4 t5
+row t4 plan plan 0; plan_md t4 draft d
+approved t5 d
+aged t4 29
+need "a plan waiting under 30 minutes holds its Files" exits 2 run t5 implement
+aged t4 31
+need "a plan waiting over 30 minutes holds no Files" exits 0 run t5 implement
+end
+
+reset; ticket t1 t2 t3
+begin "set aside: the board lists set-aside tickets with their reason and wait"
+vb init t1 t2 t3
+approved t1 a; row t1 implement implement 1; aged t1 95
+row t2 plan plan 0; plan_md t2 draft b; aged t2 31
+row t3 plan plan 0; plan_md t3 draft c; aged t3 5
+vb status
+need "the section is there" grep -qxF '## Set aside' "$B/board.md"
+need "a failed ticket, wait floored to hours and minutes" grep -qxF -- "- t1 — failed, waiting 1h 35m: run 02 (implement) exited 1" "$B/board.md"
+need "a waiting ticket over 30 minutes, with its evidence" grep -qE -- "^- t2 — waiting, waiting 0h 3[12]m: .+" "$B/board.md"
+need "no plan approvable suffix" not grep -qE -- "^- t2 — waiting, waiting .*plan approvable" "$B/board.md"
+need "a ticket waiting under 30 minutes is not set aside" not grep -qE -- "^- t3 — .*waiting [0-9]+h" "$B/board.md"
+need "between Needs the human and Hand checks pending" test "$(grep -nx '## Needs the human' "$B/board.md" | cut -d: -f1)" -lt "$(grep -nx '## Set aside' "$B/board.md" | cut -d: -f1)"
+need "set-aside tickets stay under Needs the human" grep -qxF -- "- t1 — failed: run 02 (implement) exited 1" "$B/board.md"
+rm -rf "$SB" ; vb init t1
+row t1 plan plan 0; plan_md t1 draft a
+need "no section when nothing is set aside" not grep -qxF '## Set aside' "$B/board.md"
+end
+
+# base_moves <file> <content> — a new commit on the base, pushed to origin (the URL is set for the push).
+base_moves() {
+  git remote set-url origin "$tmp/origin.git"
+  printf '%s\n' "$2" >"$1"; git add "$1"; git commit -qm "base: $1"; git push -q origin main
+  git remote set-url origin git@github.com:acme/batch.git
+}
+# base_reset <sha> — puts the base back where it was, locally and on origin.
+base_reset() {
+  git remote set-url origin "$tmp/origin.git"
+  git reset -q --hard "$1"; git push -q -f origin main
+  git remote set-url origin git@github.com:acme/batch.git
+}
+
+reset; ticket t1
+vb init t1
+git remote set-url origin "$tmp/origin.git"
+git worktree prune; git branch -D feat/t1 >/dev/null 2>&1
+10x-worktree add t1 --no-setup >"$tmp/wt.out" 2>&1
+git remote set-url origin git@github.com:acme/batch.git
+wt1="$root/.worktrees/t1"; br="$(git -C "$wt1" rev-parse --abbrev-ref HEAD)"
+base0="$(git rev-parse main)"
+echo mine >"$wt1/mine.txt"; git -C "$wt1" add mine.txt; git -C "$wt1" commit -qm "feat: mine"
+base_moves newbase.txt one
+approved t1 a
+begin "set aside: an implement run on an existing worktree starts from the current base"
+need "before the run the branch lacks the base" not git merge-base --is-ancestor main "$br"
+git remote set-url origin "$tmp/origin.git"
+vb run t1 implement; rc=$?
+git remote set-url origin git@github.com:acme/batch.git
+need "exit 0" test "$rc" -eq 0
+need "the stub worker started once" test "$(wc -l <"$WORKER_LOG" | tr -d ' ')" = 1
+need "the branch contains origin/main" git merge-base --is-ancestor origin/main "$br"
+need "the branch keeps its own commit" test -f "$wt1/mine.txt"
+end
+git remote set-url origin "$tmp/origin.git"; 10x-worktree rm t1 >/dev/null 2>&1; git remote set-url origin git@github.com:acme/batch.git
+git branch -D "$br" >/dev/null 2>&1
+base_reset "$base0"
+
+begin "set aside: a rebase conflict or uncommitted change refuses the implement run and leaves the branch"
+for scenario in conflict dirty in-progress; do
+  reset; ticket t1
+  vb init t1
+  git remote set-url origin "$tmp/origin.git"
+  git worktree prune; git branch -D feat/t1 >/dev/null 2>&1
+  10x-worktree add t1 --no-setup >"$tmp/wt.out" 2>&1
+  git remote set-url origin git@github.com:acme/batch.git
+  wt1="$root/.worktrees/t1"; br="$(git -C "$wt1" rev-parse --abbrev-ref HEAD)"
+  base0="$(git rev-parse main)"
+  if [ "$scenario" != dirty ]; then
+    echo mine >"$wt1/clash.txt"; git -C "$wt1" add clash.txt; git -C "$wt1" commit -qm "feat: clash"
+    base_moves clash.txt theirs
+  else
+    echo mine >"$wt1/README.md"
+    base_moves newbase.txt one
+  fi
+  # A rebase the worker left stopped on a conflict.
+  [ "$scenario" = in-progress ] && git -C "$wt1" rebase -q main >/dev/null 2>&1
+  approved t1 a
+  head0="$(git -C "$wt1" rev-parse HEAD)"; tip0="$(git rev-parse "$br")"; : >"$WORKER_LOG"
+  git remote set-url origin "$tmp/origin.git"
+  vb run t1 implement; rc=$?
+  git remote set-url origin git@github.com:acme/batch.git
+  need "$scenario: exit 2" test "$rc" -eq 2
+  need "$scenario: refusal line" has "10x-batch: implement t1 refused: "
+  case $scenario in
+    conflict) need "$scenario: names the file" has "conflicts in clash.txt"; why=clash ;;
+    dirty) need "$scenario: names the file" has "uncommitted changes in $wt1: README.md"; why=README ;;
+    in-progress) need "$scenario: names the rebase in progress" has "a rebase is already in progress in $wt1"; why='in progress' ;;
+  esac
+  need "$scenario: the branch is unchanged" test "$(git -C "$wt1" rev-parse HEAD)/$(git rev-parse "$br")" = "$head0/$tip0"
+  if [ "$scenario" = in-progress ]; then
+    need "$scenario: the worker's rebase is left as it was" test -d "$(git -C "$wt1" rev-parse --git-path rebase-merge)"
+  else
+    need "$scenario: no rebase left in progress" test -z "$(git -C "$wt1" diff --name-only --diff-filter=U)"
+  fi
+  need "$scenario: no worker started" test ! -s "$WORKER_LOG"
+  need "$scenario: t1 is failed" phase_is t1 failed
+  need "$scenario: status names the file" grep -qE -- "^- t1 — failed: .*$why" "$B/board.md"
+  if [ "$scenario" = conflict ]; then
+    lp 60
+    need "$scenario: loop finished" finished
+    need "$scenario: loop reports it as a failed item" grep -qF '{"id":"t1","need":"failed","evidence":"' "$tmp/loop.out"
+    need "$scenario: with the file" grep -qF 'conflicts in clash.txt' "$tmp/loop.out"
+  fi
+  need "$scenario: replan takes the failed ticket back" exits 0 replan t1
+  git -C "$wt1" rebase --abort 2>/dev/null
+  git -C "$wt1" checkout -q -- . 2>/dev/null
+  git remote set-url origin "$tmp/origin.git"; 10x-worktree rm t1 >/dev/null 2>&1; git remote set-url origin git@github.com:acme/batch.git
+  git branch -D "$br" >/dev/null 2>&1
+  base_reset "$base0"
+done
 end
 
 # ---------------------------------------------------------------- phases
