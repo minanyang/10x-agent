@@ -90,7 +90,7 @@
 // <line>` plus `cleanup: exited <n>` when it fails, else `cleanup: nothing left behind`; then the base: `base: skipped
 // (close: local)`, `(not landed)` while <worktree dir>/<id> exists, `(no origin/<b>)`, `(no local <b>)`, `base: <b> is
 // up to date` when the local base contains origin/<b>, else each line of `10x-worktree sync-base` as `base: <line>`.
-// The lines go to <nn>-cleanup, follow the ticket's evidence in every phase but dropped and pr-open, and a kept
+// The lines go to <nn>-cleanup, follow the ticket's evidence in every phase but dropped, pr-open and waiting, and a kept
 // worktree or branch, an `10x:` refusal, a failed exit and a base `not updated` or `refused` are also listed under
 // `## Needs the human` as `- <id> — <line>`.
 // With batch.hostRerun true, after an implement or close session's run (a reply in one included) exits 0, and while the
@@ -902,9 +902,10 @@ function derive(id) {
     implemented: rs.some((r) => r.session_kind === 'implement'),
     approvable: false,
   }
-  // The latest run's cleanup record follows, in every phase but dropped and pr-open, whose open PR is the expected leftover.
+  // The latest run's cleanup record follows, in every phase but dropped, pr-open, whose open PR is the expected leftover,
+  // and waiting, whose close is not over: its worktree is the expected leftover.
   const set = (phase, evidence = fs.existsSync(turn) ? rel(turn) : '') => {
-    const done = last && !['dropped', 'pr-open'].includes(phase) ? cleanupLines(id, last.n) : []
+    const done = last && !['dropped', 'pr-open', 'waiting'].includes(phase) ? cleanupLines(id, last.n) : []
     row.cleanup = done.filter(cleanupFlagged)
     return Object.assign(row, { phase, evidence: [evidence, row.denied, ...done].filter(Boolean).join('; ') })
   }
