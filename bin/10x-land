@@ -38,8 +38,9 @@
 # .github/PULL_REQUEST_TEMPLATE/; first found wins. Names match in any case; a symlink anywhere on the way does not
 # count. A directory counts when it holds exactly one .md file, or (GitLab) a Default.md.
 # `rebase` fetches origin and rebases the ticket branch onto origin/<base> (in local mode, onto the local
-# base when it contains origin/<base>; refused when the two have diverged); on a conflict it lists
-# the files and leaves the rebase for the user (never --skip).
+# base when it contains origin/<base>; refused when the two have diverged). A conflict in a `CHANGELOG*` file is
+# merged keeping both sides, the base's lines first (git's `union` driver, from scripts/changelog.attributes); on
+# any other conflict it lists the files and leaves the rebase for the user (never --skip).
 # `push` pushes the ticket branch, and only it, to origin; --force-with-lease only when origin
 # already has the branch (never a plain force-push). It refuses the base branch.
 # `merge` squash-merges the branch's open PR/MR (gh for github.com, glab for a GitLab host) after
@@ -492,7 +493,7 @@ case "$cmd" in
     # An explicit refspec, as in merge: a narrowed remote.origin.fetch would leave origin/<base> stale.
     has_origin && { git -C "$ROOT" fetch --quiet origin "+refs/heads/$base:refs/remotes/origin/$base" || die "could not fetch origin/$base"; }
     ! base_diverged || die "$(base_branch) and origin/$(base_branch) have diverged — reconcile the local base first"
-    if git -C "$path" rebase "$(base_ref)" >/dev/null 2>&1; then
+    if git -C "$path" -c core.attributesFile="$BIN_DIR/../scripts/changelog.attributes" rebase "$(base_ref)" >/dev/null 2>&1; then
       say "rebased $branch onto $(base_ref)"
     else
       say "rebase conflict — left in progress in $path; conflicting files:"

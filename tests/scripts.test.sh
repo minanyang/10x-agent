@@ -1056,6 +1056,26 @@ expect "rebase conflict" 1 10x-land rebase LC
 grep -q 'f.txt' "$tmp/out" && ok "conflict lists the file" || bad "conflict lists the file"
 [ -e "$(git -C "$lc" rev-parse --git-path rebase-merge)" ] && ok "rebase left in progress" || bad "rebase left in progress"
 git -C "$lc" rebase --abort
+# a conflict confined to a CHANGELOG is merged keeping both sides, the base's line first
+printf '# Changelog\n\n## Unreleased\n' >CHANGELOG.md; git add CHANGELOG.md; git commit -qm "chore: changelog"; git push -q origin main
+10x-worktree add LCH --no-setup >/dev/null
+lch="$tmp/land/.worktrees/LCH"
+echo '- ticket line' >>"$lch/CHANGELOG.md"; git -C "$lch" commit -qam "feat: ticket entry"
+echo '- upstream line' >>CHANGELOG.md; git commit -qam "chore: upstream entry"; git push -q origin main
+expect "rebase merges a CHANGELOG-only conflict" 0 10x-land rebase LCH
+[ "$(cat "$lch/CHANGELOG.md")" = "$(printf '# Changelog\n\n## Unreleased\n- upstream line\n- ticket line')" ] &&
+  [ ! -e "$(git -C "$lch" rev-parse --git-path rebase-merge)" ] \
+  && ok "both CHANGELOG lines kept" || { bad "both CHANGELOG lines kept"; cat "$lch/CHANGELOG.md"; }
+10x-worktree rm LCH >/dev/null
+# a conflict in CHANGELOG and another file stops on the other file only
+10x-worktree add LCM --no-setup >/dev/null
+lcm="$tmp/land/.worktrees/LCM"
+echo '- ticket two' >>"$lcm/CHANGELOG.md"; echo ticket-two >"$lcm/f.txt"; git -C "$lcm" commit -qam "feat: ticket edits both"
+echo '- upstream two' >>CHANGELOG.md; echo upstream-two >f.txt; git commit -qam "chore: upstream edits both"; git push -q origin main
+expect "rebase stops on a conflict beside CHANGELOG" 1 10x-land rebase LCM
+grep -qx 'f.txt' "$tmp/out" && ! grep -q 'CHANGELOG' "$tmp/out" \
+  && ok "the conflict lists f.txt, not CHANGELOG.md" || { bad "the conflict lists f.txt, not CHANGELOG.md"; cat "$tmp/out"; }
+git -C "$lcm" rebase --abort
 # the base moves, then the branch is rebased and pushed again
 echo moved >>f.txt; git commit -qam "chore: move base"; git push -q origin main
 expect "rebase onto the moved base" 0 10x-land rebase L1

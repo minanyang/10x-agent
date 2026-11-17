@@ -800,10 +800,12 @@ function ours(r) {
 
 const isOpen = (r) => r.end === '' && r.exit === ''
 
-// The shared path of two `## Files` lists: equal, or one a directory (`…/`) holding the other.
+// The shared path of two `## Files` lists: equal, or one a directory (`…/`) holding the other. A `CHANGELOG*` file
+// is not counted: `10x-land rebase` merges its conflicts.
+const notChangelog = (x) => x.endsWith('/') || !path.basename(x).startsWith('CHANGELOG')
 function overlap(a, b) {
-  for (const x of a)
-    for (const y of b) {
+  for (const x of a.filter(notChangelog))
+    for (const y of b.filter(notChangelog)) {
       if (x === y || (x.endsWith('/') && y.startsWith(x))) return x
       if (y.endsWith('/') && x.startsWith(y)) return y
     }

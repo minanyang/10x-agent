@@ -1526,6 +1526,16 @@ need "t2 implements once t1 landed" acts_are "implement t2,implement t3"
 end
 
 reset; ticket t1 t2 t3
+begin "schedule: tickets sharing only a CHANGELOG implement together"
+echo '{"close":"local","batch":{"parallel":2}}' >.claude/10x.json
+vb init t1 t2 t3
+approved t1 CHANGELOG.md a; approved t2 CHANGELOG.md docs/CHANGELOG.md b; approved t3 docs/ c
+need "parallel 2 starts t1 and t2" acts_are "implement t1,implement t2"
+echo '{"close":"local","batch":{"parallel":3}}' >.claude/10x.json
+need "docs/ does not match docs/CHANGELOG.md" acts_are "implement t1,implement t2,implement t3"
+end
+
+reset; ticket t1 t2 t3
 begin "run close: refused while another close runs or an earlier ticket is unsettled"
 vb init t1 t2 t3
 approved t1 a; implemented t2 b

@@ -1,0 +1,2 @@
+# Read by `10x-land rebase` as core.attributesFile: a CHANGELOG conflict keeps both sides.
+CHANGELOG* merge=union

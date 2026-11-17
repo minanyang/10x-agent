@@ -12,13 +12,12 @@
 # docs/scripts.md's `10x-batch run` entry must name the main checkout's `.claude/10x.json` a worker is denied.
 # docs/loop.md must name the `--plugin-dir` a batch worker loads and `10x plugin missing`, and the `10x-batch run` entry
 # of docs/scripts.md `--plugin-dir`, `10x plugin missing` and `-plugin`.
-# README.md, README.zh-TW.md, docs/configuration.md and the 0.3.0 changelog section must give `batch.parallel`'s
-# default as 2, and docs/loop.md must say a roadmap follow-up joins the next version.
-# docs/scripts.md's `- A draft may carry` line and the 0.3.0 changelog section must say `10x-land issue` checks
-# every draft for security entries.
-# docs/scripts.md's refusal, `add` and `import` lines and the 0.3.0 changelog section must describe the title match
-# at word boundaries and the 20-character title floor.
-# The 0.3.0 changelog section must record that a security.md value holding U+2028 or U+2029 reads back.
+# README.md, README.zh-TW.md and docs/configuration.md must give `batch.parallel`'s default as 2, and docs/loop.md
+# must say a roadmap follow-up joins the next version.
+# docs/scripts.md's `- A draft may carry` line must say `10x-land issue` checks every draft for security entries.
+# docs/scripts.md's refusal, `add` and `import` lines must describe the title match at word boundaries and the
+# 20-character title floor.
+# docs/loop.md and docs/scripts.md's `rebase` entry must say how a `CHANGELOG*` file is treated.
 # README.zh-TW.md must have the same ## / ### headings, level by level, and the two READMEs must link to each other.
 # Every relative link in README.md, README.zh-TW.md and docs/*.md must resolve to a file, and an anchor to a heading
 # of that file as GitHub slugs it.
@@ -204,7 +203,7 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
 // gh-8 AC8 — batch workers in auto mode, the fallback to today's modes and the plan-session hook.
 {
   const name = "docs describe auto-mode batch workers and the plan-session hook"
-  const loop = read("docs/loop.md"), scripts = read("docs/scripts.md"), hooks = read("docs/hooks.md"), log = read("CHANGELOG.md")
+  const loop = read("docs/loop.md"), scripts = read("docs/scripts.md"), hooks = read("docs/hooks.md")
   // The text of section `## <title>` of <text>, up to the next ## heading.
   const section = (text, title) => {
     if (text === null) return ""
@@ -219,9 +218,6 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   for (const w of ["--permission-mode auto", "-fallback"]) if (scripts === null || !scripts.includes(w)) missing.push(`docs/scripts.md: ${w}`)
   for (const w of ["## Plan boundary", "TENX_BATCH_PLAN_DIR"]) if (hooks === null || !hooks.includes(w)) missing.push(`docs/hooks.md: ${w}`)
   if (!section(hooks, "Grant").includes("10x-test")) missing.push("docs/hooks.md: 10x-test in ## Grant")
-  // The release these phrases belong to: the `## 0.2.0` section.
-  const released = ((log || "").split("\n").find((s) => /^##\s+0\.2\.0\b/.test(s)) || "").replace(/^##\s+/, "").trim()
-  if (!section(log, released).includes("auto mode")) missing.push("CHANGELOG.md: auto mode in the 0.2.0 section")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
@@ -333,17 +329,10 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
-// gh-7 AC22 — the changelog and both READMEs name /10x:batch auto; neither README keeps the trust sentence.
+// gh-7 AC22 — both READMEs name /10x:batch auto; neither keeps the trust sentence.
 {
-  const name = "README and CHANGELOG mention batch auto mode"
-  const log = read("CHANGELOG.md")
-  const lines = log === null ? [] : log.split("\n")
-  // The release these phrases belong to: the `## 0.2.0` section.
-  const at = lines.findIndex((s) => /^##\s+0\.2\.0\b/.test(s))
-  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  const newest = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
+  const name = "READMEs mention batch auto mode"
   const missing = []
-  if (!newest.includes("/10x:batch auto")) missing.push("CHANGELOG.md: /10x:batch auto in the 0.2.0 section")
   for (const [f, text, trust] of [["README.md", readme, "issues you trust"], ["README.zh-TW.md", zh, "只批次處理你信任的 issue"]]) {
     if (text === null) { missing.push(`${f}: missing`); continue }
     if (!text.includes("/10x:batch auto")) missing.push(`${f}: /10x:batch auto`)
@@ -363,72 +352,50 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   need("docs/loop.md", ["hand-check:", "## Hand checks pending", "10x-batch checked", "### Hand checks", "deep link", "screenshot"])
   need("docs/scripts.md", ["## Hand checks pending", "10x-batch checked"])
   need("docs/hooks.md", ["hand-check", "10x-batch checked"])
-  const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
-  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  if (!(at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")).includes("10x-batch checked")) missing.push("CHANGELOG.md ## 0.3.0: 10x-batch checked")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
-// gh-36 AC11 — small tickets and security.paths in the docs and the 0.3.0 changelog section.
+// gh-36 AC11 — small tickets and security.paths in the docs.
 {
-  const name = "docs and CHANGELOG describe Size: small and security.paths"
+  const name = "docs describe Size: small and security.paths"
   const missing = []
   const need = (f, text, words) => { for (const w of words) if (text === null || !text.includes(w)) missing.push(`${f}: ${w}`) }
   need("docs/loop.md", read("docs/loop.md"), ["Size: small", "security.paths"])
   need("docs/scripts.md", read("docs/scripts.md"), ["Size: small", "size: small", "security.paths"])
   need("docs/configuration.md", read("docs/configuration.md"), ["security.paths"])
   need("docs/hooks.md", read("docs/hooks.md"), ["Size: small", "ticket.md"])
-  const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
-  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  const unreleased = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
-  need("CHANGELOG.md ## 0.3.0", unreleased, ["Size: small", "security.paths"])
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
-// gh-39 AC7 — the denied count on the board and the runs that wait instead of failing, in the docs and the changelog.
+// gh-39 AC7 — the denied count on the board and the runs that wait instead of failing, in the docs.
 {
   const name = "docs describe the denied count and the waiting cases"
   const missing = []
   const need = (f, text, words) => { for (const w of words) if (text === null || !text.includes(w)) missing.push(`${f}: ${w}`) }
   need("docs/loop.md", read("docs/loop.md"), ["denied (see", "instead of `failed`"])
   need("docs/scripts.md", read("docs/scripts.md"), ["denied (see", "instead of `failed`"])
-  const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
-  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  need("CHANGELOG.md ## 0.3.0", at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n"), ["denied (see"])
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
-// gh-40 AC5 — decisions taken on a recommendation in docs/loop.md and the 0.3.0 changelog section.
+// gh-40 AC5 — decisions taken on a recommendation in docs/loop.md.
 {
   const name = "docs describe decisions taken on a recommendation"
   const missing = []
   const loop = read("docs/loop.md")
   for (const w of ["Decided:", "decided:"]) if (loop === null || !loop.includes(w)) missing.push(`docs/loop.md: ${w}`)
   if (loop !== null && loop.includes("is asked, not left")) missing.push(`docs/loop.md: still says "is asked, not left"`)
-  const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
-  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  if (!(at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")).includes("Decided:")) missing.push("CHANGELOG.md ## 0.3.0: Decided:")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
-// gh-41 AC3 — the batch.parallel default of 2 in the docs and the 0.3.0 changelog section; the roadmap follow-up in
-// docs/loop.md.
+// gh-41 AC3 — the batch.parallel default of 2 in the docs; the roadmap follow-up in docs/loop.md.
 {
-  const name = "docs and CHANGELOG give the batch.parallel default as 2"
+  const name = "docs give the batch.parallel default as 2"
   const missing = []
   const need = (f, text, words) => { for (const w of words) if (text === null || !text.includes(w)) missing.push(`${f}: ${w}`) }
   need("README.md", read("README.md"), ["(default `2`)"])
   need("README.zh-TW.md", read("README.zh-TW.md"), ["（預設 `2`）"])
   need("docs/configuration.md", read("docs/configuration.md"), ["| `batch.parallel` | `2`."])
   need("docs/loop.md", read("docs/loop.md"), ["follow-up"])
-  const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
-  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  need("CHANGELOG.md ## 0.3.0", at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n"), ["`batch.parallel`", "defaults to `2`"])
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
@@ -446,7 +413,7 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   en && back ? ok(name) : bad(name, `${en ? "" : "README.md lacks its link; "}${back ? "" : "README.zh-TW.md lacks its link"}`)
 }
 
-// gh-38 AC6 — 10x-batch replan in docs/scripts.md, docs/loop.md and the 0.3.0 changelog section.
+// gh-38 AC6 — 10x-batch replan in docs/scripts.md and docs/loop.md.
 {
   const name = "docs describe 10x-batch replan"
   const missing = []
@@ -457,33 +424,22 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   const refused = (scripts || "").split("\n").find((s) => s.includes("10x-batch: refused inside a batch worker"))
   if (!refused || !refused.includes("`replan`")) missing.push("docs/scripts.md: `replan` in the paragraph naming `refused inside a batch worker`")
   if (!(read("docs/loop.md") || "").includes("10x-batch replan")) missing.push("docs/loop.md: 10x-batch replan")
-  const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
-  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  const first = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
-  if (!first.includes("10x-batch replan")) missing.push("CHANGELOG.md ## 0.3.0: 10x-batch replan")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
-// gh-45 AC3 — docs/scripts.md and the 0.3.0 changelog section say `10x-land issue` checks every draft.
+// gh-45 AC3 — docs/scripts.md says `10x-land issue` checks every draft.
 {
   const name = "docs say 10x-land issue checks every draft for security entries"
   const missing = []
   const entry = (read("docs/scripts.md") || "").split("\n").find((s) => s.startsWith("- A draft may carry"))
   if (!entry) missing.push("docs/scripts.md: no `- A draft may carry` line")
   else if (!entry.includes("every draft")) missing.push("docs/scripts.md `- A draft may carry` line: every draft")
-  const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
-  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  const first = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
-  for (const w of ["10x-land issue", "every draft"]) if (!first.includes(w)) missing.push(`CHANGELOG.md ## 0.3.0: ${w}`)
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
-// gh-46 AC6 — the title match at word boundaries and the 20-character title floor in docs/scripts.md and the 0.3.0
-// changelog section.
+// gh-46 AC6 — the title match at word boundaries and the 20-character title floor in docs/scripts.md.
 {
-  const name = "docs and CHANGELOG describe the title match and the title floor"
+  const name = "docs describe the title match and the title floor"
   const missing = []
   const scripts = (read("docs/scripts.md") || "").split("\n")
   for (const [start, w] of [["- `push`, `pr`, `comment` and `squash` refuse", "at word boundaries"],
@@ -492,23 +448,6 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
     if (!entry) missing.push(`docs/scripts.md: no \`${start}\` line`)
     else if (!entry.includes(w)) missing.push(`docs/scripts.md \`${start}\` line: ${w}`)
   }
-  const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
-  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  const unreleased = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
-  for (const w of ["whole words", "20 characters"]) if (!unreleased.includes(w)) missing.push(`CHANGELOG.md ## 0.3.0: ${w}`)
-  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
-}
-
-// gh-47 AC3 — the 0.3.0 changelog section records the U+2028 / U+2029 read-back fix.
-{
-  const name = "CHANGELOG's 0.3.0 section records the line-separator fix"
-  const missing = []
-  const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => s.startsWith("## 0.3.0 "))
-  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  const first = at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")
-  if (!first.includes("U+2028")) missing.push("CHANGELOG.md ## 0.3.0: U+2028")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
@@ -583,10 +522,18 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   need("docs/loop.md", ["red at lock", "`note`"])
   need("skills/work/SKILL.md", ["red at lock"])
   if ((read("bin/10x-red-proof") || "").includes("no `note` in this mode")) missing.push("bin/10x-red-proof: still says no `note` in this mode")
-  const lines = (read("CHANGELOG.md") || "").split("\n")
-  const at = lines.findIndex((s) => s === "## Unreleased")
-  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
-  if (!(at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")).includes("red at lock")) missing.push("CHANGELOG.md ## Unreleased: red at lock")
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
+// gh-61 AC4 — docs/loop.md and docs/scripts.md's `rebase` entry say how a CHANGELOG file is treated.
+{
+  const name = "docs describe how CHANGELOG is treated"
+  const missing = []
+  const loop = read("docs/loop.md") || ""
+  for (const w of ["CHANGELOG", "keeping both"]) if (!loop.includes(w)) missing.push(`docs/loop.md: ${w}`)
+  const entry = (read("docs/scripts.md") || "").split("\n").find((s) => s.startsWith("- `rebase` "))
+  if (!entry) missing.push("docs/scripts.md: no `- `rebase` ` line")
+  else if (!entry.includes("CHANGELOG")) missing.push("docs/scripts.md `- `rebase`` line: CHANGELOG")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
