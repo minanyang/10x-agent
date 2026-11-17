@@ -2854,7 +2854,7 @@ rr_ticket() {
   git worktree prune
   ticket "$@"; vb init "$@"
   for id in "$@"; do
-    approved "$id" a
+    approved "$id" "$id"
     git worktree add -q --detach ".worktrees/$id" HEAD
   done
 }
