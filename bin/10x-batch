@@ -135,8 +135,8 @@
 // or product-questions.md exists. It waits for one of its runs or 10 seconds between passes, and
 // once nothing runs prints one line, {"items":[…]}: per ticket `failed`, `answer`, `approve` or `denied` with its
 // evidence, or [{"need":"done"}] when every ticket is settled.
-// `drop` sends SIGTERM to the ticket's open worker (a process whose command line holds the run's session), marks it
-// dropped and rewrites the board.
+// `drop` sends SIGTERM to the ticket's open worker (a process whose command line holds the run's session) and to a
+// `10x-batch run <id>` rerunning a gate (the pid in S/batch/<id>/rerun), marks it dropped and rewrites the board.
 // `replan` sends a `failed` ticket back to planning without a new batch; any other phase is refused (`replan <id>
 // refused: <id> is <phase>, not failed`). After every refusal, and before its worker starts, it deletes S/<id>.approved,
 // S/batch/<id>/auto-approved and .10x/_batch/<id>/reply.md, and rewrites the first `Status: approved` line of
@@ -1620,6 +1620,17 @@ function drop(argv) {
     try {
       process.kill(Number(last.pid), 'SIGTERM')
     } catch {}
+  }
+  // A host rerun in progress: its `10x-batch run <id>` forwards SIGTERM to the gate and ends its loop.
+  const rerun = (readOr(path.join(sdir(id), 'rerun')) || '').trim()
+  if (alive(rerun)) {
+    const ps = spawnSync('ps', ['-o', 'command=', '-p', String(Number(rerun))], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    const args = ps.status === 0 ? ps.stdout.trim().split(/\s+/) : []
+    if (args.some((a, k) => a === 'run' && args[k + 1] === id && /10x-batch$/.test(args[k - 1] || ''))) {
+      try {
+        process.kill(Number(rerun), 'SIGTERM')
+      } catch {}
+    }
   }
   writeBoard(deriveAll(ids))
   process.stdout.write(`dropped: ${id}\nboard: ${BOARD}\n`)
