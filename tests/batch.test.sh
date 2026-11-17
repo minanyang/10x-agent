@@ -2588,7 +2588,9 @@ end
 reset; ticket t1
 begin "loop: auto answers an unmarked implementation question with its recommendation"
 vb init --auto t1
-implemented t1 b
+approved t1 b
+vb run t1 implement
+mkdir -p .worktrees/t1
 evidence t1 "- AC1 — asked: Which name?" "- asked: Keep the old name?"
 echo 1 >.10x/t1/held-questions.md; echo 2 >.10x/t1/product-questions.md; echo c >.10x/t1/comment.md
 lp 90
