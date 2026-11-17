@@ -1255,24 +1255,27 @@ function securityCandidates(id, entries) {
 function lastRound(id) {
   const file = path.join(tdir(id), 'review.md')
   if (!fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) return null
-  const lines = fs.readFileSync(file, 'utf8').split('\n')
+  // Headings and the Reviewers:/Criteria: lines are read outside fences (b, blanked); the text keeps raw lines, so a
+  // fingerprint inside a fence still counts as a mention.
+  const lines = fs.readFileSync(file, 'utf8').split('\n'), b = md.blank(lines)
   let at = -1
   let n = null
-  lines.forEach((l, k) => {
-    const m = /^## Round ([0-9]+) — (?:full|fixes)[ \t]*$/.exec(l)
+  b.forEach((l, k) => {
+    const m = l !== null && /^## Round ([0-9]+) — (?:full|fixes)[ \t]*$/.exec(l)
     if (m) [at, n] = [k, m[1]]
   })
   if (at < 0) return null
-  let end = lines.findIndex((l, k) => k > at && /^#{1,2} /.test(l))
+  let end = b.findIndex((l, k) => k > at && l !== null && /^#{1,2} /.test(l))
   if (end < 0) end = lines.length
-  const body = lines.slice(at + 1, end)
-  const security = body.some((l) => /^Reviewers:/.test(l) && l.slice(10).split(',').map((x) => x.trim()).includes('10x:security-reviewer'))
+  let security = false
   const kept = []
   let skip = false
-  for (const l of body) {
-    const h = /^(#{1,3}) +(.*?)\s*$/.exec(l)
+  for (let k = at + 1; k < end; k++) {
+    const l = lines[k], s = b[k]
+    if (s !== null && /^Reviewers:/.test(l) && l.slice(10).split(',').map((x) => x.trim()).includes('10x:security-reviewer')) security = true
+    const h = s !== null && /^(#{1,3}) +(.*?)\s*$/.exec(s)
     if (h) skip = h[1] === '###' && /^(Fixes applied|Decisions)$/.test(h[2])
-    if (!skip && !/^Criteria:/.test(l)) kept.push(l)
+    if (!skip && !(s !== null && /^Criteria:/.test(l))) kept.push(l)
   }
   return { n, security, text: kept.join('\n') }
 }
