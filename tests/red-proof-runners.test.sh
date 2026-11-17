@@ -31,6 +31,10 @@ ln -s "$tmp/real" "$tmp/link"
 case_runner() { # <runner> <package.json> <ext> <impl at base> <impl on branch> <test header>
   local runner=$1 pkg=$2 ext=$3 base_impl=$4 branch_impl=$5 header=$6
   local repo="$tmp/link/$runner" wt
+  # a test helper red-proof does not revert, and the header of a test that imports it
+  local greet="exports.greet = () => 'hi'" greet_header="const { greet } = require('../test/greet.js')"
+  [ "$ext" = js ] || { greet="export const greet = () => 'hi'"; greet_header="import { test, expect } from 'vitest'
+import { greet } from '../test/greet.mjs'"; }
   echo "--- $runner"
   git -c init.defaultBranch=main init -q --bare "$tmp/real/$runner-origin.git"
   git -c init.defaultBranch=main init -q "$repo"
@@ -40,6 +44,8 @@ case_runner() { # <runner> <package.json> <ext> <impl at base> <impl on branch> 
   printf 'node_modules\n' >.gitignore
   mkdir src
   printf '%s\n' "$base_impl" >"src/calc.$ext"
+  mkdir test
+  printf '%s\n' "$greet" >"test/greet.$ext"
   git add -A && git commit -qm "init"
   git remote add origin "$tmp/real/$runner-origin.git" && git push -q -u origin main
 
@@ -92,6 +98,37 @@ EOF
   10x-red-proof T2 --lock >"$tmp/out" 2>&1; rc=$?
   [ "$rc" = 2 ] && grep -qF "src/skip.test.$ext: 1 test(s) skipped or todo" "$tmp/out" && [ ! -e "$(git -C "$wt" rev-parse --absolute-git-dir)/10x-lock" ] &&
     ok "$runner: --lock refuses a skipped test" || { bad "$runner: --lock refuses a skipped test (exit $rc)"; sed 's/^/      /' "$tmp/out"; }
+
+  # a locked test the implementation keeps green through a helper red-proof does not revert
+  expect "$runner: worktree add T3" 0 10x-worktree add T3 --no-setup
+  wt="$repo/.worktrees/T3"
+  ln -s "$tmp/deps/node_modules" "$wt/node_modules"
+  mkdir -p "$repo/.10x/T3"
+  printf '## Tests\n| AC | Test file | Case |\n|---|---|---|\n| AC1 | `src/greet.test.%s` | `greet` |\n' "$ext" >"$repo/.10x/T3/plan.md"
+  cat >"$wt/src/greet.test.$ext" <<EOF
+$greet_header
+test('greet says hello', () => expect(greet()).toBe('hello'))
+EOF
+  git -C "$wt" add -A && git -C "$wt" commit -qm "test: greet"
+  expect "$runner: --lock T3" 0 10x-red-proof T3 --lock
+  local first; first="$(git -C "$wt" rev-parse HEAD)"
+  printf '%s\n' "${greet/hi/hello}" >"$wt/test/greet.$ext"
+  printf '// greet\n' >>"$wt/src/calc.$ext"
+  git -C "$wt" add -A && git -C "$wt" commit -qm "feat: greet says hello"
+  10x-red-proof T3 >"$tmp/out" 2>&1; rc=$?
+  [ "$rc" = 0 ] && grep -q "^red at lock ${first:0:9} src/greet.test.$ext" "$tmp/out" &&
+    ok "$runner: a locked test kept green by a helper prints red at lock and passes" ||
+    { bad "$runner: a locked test kept green by a helper prints red at lock and passes (exit $rc)"; sed 's/^/      /' "$tmp/out"; }
+
+  # the same test changed by an approved relock was never proven red in its new form
+  printf '// relocked\n' >>"$wt/src/greet.test.$ext"
+  git -C "$wt" add -A && git -C "$wt" commit -qm "test: greet comment"
+  printf '## Relock 1\n- reason: a comment\n- ruling: approved — only a comment\n- commit: %s\n' "$(git -C "$wt" rev-parse HEAD)" >"$repo/.10x/T3/relock.md"
+  10x-red-proof T3 >"$tmp/out" 2>&1; rc=$?
+  [ "$rc" = 1 ] && grep -q "^GREEN  src/greet.test.$ext" "$tmp/out" && ! grep -q 'relocked at' "$tmp/out" &&
+    [ "$(grep -c '^lock ' "$(git -C "$wt" rev-parse --absolute-git-dir)/10x-lock")" = 1 ] &&
+    ok "$runner: a relocked test that stays green is GREEN and the lock stays" ||
+    { bad "$runner: a relocked test that stays green is GREEN and the lock stays (exit $rc)"; sed 's/^/      /' "$tmp/out"; }
 }
 
 case_runner jest '{ "name": "fixture", "private": true, "jest": { "watchman": false } }' js \
