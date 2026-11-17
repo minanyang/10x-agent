@@ -63,7 +63,7 @@ Stop and say why if any of these holds:
 10x-land rebase <id>
 ```
 
-The base is the branch on `check`'s `base:` line (`base` from the config, else `develop` when origin has it, else origin's default branch). In `local` mode the rebase goes onto the local base when it contains `origin/<base>`, so tickets closed earlier and not pushed yet are kept; when the two have diverged it refuses — stop and leave reconciling the base to the user. On a conflict `10x-land rebase` lists the conflicting files and leaves the rebase: stop, show them, and leave it for the user to resolve (or resolve it with them). Never `git rebase --skip` or drop a commit to get past it.
+The base is the branch on `check`'s `base:` line (`base` from the config, else `develop` when origin has it, else origin's default branch). In `local` mode the rebase goes onto the local base when it contains `origin/<base>`, so tickets closed earlier and not pushed yet are kept; when the two have diverged it refuses — stop and leave reconciling the base to the user. `10x-land rebase` merges a conflict in a `CHANGELOG*` file itself, keeping both sides; on any other conflict it lists the conflicting files and leaves the rebase: stop, show them, and leave it for the user to resolve (or resolve it with them); a `CHANGELOG*` conflict met after a hand-run `git rebase --continue` is resolved by keeping both sides. Never `git rebase --skip` or drop a commit to get past it.
 
 ## Step 2 — Verify the rebased tree
 
