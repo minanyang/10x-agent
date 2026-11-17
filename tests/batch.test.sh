@@ -3073,7 +3073,7 @@ sec_md() {
   { printf '# Security entries\n'
     for a in "$@"; do
       fp="${a:0:71}"; a="${a:72}"; found="${a%%:*}"; seen="${a#*:}"; [ "$seen" = "$a" ] && seen=""
-      printf '\n## %s\n- title: unsanitised argv reaches the shell\n- verdict: confirmed\n- severity: high\n- rule: shell-injection\n- location: src/run.js:10\n- trace: argv reaches the sink\n- status: fix-now\n- reason:\n- found in: %s\n- seen in: %s\n- audit fingerprint:\n- not seen in:\n' "$fp" "$found" "$seen"
+      printf '\n## %s\n- title: unsanitised argv reaches the shell\n- verdict: confirmed\n- severity: high\n- rule: shell-injection\n- location: src/run.js:10\n- trace: argv reaches the sink\n- status: fix-now\n- reason:\n- found in: %s\n- seen in:%s\n- audit fingerprint:\n- not seen in:\n' "$fp" "$found" "${seen:+ $seen}"
     done; } >.10x/security.md
 }
 # sec_review <id> <reviewers> [<finding text>] — a review.md with one full round.
