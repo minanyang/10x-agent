@@ -20,8 +20,9 @@
 // $XDG_STATE_HOME when it is absolute, else ~/.local/state. S/batch/ holds `tickets` (one id per line, board order),
 // `mode` (`auto` or `default`; anything else, or no file, is default), `versions` and `versions.closed`, and per ticket
 // <id>/: runs.tsv (`n kind session session_kind start end exit pid`, times in epoch ms, end and exit empty while a run
-// is open), `auto-approved` (the plan hash `loop` approved), `dropped` and `accepted-green.md` (the GREEN test files the
-// user accepted). S, S/batch and S/batch/<id> are made 0700, and a symlink at any of them is refused. init, run, drop,
+// is open), `auto-approved` (the plan hash `loop` approved), `dropped`, `accepted-green.md` (the GREEN test files the
+// user accepted), reruns.tsv (`run gate head result exit log`, one record per host rerun) and `rerun` (the pid of the
+// `run` rerunning a gate). S, S/batch and S/batch/<id> are made 0700, and a symlink at any of them is refused. init, run, drop,
 // replan, approve, accept-green and loop first refuse an S equal to or inside the
 // main checkout, a worktree, a path the worker sandbox may write, or a sandbox.filesystem.allowWrite of the project's
 // or the user's .claude/settings.json or settings.local.json, or of the same two files in CLAUDE_CONFIG_DIR, when set,
@@ -30,8 +31,8 @@
 // worker's stream-json), <nn>-denials.tsv (`<tool>\t<command, file or tool>`), turn.md (every assistant text of the
 // latest run), reply.md (the next reply, moved to <nn>-reply.md once sent), <nn>-landed (the base and sha a close run
 // left), <nn>-fallback (the mode a run started in when auto mode was unavailable), <nn>-sandbox (`unavailable` when
-// the worker's sandbox was), <nn>-plugin (`missing` when the worker's init event listed no 10x:work) and run.err
-// (the stderr of loop's latest run). A phase is never stored: every command derives it from these files and
+// the worker's sandbox was), <nn>-plugin (`missing` when the worker's init event listed no 10x:work), <nn>-rerun-<k>.log
+// (the output of the k-th gate rerun on the host for run <nn>) and run.err (the stderr of loop's latest run). A phase is never stored: every command derives it from these files and
 // .10x/<id>/.
 //
 // `init` resolves every argument before writing anything (`<n>`, `#<n>`, `gh-<n>`, an issue URL of origin's repo,
@@ -83,6 +84,16 @@
 // and it refuses (`implement <id> refused: <reason>`). Every worker gets
 // TENX_BATCH=1. SIGTERM and SIGINT are forwarded to the worker. It prints
 // `phase: <phase>` and `board: <path>`, exit 0 once the worker ran, whatever its exit code.
+// With batch.hostRerun true, after an implement or close session's run (a reply in one included) exits 0, and while the
+// ticket is not dropped and no signal came, each free `- asked: sandbox-red: <gate>` line of evidence.md is handled in
+// order: refused (`refused: <why>`, recorded) when worktree.pin fails (head `-`) or <gate> is not exactly an entry of
+// the main checkout's `gates` (one-line strings only), not run again when already recorded green or red at the
+// worktree's HEAD, else run outside the sandbox as `bash -c <gate>` in <worktree dir>/<id>, stdin ignored, output to
+// <nn>-rerun-<k>.log, env without TENX_BATCH_PLAN_DIR, signals forwarded to it; exit 0 is `green`, else `red`. While a
+// gate runs, S/batch/<id>/rerun holds this pid and the ticket shows its session's running phase. Any red or refused
+// gate ends it there; when at least one gate ran and all are green, it resumes the session as a `reply` run (auto mode,
+// usual fallback) with each gate, where and at what commit it ran and the last 40 lines of its output, saved as
+// <nn>-reply.md (reply.md left alone), and handles the next report the same way.
 // `status` writes and prints the board, then the actions allowed now: `plan <id>`, `implement <id>`, `close <id>`,
 // `answer <id>[ approvable]`, and `done` when every ticket is settled; after them, it and `init` print
 // `no decisions: <id>` for each ticket, in board order, whose ticket.md has no decisions section (md-check.js
@@ -90,7 +101,8 @@
 // plan or implement session for over 30 minutes since its latest run ended (else started), is set aside: it holds no
 // batch.parallel slot, no ticket waits on its Files and it holds back no later close. The board lists each under
 // `## Set aside`, after `## Needs the human`, as `- <id> — <phase>, waiting <h>h <mm>m: <evidence>`; absent when none
-// is. The board ends with `## Hand checks pending`,
+// is. `## Host reruns`, right after `## Needs the human` and absent when there is none, lists every reruns.tsv record
+// as `- <id> — <gate>: <result> (run <nn>, <worktree> at <short sha or ->)`. The board ends with `## Hand checks pending`,
 // one line `- <version> — <id> AC<n>: <text>` per declared hand check whose last evidence.md line is `hand-check:`, of
 // every landed ticket and id of `versions.closed`, a ticket in no recorded version under `(no version)`; absent when
 // none is. `status` and `init` also set the State of each recorded version whose ids are all landed or closed, none
@@ -144,8 +156,16 @@
 // ticket lists neither. A ticket whose latest run has a <nn>-fallback file adds
 // `auto mode unavailable: ran in <mode>` to its evidence.
 //
+// Host reruns in a phase: a red record of the latest implement or close run fails the ticket with `host rerun red:
+// <gate>: <last 10 lines of its log>`. A FAIL row of verify/summary.txt is excused when a green record's gate has its
+// first 28 characters and its head starts with the summary's `tree: HEAD <short>`; an unexcused FAIL fails an implement
+// ticket (`gate FAIL: <gate>`) unless a sandbox-red ask names it (its first 28 characters, trimmed), when the ticket
+// waits on the asks. A close run that did not land with sandbox-red asks is `waiting`. A refused record of the latest
+// run adds `host rerun refused: <gate> (<why>)` to a waiting ticket's evidence.
+//
 // Config (.claude/10x.json): `close`, `worktreeDir`, `batch.parallel` (implement runs at once, an integer ≥ 1,
-// default 2). Refusals print `10x-batch: <why>` and exit 2.
+// default 2), `batch.hostRerun` (true or false, default false; anything else exits 2), `gates`. Refusals print
+// `10x-batch: <why>` and exit 2.
 
 const { execFileSync, spawn, spawnSync } = require('node:child_process')
 const { createHash, randomUUID } = require('node:crypto')
@@ -190,6 +210,9 @@ const config = readConfig()
 const CLOSE = config.close == null ? 'pr' : String(config.close)
 const WT_DIR = path.join(ROOT, typeof config.worktreeDir === 'string' && config.worktreeDir ? config.worktreeDir : '.worktrees')
 const PARALLEL = parallel()
+const HOST_RERUN = hostRerun()
+// The gates a sandbox-red report may name, matched exactly; an entry that is not a one-line string never matches.
+const GATES = Array.isArray(config.gates) ? config.gates.filter((g) => typeof g === 'string' && !/[\t\n]/.test(g)) : []
 const TENX_DIR = path.join(ROOT, '.10x')
 const BATCH = path.join(TENX_DIR, '_batch')
 const HOME = os.homedir()
@@ -417,6 +440,13 @@ function parallel() {
   if (v == null) return 2
   if (!Number.isInteger(v) || v < 1) die(`batch.parallel must be an integer ≥ 1, got ${JSON.stringify(v)}`)
   return v
+}
+
+function hostRerun() {
+  const v = config.batch && typeof config.batch === 'object' ? config.batch.hostRerun : undefined
+  if (v === undefined || v === false) return false
+  if (v === true) return true
+  die(`batch.hostRerun must be true or false, got ${JSON.stringify(v)}`)
 }
 
 // A fresh file renamed into place, so a concurrent reader never sees half of it; `wx` never follows a planted path.
@@ -843,6 +873,8 @@ function derive(id) {
     Object.assign(row, { phase, evidence: row.denied ? [evidence, row.denied].filter(Boolean).join('; ') : evidence })
   if (fs.existsSync(path.join(sdir(id), 'dropped'))) return set('dropped', 'dropped by the user')
   if (!last) return set('queued', '')
+  // A gate of its latest session's report rerunning on the host: the session is still at work.
+  if (alive((readOr(path.join(sdir(id), 'rerun')) || '').trim())) return set(RUNNING[last.session_kind] || 'planning')
   const open = isOpen(last)
   if (open && alive(last.pid)) return set(RUNNING[last.session_kind] || 'planning')
   const exit = open ? '?' : last.exit
@@ -857,6 +889,10 @@ function derive(id) {
   const rebase = (readOr(path.join(bdir(id), `${pad(last.n)}-rebase`)) || '').trim()
   if (rebase) return set('failed', rebase)
   if (exit !== '0') return set('failed', exit === '?' ? `${tag} ended without an exit code` : `${tag} exited ${exit}`)
+  const rr = ['implement', 'close'].includes(last.session_kind) ? reruns(id).filter((x) => x.run === last.n) : []
+  const red = rr.find((x) => x.result === 'red')
+  if (red) return set('failed', `host rerun red: ${flat(red.gate)}: ${flat(tail(red.log, 10, id).join(' '))}`)
+  const refusedRr = rr.filter((x) => x.result.startsWith('refused: ')).map((x) => `host rerun refused: ${x.gate} (${x.result.slice(9)})`)
 
   if (last.session_kind === 'plan') {
     if (planText && /^Status:\s*approved\s*$/m.test(planText)) {
@@ -867,20 +903,25 @@ function derive(id) {
     return set('waiting')
   }
   if (last.session_kind === 'implement') {
-    const gate = failedGate(id)
+    // A FAIL the worker reported sandbox-red leaves the ticket waiting on that ask, below.
+    const named = sandboxAsks(id).map((g) => g.slice(0, 28).trim())
+    const gate = failedGates(id).find((g) => !named.includes(g))
     if (gate) return set('failed', `gate FAIL: ${gate}`)
     const ev = evidence(id, planText)
     if (ev.open && !ev.asked) {
       if (!denied.length) return set('failed', `open criterion: ${ev.open}`)
       return set('waiting', [`open criterion: ${ev.open}`, fs.existsSync(turn) ? rel(turn) : ''].filter(Boolean).join('; '))
     }
-    if (ev.asked) return set('waiting', [...ev.asks, fs.existsSync(turn) ? rel(turn) : ''].filter(Boolean).join('; '))
+    if (ev.asked) return set('waiting', [...ev.asks, ...refusedRr, fs.existsSync(turn) ? rel(turn) : ''].filter(Boolean).join('; '))
     return set('implemented')
   }
   if (last.session_kind === 'close') {
     if (!fs.existsSync(path.join(WT_DIR, id))) return set('landed', (readOr(path.join(bdir(id), `${pad(last.n)}-landed`)) || '').trim() || landedOn())
     const url = CLOSE === 'pr' ? prOpen(id) : null
     if (url) return set('pr-open', url)
+    const asks = sandboxAsks(id)
+    if (asks.length)
+      return set('waiting', [...asks.map((g) => `sandbox-red: ${g}`), ...refusedRr, `close did not land${fs.existsSync(turn) ? `; see ${rel(turn)}` : ''}`].join('; '))
     return set(denied.length ? 'waiting' : 'failed', `close did not land${fs.existsSync(turn) ? `; see ${rel(turn)}` : ''}`)
   }
   return set('failed', `${tag} has an unknown session kind '${last.session_kind}'`)
@@ -890,15 +931,53 @@ function planCheck(id) {
   return spawnSync(path.join(__dirname, '10x-plan-check'), [id], { cwd: ROOT, stdio: 'ignore' }).status === 0
 }
 
-// The first gate whose result column is FAIL in verify/summary.txt; its log tail lines are indented and skipped.
-function failedGate(id) {
+// Every gate whose result column is FAIL in verify/summary.txt, except one a green host rerun covers: its first 28
+// characters match and its head starts with the summary's `tree: HEAD <short>` (a MOVED summary has none). Log tail
+// lines are indented and skipped.
+function failedGates(id) {
   const text = readOr(path.join(tdir(id), 'verify', 'summary.txt')) || ''
+  const at = /^tree: HEAD ([0-9a-f]+),/m.exec(text)?.[1]
+  const green = at ? reruns(id).filter((x) => x.result === 'green' && x.head.startsWith(at)).map((x) => x.gate.slice(0, 28).trim()) : []
+  const out = []
   for (const l of text.split('\n')) {
     if (/^\s/.test(l) || l.length < 34) continue
-    if (/^FAIL\s/.test(l.slice(29))) return l.slice(0, 28).trim()
+    const g = l.slice(0, 28).trim()
+    if (/^FAIL\s/.test(l.slice(29)) && !green.includes(g)) out.push(g)
   }
-  return null
+  return out
 }
+
+// The gates of ticket <id>'s free `- asked: sandbox-red: <gate>` lines, in order, once each.
+function sandboxAsks(id) {
+  const gates = evidenceLines(id).asks.filter((a) => a.startsWith('sandbox-red:')).map((a) => a.slice(12).trim())
+  return [...new Set(gates.filter(Boolean))]
+}
+
+const RERUN_HEADER = ['run', 'gate', 'head', 'result', 'exit', 'log']
+// S/batch/<id>/reruns.tsv: one record per reported gate the conductor handled.
+function reruns(id) {
+  const text = readOr(path.join(sdir(id), 'reruns.tsv'))
+  if (text === null) return []
+  return text
+    .split('\n')
+    .slice(1)
+    .filter(Boolean)
+    .map((l) => {
+      const c = l.split('\t')
+      return Object.fromEntries(RERUN_HEADER.map((h, i) => [h, c[i] ?? '']))
+    })
+}
+
+// The last <n> lines of ticket <id>'s rerun log <name> (a bare `<nn>-rerun-<k>.log`), else none.
+function tail(name, n, id) {
+  if (!/^[0-9]+-rerun-[0-9]+\.log$/.test(name)) return []
+  const lines = (readOr(path.join(BATCH, id, name)) || '').split('\n')
+  if (lines.at(-1) === '') lines.pop()
+  return lines.slice(-n)
+}
+
+// A sha shortened as `git rev-parse --short` does in the main checkout.
+const short = (sha) => (/^[0-9a-f]{40,64}$/.test(sha) && git(['rev-parse', '--short', sha])) || sha.slice(0, 7)
 
 // The last state of each criterion in ticket <id>'s evidence.md, outside fences, and the texts of its free asked lines.
 function evidenceLines(id) {
@@ -1090,6 +1169,10 @@ function board(rows) {
     if (r.phase !== 'landed') for (const x of r.decided) need.push(`- ${r.id} — decided: ${x}`)
   }
   lines.push('', '## Needs the human', ...(need.length ? need : ['- none']))
+  const rr = rows.flatMap((r) =>
+    reruns(r.id).map((x) => `- ${r.id} — ${flat(x.gate)}: ${flat(x.result)} (run ${pad(x.run)}, ${rel(path.join(WT_DIR, r.id))} at ${x.head === '-' ? '-' : short(x.head)})`),
+  )
+  if (rr.length) lines.push('', '## Host reruns', ...rr)
   const aside = rows
     .filter((r) => r.setAside)
     .map((r) => `- ${r.id} — ${r.phase}, waiting ${Math.floor(r.waited / 3600000)}h ${pad(Math.floor(r.waited / 60000) % 60)}m: ${r.evidence ? flat(r.evidence) : 'no turn recorded'}`)
@@ -1289,8 +1372,9 @@ async function run(argv, replan = false) {
   // One worker run, recorded in runs.tsv. Its stream-json's init event is read as soon as its line is complete: listing
   // no 10x:work, the plugin is missing and the worker is stopped; started in auto mode and reporting another permission
   // mode, auto mode is unavailable and the worker is stopped.
-  // The prompt goes after `--`, so a reply starting with `-` is never an option.
-  const once = async (mode, sess) => {
+  // The prompt goes after `--`, so a reply starting with `-` is never an option. A host-rerun reply (<host>) is saved
+  // as <nn>-reply.md like any reply, and leaves reply.md alone.
+  const once = async (mode, kind, flag, sess, prompt, host = false) => {
     const prev = runs(id)
     const n = prev.length + 1
     const nn = pad(n)
@@ -1319,7 +1403,7 @@ async function run(argv, replan = false) {
     writeBoard(deriveAll(ids))
     if (kind === 'reply' && child.pid) {
       put(path.join(bdir(id), `${nn}-reply.md`), prompt)
-      fs.rmSync(replyFile, { force: true })
+      if (!host) fs.rmSync(replyFile, { force: true })
     }
     let init = null
     if (child.pid) {
@@ -1348,17 +1432,108 @@ async function run(argv, replan = false) {
     return { code, unavailable }
   }
 
-  let res = await once(['auto'], session)
+  const dropped = () => fs.existsSync(path.join(sdir(id), 'dropped'))
   // The turn again in today's mode, unless the ticket was dropped or this process stopped meanwhile. A rerun is checked
   // for the plugin, never for its mode; plan, implement and close start a new session, a reply resumes the same one.
   // A worker whose sandbox is unavailable writes no init event, so it is never rerun.
-  if (res.unavailable && !live.signalled && !fs.existsSync(path.join(sdir(id), 'dropped')))
-    res = await once(fallback, kind === 'reply' ? session : randomUUID())
+  const turnOf = async (kind, flag, sess, prompt, host) => {
+    const r = await once(['auto'], kind, flag, sess, prompt, host)
+    if (!r.unavailable || live.signalled || dropped()) return r
+    return once(fallback, kind, flag, kind === 'reply' ? sess : randomUUID(), prompt, host)
+  }
+  let res = await turnOf(kind, flag, session, prompt, false)
+  // The gates an implement or close session reported sandbox-red, rerun on the host; all green, the session is resumed
+  // with their output and its next report handled the same way.
+  while (HOST_RERUN && res.code === 0 && ['implement', 'close'].includes(sessionKind) && !live.signalled && !dropped()) {
+    const reply = await rerunGates(id, live, dropped)
+    if (!reply || live.signalled || dropped()) break
+    res = await turnOf('reply', '--resume', runs(id).at(-1).session, reply, true)
+  }
   const after = deriveAll(ids)
   writeBoard(after)
   if (res.code === null) process.exit(2)
   process.stdout.write(`phase: ${after[i].phase}\nboard: ${BOARD}\n`)
   process.exit(0)
+}
+
+// Handles the sandbox-red gates ticket <id>'s latest run reported, in report order, recording each in reruns.tsv; returns
+// the reply to resume the session with when at least one gate ran and every one is green, else null. A gate runs
+// outside the sandbox, in the worktree, only when it is an entry of the main checkout's `gates` and worktree.pin passes;
+// one already recorded green or red at this HEAD is not run again. S/batch/<id>/rerun holds this pid meanwhile.
+async function rerunGates(id, live, dropped) {
+  const n = runs(id).at(-1).n
+  const asks = sandboxAsks(id)
+  if (!asks.length) return null
+  const wt = path.join(WT_DIR, id)
+  const file = path.join(sdir(id), 'reruns.tsv')
+  const marker = path.join(sdir(id), 'rerun')
+  const clear = () => fs.rmSync(marker, { force: true })
+  const record = (x) =>
+    put(file, [RERUN_HEADER, ...[...reruns(id), x].map((r) => RERUN_HEADER.map((h) => r[h]))].map((c) => c.join('\t') + '\n').join(''))
+  put(marker, `${process.pid}\n`)
+  process.once('exit', clear)
+  let k = reruns(id).filter((x) => x.run === n && x.log).length
+  const done = []
+  try {
+    for (const gate of asks) {
+      if (dropped() || live.signalled) return null
+      const g =gate.replace(/[\t\n]/g, ' ')
+      const pin = worktree.pin(wt, common)
+      if (pin.reason) {
+        const x = { run: n, gate: g, head: '-', result: `refused: ${flat(pin.reason)}`, exit: '', log: '' }
+        record(x)
+        done.push(x)
+        continue
+      }
+      // Read as accept-green reads it: only the worktree's HEAD file pinned, a branch's commit in the main checkout.
+      const wtGit = (a) => git(['-C', wt, ...a], pin.env)
+      const ref = wtGit(['symbolic-ref', '-q', 'HEAD'])
+      const head = (ref ? git(['rev-parse', '--verify', '-q', `${ref}^{commit}`]) : wtGit(['rev-parse', '--verify', '-q', 'HEAD^{commit}'])) || '-'
+      const refuse = head === '-' ? 'no commit at HEAD' : !GATES.includes(gate) ? "not in the main checkout's gates" : null
+      if (refuse) {
+        const x = { run: n, gate: g, head, result: `refused: ${refuse}`, exit: '', log: '' }
+        record(x)
+        done.push(x)
+        continue
+      }
+      const prior = reruns(id).find((x) => x.gate === g && x.head === head && ['green', 'red'].includes(x.result))
+      if (prior) {
+        done.push({ ...prior, prior: true })
+        continue
+      }
+      writeBoard(deriveAll(readIds()))
+      const log = `${pad(n)}-rerun-${++k}.log`
+      const fd = fs.openSync(path.join(bdir(id), log), fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW)
+      const env = { ...process.env }
+      delete env.TENX_BATCH_PLAN_DIR
+      const child = spawn('bash', ['-c', gate], { cwd: wt, stdio: ['ignore', fd, fd], env })
+      fs.closeSync(fd)
+      live.child = child
+      const code = await new Promise((res) => {
+        child.on('error', () => res(127))
+        child.on('exit', (c, sig) => res(c ?? 128 + (os.constants.signals[sig] || 0)))
+      })
+      live.child = null
+      const x = { run: n, gate: g, head, result: code === 0 ? 'green' : 'red', exit: String(code), log }
+      record(x)
+      done.push(x)
+    }
+  } finally {
+    clear()
+    process.removeListener('exit', clear)
+  }
+  if (done.some((x) => x.result !== 'green') || done.every((x) => x.prior)) return null
+  const out = done.map((x) => {
+    const lines = tail(x.log, 40, id)
+    const run = Math.max(2, ...lines.map((l) => l.match(/`+/g)?.reduce((a, b) => Math.max(a, b.length), 0) || 0)) + 1
+    const fence = '`'.repeat(run)
+    return `\`${x.gate}\` in ${rel(wt)} at ${short(x.head)}: green (exit 0). Last 40 lines of its output:\n\n${fence}\n${lines.join('\n')}\n${fence}\n`
+  })
+  return [
+    'Host rerun by the conductor, outside the sandbox.\n',
+    ...out,
+    'Remove each `- asked: sandbox-red:` line it answers, use this as that gate\'s evidence, and go on. A 10x-verify FAIL of these gates at this commit is not a failure.\n',
+  ].join('\n')
 }
 
 // Moves worktree <wt>'s branch onto the current base, fetched first when origin exists; null when it is there, else why

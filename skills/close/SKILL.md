@@ -73,6 +73,8 @@ The base is the branch on `check`'s `base:` line (`base` from the config, else `
 
 It must pass on the rebased tree. A failure here is new (the base moved): fix it as a commit on the branch, or stop and report it.
 
+In a `/10x:batch` worker (`TENX_BATCH` set), a gate of the main checkout's `.claude/10x.json` `gates` that is `FAIL` only because of the worker sandbox (a denied network, socket or path, not a fault in the code) is reported, not fixed: write one line `- asked: sandbox-red: <gate>` per such gate to `.10x/<id>/evidence.md`, with `<gate>` copied verbatim from `gates` and nothing after it, and stop. With `batch.hostRerun` true the conductor reruns the gate outside the sandbox in this worktree and resumes this session with a reply starting `Host rerun by the conductor`; land when every failing gate was rerun green at that commit, and remove the `sandbox-red` lines it answers. Without the setting the ticket waits for the user.
+
 ## Step 3 — Land it
 
 **`pr` and `pr-merge`:**
