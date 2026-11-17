@@ -531,8 +531,8 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   const missing = []
   const loop = read("docs/loop.md") || ""
   for (const w of ["CHANGELOG", "keeping both"]) if (!loop.includes(w)) missing.push(`docs/loop.md: ${w}`)
-  const entry = (read("docs/scripts.md") || "").split("\n").find((s) => s.startsWith("- `rebase`"))
-  if (!entry) missing.push("docs/scripts.md: no `- `rebase`` line")
+  const entry = (read("docs/scripts.md") || "").split("\n").find((s) => s.startsWith("- `rebase` "))
+  if (!entry) missing.push("docs/scripts.md: no `- `rebase` ` line")
   else if (!entry.includes("CHANGELOG")) missing.push("docs/scripts.md `- `rebase`` line: CHANGELOG")
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
