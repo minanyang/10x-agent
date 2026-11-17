@@ -555,5 +555,19 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   broken.length ? bad(name, broken.join("\n      ")) : ok(name)
 }
 
+// gh-59 AC5 — the sandbox-red rerun and its setting are documented.
+{
+  const name = "docs describe the sandbox-red rerun and batch.hostRerun"
+  const loop = read("docs/loop.md") || "", conf = read("docs/configuration.md") || "", scripts = read("docs/scripts.md") || ""
+  const left = [
+    [loop.includes("sandbox-red:"), "docs/loop.md: `sandbox-red:`"],
+    [loop.includes("batch.hostRerun"), "docs/loop.md: `batch.hostRerun`"],
+    [conf.includes("batch.hostRerun"), "docs/configuration.md: `batch.hostRerun`"],
+    [scripts.includes("## Host reruns"), "docs/scripts.md: `## Host reruns`"],
+    [scripts.includes("reruns.tsv"), "docs/scripts.md: `reruns.tsv`"],
+  ].filter(([c]) => !c).map(([, w]) => w)
+  left.length ? bad(name, left.join("; ")) : ok(name)
+}
+
 process.exit(fail)
 JS
