@@ -530,6 +530,19 @@ for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/S
     : ok("work: a security ticket keeps its ticket.md, posts nothing, is branched by its id and removes its entry after a clean full round")
 }
 
+// gh-70 AC5 — work: Step 6's round has a `Reviewers:` line; Step 7b tells a batch worker the conductor removes the entry.
+{
+  const work = fs.readFileSync(`${dir}/work/SKILL.md`, "utf8")
+  const flat = (s) => s.replace(/\s+/g, " ")
+  const step = (n) => flat((new RegExp(`^## Step ${n}\\b[\\s\\S]*?(?=^## Step )`, "m").exec(work) || [""])[0])
+  const miss = [
+    [step(6).includes("`Reviewers:` line"), "Step 6: a `Reviewers:` line in each round"],
+    [step("7b").includes("batch worker") && step("7b").includes("the conductor removes it"), "Step 7b: a batch worker leaves the removal; the conductor removes it"],
+  ].filter(([c]) => !c).map(([, w]) => w)
+  const name = "work: a batch worker leaves a security entry's removal to the conductor"
+  miss.length ? bad(`${name} (missing: ${miss.join("; ")})`) : ok(name)
+}
+
 // gh-3 — /10x:roadmap plans security entries: Requirements lists the plannable ones and writes a picked one as a security
 // item; Tickets asks 10x-security route for each such item and creates it with the command the route names. 10x-land
 // advisory is never granted to the skill.
