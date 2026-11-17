@@ -16,10 +16,14 @@
 // section, an empty, invalid, all-digits or duplicate Version, an empty Why this order, an empty item, or a
 // `## Decided against` entry with no reason, it prints `<file>:<line>: <why>` for each fault and exits 1. Else it
 // prints `not kept: <line>` for each table row and section entry of roadmap.md that the draft does not keep
-// byte-identical (a row anywhere in the table, an entry in its own section), then `new id: <version> <id>` for each
-// ticket id in a draft row that roadmap.md's row of that version does not have, so an id the user never saw is shown before `apply`.
+// byte-identical (a row anywhere in the table, an entry in its own section) — except a row not `Done` whose draft row is
+// that row with only `; <items>` added at the end of Contents, which prints `appended: <version> <item>` per added item
+// instead — then `reordered: <old order> → <draft order>` when the versions both files have are in a different order,
+// then `new id: <version> <id>` for each ticket id in a draft row that roadmap.md's row of that version does not have,
+// so an id the user never saw is shown before `apply`.
 // `apply` runs `check`; on a fault it writes nothing. Else it renames the draft to roadmap.md and prints
-// `roadmap: <abs path>` and the `not kept:` and `new id:` lines, computed against roadmap.md as it was.
+// `roadmap: <abs path>` and the `not kept:`, `appended:`, `reordered:` and `new id:` lines, computed against
+// roadmap.md as it was.
 // `link` appends `` `<id>` `` to item <n> of <version>, through a temp file and a rename; it refuses an item that has
 // an id, an id that is neither `gh-<n>` nor one with .10x/<id>/ticket.md, and a symlinked roadmap.md.
 //
@@ -119,9 +123,28 @@ function check() {
   const st2 = lstat(FILE)
   if (st2 && !st2.isFile()) die(`${rel(FILE)} is not a regular file`)
   const old = st2 ? fs.readFileSync(FILE, 'utf8') : ''
-  const had = new Set(rm.parse(old, isTicket).rows.flatMap((r) => r.ids.map((id) => `${r.version} ${id}`)))
+  const o = rm.parse(old, isTicket)
+  const had = new Set(o.rows.flatMap((r) => r.ids.map((id) => `${r.version} ${id}`)))
   const added = p.rows.flatMap((r) => r.ids.map((id) => `${r.version} ${id}`).filter((k) => !had.has(k)).map((k) => `new id: ${k}`))
-  return [...(st2 ? rm.notKept(old, text).map((l) => `not kept: ${flat(l.text)}`) : []), ...added]
+  const lost = st2 ? rm.notKept(old, text).flatMap((l) => appended(o.rows.find((r) => r.line === l.line), p) ?? [`not kept: ${flat(l.text)}`]) : []
+  const inOld = new Set(o.rows.map((r) => r.version))
+  const inDraft = new Set(p.rows.map((r) => r.version))
+  const was = o.rows.map((r) => r.version).filter((v) => inDraft.has(v)).join(', ')
+  const is = p.rows.map((r) => r.version).filter((v) => inOld.has(v)).join(', ')
+  return [...lost, ...(was !== is ? [`reordered: ${was} → ${is}`] : []), ...added]
+}
+
+// The `appended:` lines for roadmap.md's row <r> when the draft <p>'s row of its version is <r> with only `; <items>`
+// added at the end of Contents and <r> is not Done; else null.
+function appended(r, p) {
+  if (!r || rm.isDone(r.state)) return null
+  const d = p.rows.find((x) => x.version === r.version)
+  const head = r.raw.slice(0, r.cells[1].to) + '; '
+  const tail = r.raw.slice(r.cells[1].to)
+  if (!d || !d.raw.startsWith(head) || !d.raw.endsWith(tail) || d.raw.length <= head.length + tail.length) return null
+  if (d.cells[1].to !== d.raw.length - tail.length || d.items.length <= r.items.length) return null
+  if (r.items.some((it, i) => d.items[i].text !== it.text)) return null
+  return d.items.slice(r.items.length).map((it) => `appended: ${r.version} ${flat(it.text)}`)
 }
 
 function apply() {
