@@ -562,5 +562,22 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
 }
 
+// gh-71 AC4 — loop.md and scripts.md describe the batch's cleanup after a close run.
+{
+  const name = "docs: loop.md and scripts.md describe the batch's close cleanup"
+  const loop = (read("docs/loop.md") || "").replace(/\s+/g, " ")
+  const scripts = (read("docs/scripts.md") || "").replace(/\s+/g, " ")
+  const missing = [
+    [loop.includes("rm <id> --landed-only"), "loop.md: `rm <id> --landed-only`"],
+    [loop.includes("base: skipped (close: local)"), "loop.md: `base: skipped (close: local)`"],
+    [loop.includes("`cleanup` item"), "loop.md: the `cleanup` item of `loop`"],
+    [scripts.includes("--landed-only"), "scripts.md: `--landed-only`"],
+    [scripts.includes("worktree record"), "scripts.md: the missing-folder case (`worktree record`)"],
+    [scripts.includes("left for 10x-batch"), "scripts.md: the `left for 10x-batch` line"],
+    [scripts.includes("-cleanup"), "scripts.md: the `<nn>-cleanup` file of `10x-batch run`"],
+  ].filter(([c]) => !c).map(([, w]) => w)
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 process.exit(fail)
 JS

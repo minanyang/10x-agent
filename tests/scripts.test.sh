@@ -2482,6 +2482,44 @@ expect "sync-base with local commits" 0 10x-worktree sync-base
 grep -q 'not updated: main has commits origin/main does not' "$tmp/out" && ok "diverged base: left behind" || bad "diverged base: left behind"
 [ "$(git rev-parse main)" = "$before" ] && ok "diverged base untouched" || bad "diverged base untouched"
 
+# rm on a worktree whose folder is gone, with --landed-only, and in a batch worker (gh-71)
+cd "$tmp/repo" || exit 2
+git checkout -q main
+expect "worktree add RM1" 0 10x-worktree add RM1 --no-setup
+printf 'export const rm1 = 1\n' >"$tmp/repo/.worktrees/RM1/src/rm1.mjs"
+git -C "$tmp/repo/.worktrees/RM1" add -A && git -C "$tmp/repo/.worktrees/RM1" commit -qm "feat: rm1"
+git -C "$tmp/repo/.worktrees/RM1" push -q origin feat/RM1
+git merge -q --no-edit feat/RM1
+mv "$tmp/repo/.worktrees/RM1" "$tmp/RM1-gone"
+expect "rm RM1 after its folder is gone" 0 10x-worktree rm RM1
+{ grep -q "pruned the worktree record of " "$tmp/out" && ! git worktree list --porcelain | grep -q "RM1" &&
+  ! git show-ref --verify --quiet refs/heads/feat/RM1 && [ -z "$(git ls-remote --heads origin feat/RM1)" ] &&
+  [ -f .10x/RM1/landed ]; } &&
+  ok "rm prunes a worktree record whose folder is gone and deletes its landed branch" ||
+  { bad "rm prunes a worktree record whose folder is gone and deletes its landed branch"; cat "$tmp/out"; }
+rm -r "$tmp/RM1-gone"
+
+expect "worktree add RM2" 0 10x-worktree add RM2 --no-setup
+printf 'export const rm2 = 1\n' >"$tmp/repo/.worktrees/RM2/src/rm2.mjs"
+git -C "$tmp/repo/.worktrees/RM2" add -A && git -C "$tmp/repo/.worktrees/RM2" commit -qm "feat: rm2"
+expect "rm RM2 --landed-only before it landed" 0 10x-worktree rm RM2 --landed-only
+{ grep -q "kept worktree $tmp/repo/.worktrees/RM2 and branch feat/RM2: its changes are not on " "$tmp/out" ||
+  grep -q "kept worktree $(cd "$tmp/repo" && pwd -P)/.worktrees/RM2 and branch feat/RM2: its changes are not on " "$tmp/out"; } &&
+  [ -e "$tmp/repo/.worktrees/RM2/.git" ] && git show-ref --verify --quiet refs/heads/feat/RM2 && [ ! -e .10x/RM2/landed ] &&
+  ok "rm --landed-only keeps a worktree whose branch has not landed" ||
+  { bad "rm --landed-only keeps a worktree whose branch has not landed"; cat "$tmp/out"; }
+git worktree remove --force "$tmp/repo/.worktrees/RM2" && git branch -D feat/RM2 >/dev/null
+
+expect "worktree add RM3" 0 10x-worktree add RM3 --no-setup
+echo dirty >"$tmp/repo/.worktrees/RM3/dirty.txt"
+TENX_BATCH=1 10x-worktree rm RM3 >"$tmp/out" 2>&1; rc=$?
+{ [ "$rc" -ne 0 ] && grep -qxF "left for 10x-batch: it finishes this cleanup once the run ends" "$tmp/out"; } &&
+  ok "rm in a batch worker says the batch finishes the cleanup" ||
+  { bad "rm in a batch worker says the batch finishes the cleanup (exit $rc)"; cat "$tmp/out"; }
+10x-worktree rm RM3 >"$tmp/out" 2>&1
+! grep -q "left for 10x-batch" "$tmp/out" && ok "rm outside a batch worker prints no left-for-batch line" || bad "rm outside a batch worker prints no left-for-batch line"
+git worktree remove --force "$tmp/repo/.worktrees/RM3" && git branch -D feat/RM3 >/dev/null
+
 # ci-gates.sh: every gate runs, a table lands in the summary, gate changes against a base are listed
 cig="$(cd "$BIN/.." && pwd)/scripts/ci-gates.sh"
 cg="$tmp/cig"

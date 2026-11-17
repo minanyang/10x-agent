@@ -978,5 +978,24 @@ for (const skill of ["open", "work", "close", "batch", "roadmap", "audit", "feed
     [/starts? with (its|one) mark/.test(rule), "each asked text starts with its mark"],
   ])
 }
+// gh-71 AC4 — close's Step 4 reports a cleanup the batch finishes as left to it, and hands the user no git command for it.
+{
+  const name = "close: Step 4 leaves a cleanup to the batch"
+  const text = fs.existsSync(`${dir}/close/SKILL.md`) ? fs.readFileSync(`${dir}/close/SKILL.md`, "utf8") : ""
+  const at = text.search(/^## Step 4\b/m)
+  const rest = at < 0 ? "" : text.slice(at + 1)
+  const end = rest.search(/\n## /)
+  const step4 = (at < 0 ? "" : text.slice(at, end < 0 ? undefined : at + 1 + end)).replace(/\s+/g, " ")
+  const missing = [
+    [at >= 0, "close: a Step 4"],
+    [step4.includes("`left for 10x-batch"), "Step 4: the `left for 10x-batch` line"],
+    [/finish(ed|es) (it|this|that|the cleanup)? ?(by|for) the batch|left to the batch|the batch finishes/.test(step4), "Step 4: what was left is the batch's to finish"],
+    [!step4.includes("git worktree prune"), "Step 4: no `git worktree prune` for the user"],
+    [!step4.includes("git branch -D"), "Step 4: no `git branch -D` for the user"],
+    [!step4.includes("--delete"), "Step 4: no `git push --delete` for the user"],
+  ].filter(([c]) => !c).map(([, w]) => w)
+  missing.length ? bad(`${name} (missing: ${missing.join("; ")})`) : ok(name)
+}
+
 process.exit(fail)
 JS
