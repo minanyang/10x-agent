@@ -577,9 +577,42 @@ for (const f of ["skills/open/SKILL.md", "skills/work/SKILL.md", "skills/close/S
   const verdict = (name, miss) => miss.length ? bad(`${name} (missing: ${miss.join("; ")})`) : ok(name)
   const s2 = flat(step(reqText, 2))
   verdict("roadmap: a follow-up joins the next unreleased version before a new row", missing([
-    ...["A follow-up", "`next:`", "before a new row", "`next: none`", "is not restored"].map((w) => [s2.includes(w), `Requirements Step 2: ${w}`]),
+    ...["A follow-up", "`next:`", "before a new row", "`next: none`", "an `appended:` line", "is not restored"].map((w) => [s2.includes(w), `Requirements Step 2: ${w}`]),
     [flat(step(reqText, 3)).includes("`follow-up: <item> → <version>`"), "Requirements Step 3: the `follow-up: <item> → <version>` line"],
     [never.split("\n").some((l) => l.includes("Never change an existing row") && l.includes("follow-up")), "## Never: the existing-row line excepts a follow-up"],
+  ]))
+}
+
+// gh-63 — the model may start /10x:roadmap, and a draft made only of changes the user stated or agreed to in this
+// session is applied with no second approve, each change reported with the user's quoted words.
+{
+  const text = fs.readFileSync(`${dir}/roadmap/SKILL.md`, "utf8")
+  const flat = (s) => s.replace(/\s+/g, " ")
+  const front = (/^---\n([\s\S]*?)\n---/.exec(text) || ["", ""])[1].split("\n")
+  const step = (s, n) => s.split(/^(?=### Step )/m).find((p) => p.startsWith(`### Step ${n}`)) || ""
+  const reqText = text.slice(text.search(/^## Requirements$/m), text.search(/^## Tickets$/m))
+  const never = text.slice(text.search(/^## Never$/m))
+  const missing = (pairs) => pairs.filter(([c]) => !c).map(([, w]) => w)
+  const verdict = (name, miss) => miss.length ? bad(`${name} (missing: ${miss.join("; ")})`) : ok(name)
+  const s3 = flat(step(reqText, 3))
+  const s4 = flat(step(reqText, 4))
+  const agreed = s3.indexOf("**Agreed in this session.**")
+  verdict("roadmap: the model may start it when the user agreed in this session", missing([
+    [!front.some((l) => l.startsWith("disable-model-invocation")), "no disable-model-invocation line"],
+    [front.some((l) => l.startsWith("description:") && l.includes("agreed in this session")), "a description naming `agreed in this session`"],
+  ]))
+  verdict("roadmap: applies with no approve only a draft of the user's quoted changes", missing([
+    [agreed >= 0, "Requirements Step 3: `**Agreed in this session.**`"],
+    ...["no `not kept:`", "no `reordered:`", "no assumption", "the user's own words", "not from a ticket"].map((w) => [s3.includes(w), `Requirements Step 3: ${w}`]),
+  ]))
+  verdict("roadmap: a not kept or reordered line still stops for approval", missing([
+    [agreed >= 0 && s3.indexOf("**Stop**") > agreed, "Requirements Step 3: `**Stop**` after the agreed-in-session paragraph"],
+    [s3.includes("`appended:`") && s3.includes("`reordered:`"), "Requirements Step 3 shows the `appended:` and `reordered:` lines"],
+    [never.split("\n").some((l) => l.includes("10x-roadmap apply") && l.includes("agreed in this session")), "## Never: the apply line excepts a draft agreed in this session"],
+  ]))
+  verdict("roadmap: the report after an apply without approval quotes the user per change", missing([
+    [s4.includes("- <change> — \"<the user's words>\""), "Requirements Step 4: `- <change> — \"<the user's words>\"`"],
+    [s4.includes("Why this order"), "Requirements Step 4: `Why this order`"],
   ]))
 }
 

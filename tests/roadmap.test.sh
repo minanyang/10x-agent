@@ -38,6 +38,7 @@ exits() { local want=$1; shift; vr "$@"; [ $? -eq "$want" ]; } # <exit> <args...
 has() { grep -qF -- "$1" "$tmp/out"; }
 line() { grep -qxF -- "$1" "$tmp/out"; }
 out_is() { [ "$(cat "$tmp/out")" = "$1" ] || { echo "        got: $(cat "$tmp/out")"; false; }; }
+out_is_after() { exits 0 "$1" && out_is "$2"; } # <subcommand> <expected output>: it exits 0 and prints exactly that
 
 # The roadmap the cases start from: two versions, an id on one item, a code span that is not an id, an escaped pipe,
 # and an entry with a continuation line.
@@ -124,7 +125,8 @@ need "exit 0" exits 0 check
 need "each lost line, in roadmap.md's order" out_is "$(printf '%s\n' \
   'not kept: | v2 | use `md-check.js` sections; a \| pipe | Needs v1'"'"'s parser | Planned |' \
   'not kept: - Dates per version' 'not kept: - A committed ROADMAP.md' 'not kept:   once files mode links work' \
-  'not kept: - GitHub milestones — 10x never creates them')"
+  'not kept: - GitHub milestones — 10x never creates them' \
+  'reordered: v1, v2 → v2, v1')"
 need "roadmap.md untouched" cmp -s "$R" <(roadmap)
 roadmap >"$D"
 need "an unchanged draft keeps everything" eval 'exits 0 check && out_is ""'
@@ -144,6 +146,38 @@ need "the two added ids, after the not kept line" out_is "$(printf '%s\n' \
 need "an id roadmap.md already has is not new" eval 'roadmap >"$D" && exits 0 check && out_is ""'
 { roadmap | sed 's/| v2 | use `md-check.js` sections; a \\| pipe |/| v2 | use `md-check.js` sections; a \\| pipe `gh-77` |/'; } >"$D"
 need "an existing id added to another row is new there" eval 'exits 0 check && line "new id: v2 gh-77"'
+end
+
+reset; roadmap >"$R"
+begin "check: items appended to a row not Done print appended, not not kept"
+roadmap | sed 's/; a \\| pipe |/; a \\| pipe; New thing; Other \\| thing |/' >"$D"
+need "exit 0" exits 0 check
+need "one appended line per item, no not kept" out_is "$(printf '%s\n' 'appended: v2 New thing' 'appended: v2 Other \| thing')"
+roadmap | sed 's/; a \\| pipe |/; a \\| pipe; Third `gh-9` |/' >"$D"
+need "an appended item with an id prints appended and new id" out_is_after check "$(printf '%s\n' 'appended: v2 Third `gh-9`' 'new id: v2 gh-9')"
+roadmap | sed 's/; batch by version |/; batch by version; Late item |/' >"$D"
+need "a Done row prints not kept" out_is_after check \
+  'not kept: | v1 | Roadmap skill `gh-77`; batch by version | Everything else builds on it | Done 2026-10-01 |'
+roadmap | sed 's/; a \\| pipe | Needs v1.s parser | Planned |/; a \\| pipe; New thing | Needs v1'"'"'s parser | Next |/' >"$D"
+need "an append with a state change prints not kept" out_is_after check \
+  'not kept: | v2 | use `md-check.js` sections; a \| pipe | Needs v1'"'"'s parser | Planned |'
+roadmap | sed 's/; a \\| pipe |/; a \\| pipes; New thing |/' >"$D"
+need "an append with an item changed prints not kept" out_is_after check \
+  'not kept: | v2 | use `md-check.js` sections; a \| pipe | Needs v1'"'"'s parser | Planned |'
+roadmap | sed 's/; a \\| pipe |/; a \\| pipe; New thing |/' >"$D"
+need "apply prints the appended line" out_is_after apply "$(printf '%s\n' "roadmap: $root/.10x/roadmap.md" 'appended: v2 New thing')"
+end
+
+reset; roadmap >"$R"
+begin "check: existing versions in another order print reordered"
+{ roadmap | sed -n '1,4p'; roadmap | sed -n '6p'; roadmap | sed -n '5p'; roadmap | sed '1,6d'; } >"$D"
+need "exit 0" exits 0 check
+need "only the reordered line" out_is 'reordered: v1, v2 → v2, v1'
+{ roadmap | sed -n '1,5p'; printf '%s\n' '| v1.5 | Between | After v1 | Planned |'; roadmap | sed '1,5d'; } >"$D"
+need "a new row between them is no reorder" out_is_after check ''
+roadmap | sed '/^| v1 |/d' >"$D"
+need "a dropped row is no reorder" out_is_after check \
+  'not kept: | v1 | Roadmap skill `gh-77`; batch by version | Everything else builds on it | Done 2026-10-01 |'
 end
 
 # ---------------------------------------------------------------- apply
