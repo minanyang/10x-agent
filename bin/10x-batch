@@ -21,8 +21,8 @@
 // `mode` (`auto` or `default`; anything else, or no file, is default), `versions` and `versions.closed`, and per ticket
 // <id>/: runs.tsv (`n kind session session_kind start end exit pid`, times in epoch ms, end and exit empty while a run
 // is open), `auto-approved` (the plan hash `loop` approved), `dropped`, `accepted-green.md` (the GREEN test files the
-// user accepted), reruns.tsv (`run gate head result exit log`, one record per host rerun) and `rerun` (the pid of the
-// `run` rerunning a gate). S, S/batch and S/batch/<id> are made 0700, and a symlink at any of them is refused. init, run, drop,
+// user accepted), reruns.tsv (`run gate head result exit log`, one record per host rerun), `rerun` (the pid of the
+// `run` rerunning a gate) and `security` (the settled security entries of a landed ticket, below). S, S/batch and S/batch/<id> are made 0700, and a symlink at any of them is refused. init, run, drop,
 // replan, approve, accept-green and loop first refuse an S equal to or inside the
 // main checkout, a worktree, a path the worker sandbox may write, or a sandbox.filesystem.allowWrite of the project's
 // or the user's .claude/settings.json or settings.local.json, or of the same two files in CLAUDE_CONFIG_DIR, when set,
@@ -159,6 +159,20 @@
 // ticket lists neither. A ticket whose latest run has a <nn>-fallback file adds
 // `auto mode unavailable: ran in <mode>` to its evidence.
 //
+// Security entries of a landed ticket: `run` (after its worker, before the board) and every `loop` pass settle each
+// landed ticket once, claimed by creating S/batch/<id>/security exclusively. Its candidates, each once, in order: the
+// `Security: <fp>` header lines of ticket.md, each roadmap item linked to <id> ending ` (security <fp>)`, and for a
+// `security-<8 hex>` id each security.md entry whose fp starts with those hex and whose `seen in` lists <id> — the
+// ticket's own — then each fp in plan.md's `## Acceptance criteria`, never its own. An own entry is removed with
+// `10x-security remove <found in> <fp>` (TENX_BATCH unset) when its `found in` is <id> or an audit run and the last
+// `## Round <n>` of review.md has a `Reviewers:` line naming `10x:security-reviewer` and no mention of the fp outside its
+// `Criteria:` line, `### Fixes applied` and `### Decisions`; else it is kept with the first failing condition. The record
+// holds one line per candidate, `removed\t<fp>\t<n>`, `kept\t<fp>\t<why>` or `gone\t<fp>`. The board lists them under
+// `## Security entries`, after `## Needs the human`, `## Host reruns` and `## Set aside` and before `## Hand checks
+// pending`, absent when there is none, as `- <id> — removed <fp> (review.md
+// round <n>)`, `- <id> — kept <fp>: <why>` or `- <id> — <fp> already gone`; a kept entry is also listed under
+// `## Needs the human` as `- <id> — security entry kept <fp>: <why>`.
+//
 // Host reruns in a phase: a red record of the latest implement or close run fails the ticket with `host rerun red:
 // <gate>: <last 10 lines of its log>`. A FAIL row of verify/summary.txt is excused when a green record's gate has its
 // first 28 characters and its head starts with the summary's `tree: HEAD <short>`; an unexcused FAIL fails an implement
@@ -177,6 +191,7 @@ const os = require('node:os')
 const path = require('node:path')
 const md = require(path.join(__dirname, '..', 'scripts', 'md-check.js'))
 const roadmap = require(path.join(__dirname, '..', 'scripts', 'roadmap.js'))
+const sec = require(path.join(__dirname, '..', 'scripts', 'security.js'))
 const worktree = require(path.join(__dirname, '..', 'scripts', 'worktree.js'))
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
@@ -1158,6 +1173,132 @@ function refusal(rows, i, kind) {
   return `${kind} ${r.id} refused`
 }
 
+// ---------------------------------------------------------------- security entries of a landed ticket
+
+const FPS = /sha256:[0-9a-f]{64}/g
+
+// Settles the security entries of every landed ticket once: the claim is S/batch/<id>/security, created exclusively, so
+// a concurrent `run` or `loop` that loses the race skips the ticket.
+function settleSecurity(rows) {
+  for (const r of rows) {
+    if (r.phase !== 'landed') continue
+    const rec = path.join(sdir(r.id), 'security')
+    if (fs.lstatSync(rec, { throwIfNoEntry: false })) continue
+    mkd(sdir(r.id))
+    try {
+      fs.writeFileSync(rec, 'claimed\n', { flag: 'wx' })
+    } catch {
+      continue
+    }
+    put(rec, settle(r.id).map((x) => x.join('\t') + '\n').join(''))
+  }
+}
+
+// One record line per candidate of ticket <id>: ['removed', fp, n], ['kept', fp, why] or ['gone', fp].
+function settle(id) {
+  const s = sec.load(TENX_DIR)
+  const why = s.refusal || (s.faults.length ? `${rel(s.file)}:${s.faults[0].line}: ${s.faults[0].why}` : null)
+  const cands = securityCandidates(id, why ? [] : s.entries)
+  const clean = (t) => flat(t).replace(/\t/g, ' ')
+  if (why) return cands.map((c) => ['kept', c.fp, `security.md cannot be read: ${clean(why)}`])
+  const round = lastRound(id)
+  return cands.map(({ fp, own }) => {
+    if (!own) return ['kept', fp, "not the ticket's own"]
+    const e = s.entries.find((x) => x.fp === fp)
+    if (!e) return ['gone', fp]
+    const found = e.values['found in']
+    if (found !== id && !sec.AUDIT.test(found)) return ['kept', fp, `found in ${clean(found)} is neither ${id} nor an audit run`]
+    if (!round) return ['kept', fp, 'review.md has no review round']
+    if (!round.security) return ['kept', fp, `review.md round ${round.n} ran no security reviewer`]
+    if (round.text.includes(fp)) return ['kept', fp, `review.md round ${round.n} has a finding against it`]
+    const env = { ...process.env }
+    delete env.TENX_BATCH
+    const x = spawnSync(path.join(__dirname, '10x-security'), ['remove', found, fp], { cwd: ROOT, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    if (x.status === 0) return ['removed', fp, round.n]
+    const last = (x.stderr || '').split('\n').filter((l) => l.trim()).pop() || `exit ${x.status ?? x.error?.message}`
+    return ['kept', fp, `10x-security remove failed: ${clean(last.replace(/^10x-security: /, ''))}`]
+  })
+}
+
+// The fingerprints ticket <id> may have fixed, each once, the first occurrence winning: [{ fp, own }]. <entries> are
+// security.md's, for a `security-<8 hex>` ticket's audit entries.
+function securityCandidates(id, entries) {
+  const out = []
+  const add = (fp, own) => out.some((c) => c.fp === fp) || out.push({ fp, own })
+  // Read as 10x-security's ticketNames reads the header lines.
+  const file = path.join(tdir(id), 'ticket.md')
+  if (fs.lstatSync(tdir(id), { throwIfNoEntry: false })?.isDirectory() && fs.lstatSync(file, { throwIfNoEntry: false })?.isFile())
+    for (const l of fs.readFileSync(file, 'utf8').split('\n').slice(1)) {
+      if (!/^[A-Za-z]+: /.test(l)) break
+      const m = /^Security: (sha256:[0-9a-f]{64})$/.exec(l.trim())
+      if (m) add(m[1], true)
+    }
+  const text = readOr(ROADMAP)
+  const p = text === null ? null : roadmap.parse(text, roadmap.ticketTest(TENX_DIR))
+  if (p && !p.faults.length)
+    for (const row of p.rows)
+      for (const it of row.items) {
+        const m = it.id === id && / \(security (sha256:[0-9a-f]{64})\)$/.exec(it.text.replace(/\s*`[^`]*`\s*$/, ''))
+        if (m) add(m[1], true)
+      }
+  const a = /^security-([0-9a-f]{8})$/.exec(id)
+  if (a) for (const e of entries) if (e.fp.startsWith(`sha256:${a[1]}`) && sec.list(e.values['seen in']).includes(id)) add(e.fp, true)
+  const plan = readOr(path.join(tdir(id), 'plan.md'))
+  const ac = plan && md.sections(plan).find((s) => s.name.toLowerCase() === 'acceptance criteria')
+  if (ac) for (const fp of plan.split('\n').slice(ac.from, ac.to).join('\n').match(FPS) || []) add(fp, false)
+  return out
+}
+
+// The last `## Round <n> — full|fixes` of ticket <id>'s review.md: { n, security, text }, <security> whether a
+// `Reviewers:` line names 10x:security-reviewer, <text> the round without its `Criteria:` line, `### Fixes applied` and
+// `### Decisions`; null when there is none, or review.md is missing or not a regular file.
+function lastRound(id) {
+  const file = path.join(tdir(id), 'review.md')
+  if (!fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) return null
+  const lines = fs.readFileSync(file, 'utf8').split('\n')
+  let at = -1
+  let n = null
+  lines.forEach((l, k) => {
+    const m = /^## Round ([0-9]+) — (?:full|fixes)[ \t]*$/.exec(l)
+    if (m) [at, n] = [k, m[1]]
+  })
+  if (at < 0) return null
+  let end = lines.findIndex((l, k) => k > at && /^#{1,2} /.test(l))
+  if (end < 0) end = lines.length
+  const body = lines.slice(at + 1, end)
+  const security = body.some((l) => /^Reviewers:/.test(l) && l.slice(10).split(',').map((x) => x.trim()).includes('10x:security-reviewer'))
+  const kept = []
+  let skip = false
+  for (const l of body) {
+    const h = /^(#{1,3}) +(.*?)\s*$/.exec(l)
+    if (h) skip = h[1] === '###' && /^(Fixes applied|Decisions)$/.test(h[2])
+    if (!skip && !/^Criteria:/.test(l)) kept.push(l)
+  }
+  return { n, security, text: kept.join('\n') }
+}
+
+// Ticket <id>'s security record as board lines: { section, need }.
+function securityLines(id) {
+  const text = readOr(path.join(sdir(id), 'security'))
+  if (text === null) return { section: [], need: [] }
+  if (text.trim() === 'claimed') {
+    const l = `- ${id} — security check did not finish; see ${path.join(sdir(id), 'security')}`
+    return { section: [l], need: [l] }
+  }
+  const section = []
+  const need = []
+  for (const line of text.split('\n').filter(Boolean)) {
+    const [what, fp, x = ''] = line.split('\t')
+    if (what === 'removed') section.push(`- ${id} — removed ${fp} (review.md round ${x})`)
+    else if (what === 'gone') section.push(`- ${id} — ${fp} already gone`)
+    else if (what === 'kept') {
+      section.push(`- ${id} — kept ${fp}: ${x}`)
+      need.push(`- ${id} — security entry kept ${fp}: ${x}`)
+    }
+  }
+  return { section, need }
+}
+
 // ---------------------------------------------------------------- board
 
 function board(rows) {
@@ -1167,13 +1308,17 @@ function board(rows) {
     lines.push(`| ${i + 1} | ${r.id} | ${r.phase} | ${cell(r.session)} | ${SETTLED.has(r.phase) ? r.phase : '—'} | ${cell(r.evidence)} |`),
   )
   const need = []
+  const secLines = []
   for (const r of rows) {
+    const s = securityLines(r.id)
+    secLines.push(...s.section)
     if (r.phase === 'waiting') need.push(`- ${r.id} — waiting${r.approvable ? ', plan approvable' : ''}: ${r.evidence ? flat(r.evidence) : 'no turn recorded'}`)
     else if (r.phase === 'failed' || r.phase === 'held') need.push(`- ${r.id} — ${r.phase}: ${flat(r.evidence)}`)
     else if (r.phase === 'pr-open') need.push(`- ${r.id} — merge ${flat(r.evidence)}`)
     else if (r.denied) need.push(`- ${r.id} — ${r.phase}: ${flat(r.denied)}`)
     if (r.phase !== 'landed') for (const x of r.relocked) need.push(`- ${r.id} — relocked: ${flat(x)}`)
     if (r.phase !== 'landed') for (const x of r.decided) need.push(`- ${r.id} — decided: ${x}`)
+    need.push(...s.need)
   }
   lines.push('', '## Needs the human', ...(need.length ? need : ['- none']))
   const rr = rows.flatMap((r) =>
@@ -1184,6 +1329,7 @@ function board(rows) {
     .filter((r) => r.setAside)
     .map((r) => `- ${r.id} — ${r.phase}, waiting ${Math.floor(r.waited / 3600000)}h ${pad(Math.floor(r.waited / 60000) % 60)}m: ${r.evidence ? flat(r.evidence) : 'no turn recorded'}`)
   if (aside.length) lines.push('', '## Set aside', ...aside)
+  if (secLines.length) lines.push('', '## Security entries', ...secLines)
   // Landed tickets and the ids closed at init, under the first recorded version whose row lists them, then the rest.
   const closed = (readOr(CLOSED) || '').split('\n').map((s) => s.trim()).filter((s) => ID.test(s))
   const pool = [...new Set([...rows.filter((r) => r.phase === 'landed').map((r) => r.id), ...closed])]
@@ -1457,6 +1603,7 @@ async function run(argv, replan = false) {
     res = await turnOf('reply', '--resume', runs(id).at(-1).session, reply, true)
   }
   const after = deriveAll(ids)
+  settleSecurity(after)
   writeBoard(after)
   if (res.code === null) process.exit(2)
   process.stdout.write(`phase: ${after[i].phase}\nboard: ${BOARD}\n`)
@@ -1829,6 +1976,7 @@ async function loop(argv) {
   for (;;) {
     woke = false
     const rows = deriveAll(ids)
+    settleSecurity(rows)
     writeBoard(rows)
     let started = false
     for (const a of actions(rows)) {
@@ -1860,6 +2008,7 @@ async function loop(argv) {
     }
     const now = started ? null : deriveAll(ids)
     if (now && !ownOpen() && !now.some((r) => Object.values(RUNNING).includes(r.phase))) {
+      settleSecurity(now)
       writeBoard(now)
       markDone(now)
       process.stdout.write(JSON.stringify({ items: items(now, auto, refused, held) }) + '\n')
