@@ -569,5 +569,26 @@ if (readme === null) { bad("README.md exists"); process.exit(1) }
   left.length ? bad(name, left.join("; ")) : ok(name)
 }
 
+// gh-60 AC4 — red at lock and the command-mode note in red-proof's header, the docs and /10x:work.
+{
+  const name = "red-proof's header, the docs and /10x:work describe red at lock and the command-mode note"
+  const missing = []
+  const need = (f, words) => {
+    const text = read(f)
+    for (const w of words) if (text === null || !text.includes(w)) missing.push(`${f}: ${w}`)
+  }
+  need("bin/10x-red-proof", ["red at lock", "no `## Tests` row names"])
+  need("docs/scripts.md", ["red at lock", "no `## Tests` row names"])
+  need("docs/configuration.md", ["no `## Tests` row names"])
+  need("docs/loop.md", ["red at lock", "`note`"])
+  need("skills/work/SKILL.md", ["red at lock"])
+  if ((read("bin/10x-red-proof") || "").includes("no `note` in this mode")) missing.push("bin/10x-red-proof: still says no `note` in this mode")
+  const lines = (read("CHANGELOG.md") || "").split("\n")
+  const at = lines.findIndex((s) => s === "## Unreleased")
+  const next = lines.findIndex((s, k) => k > at && /^##\s/.test(s))
+  if (!(at < 0 ? "" : lines.slice(at, next < 0 ? undefined : next).join("\n")).includes("red at lock")) missing.push("CHANGELOG.md ## Unreleased: red at lock")
+  missing.length ? bad(name, `missing: ${missing.join("; ")}`) : ok(name)
+}
+
 process.exit(fail)
 JS

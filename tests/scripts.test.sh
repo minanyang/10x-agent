@@ -273,6 +273,30 @@ git -C "$wtrp" rm -q tests/b.test.sh && git -C "$wtrp" commit -qm "test: drop b"
 expect "red-proof: shell test goes RED" 0 10x-red-proof RP1
 expect "rm RP1" 0 10x-worktree rm RP1
 
+# red-proof command mode: a green modified test file no ## Tests row names is a note, only with a plan.md
+mkdir -p tests
+printf '%s\n' '[ 1 = 1 ]' >tests/c.test.sh
+printf '%s\n' '[ 1 = 1 ]' >tests/d.test.sh
+git add tests/c.test.sh tests/d.test.sh && git commit -qm "test: c and d" && git push -q origin main
+echo '{ "tdd": false, "redProof": { "command": "bash {file}", "tests": ["tests/*.test.sh"] } }' >.claude/10x.json
+expect "worktree add RP2" 0 10x-worktree add RP2 --no-setup
+wtrp="$tmp/repo/.worktrees/RP2"
+echo '# c' >>"$wtrp/tests/c.test.sh"
+echo '# d' >>"$wtrp/tests/d.test.sh"
+echo 'val() { echo 42; }' >"$wtrp/lib.sh"
+git -C "$wtrp" add -A && git -C "$wtrp" commit -qm "feat: val"
+mkdir -p .10x/RP2
+printf '## Tests\n| AC | Test file | Case |\n|---|---|---|\n| AC1 | `tests/d.test.sh` | `d` |\n' >.10x/RP2/plan.md
+expect "red-proof: command mode with a plan" 1 10x-red-proof RP2
+grep -q '^note   tests/c.test.sh' "$tmp/out" && ok "red-proof: command mode notes a green modified test no Tests row names" || bad "red-proof: command mode notes a green modified test no Tests row names"
+grep -q '^GREEN  tests/d.test.sh' "$tmp/out" && ok "red-proof: command mode keeps a green modified test a Tests row names GREEN" || bad "red-proof: command mode keeps a green modified test a Tests row names GREEN"
+rm .10x/RP2/plan.md
+expect "red-proof: command mode without a plan" 1 10x-red-proof RP2
+grep -q '^GREEN  tests/c.test.sh' "$tmp/out" && ok "red-proof: command mode keeps a green modified test GREEN without a plan" || bad "red-proof: command mode keeps a green modified test GREEN without a plan"
+expect "rm RP2" 0 10x-worktree rm RP2
+git rm -q tests/c.test.sh tests/d.test.sh && git commit -qm "test: drop c and d" && git push -q origin main
+echo '{}' >.claude/10x.json
+
 # 10x-test: node --test on the changed test files, or on the files given; the tree is left as it is
 echo '{}' >.claude/10x.json
 expect "worktree add VT" 0 10x-worktree add VT --no-setup
