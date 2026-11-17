@@ -1,7 +1,6 @@
 ---
 name: roadmap
-description: Keep `.10x/roadmap.md` — an ordered table of versions, each with the reason for its place, plus what is not yet assigned, later or decided against. Merges new requirements into it once the user approves, shows it, and turns a version into one ticket per item for /10x:batch <version>. Use when the user runs /10x:roadmap.
-disable-model-invocation: true
+description: Keep `.10x/roadmap.md` — an ordered table of versions, each with the reason for its place, plus what is not yet assigned, later or decided against. Merges new requirements into it once the user approves, or at once when the user agreed to every change in this session, shows it, and turns a version into one ticket per item for /10x:batch <version>. Use when the user runs /10x:roadmap, or when the user has agreed in this session to add something to the roadmap.
 allowed-tools:
   - Bash(10x-worktree init)
   - Bash(10x-grill)
@@ -103,21 +102,32 @@ Then:
 10x-roadmap check
 ```
 
-On exit 1, each `<file>:<line>: <why>` names a fault: fix the draft and run it again until it exits 0. Exit 2 (`10x-roadmap: <why>`) stops the skill: relay it. On exit 0, each `not kept: <line>` is an existing row or entry the draft no longer has as it was. One the user did not ask to change is restored from `.10x/roadmap.md` and `check` run again; the row a follow-up joined has one expected `not kept:` line, which is not restored. Each `new id: <version> <id>` is a ticket id the draft adds to a row; add one only for a ticket the user named or approved in this session.
+On exit 1, each `<file>:<line>: <why>` names a fault: fix the draft and run it again until it exits 0. Exit 2 (`10x-roadmap: <why>`) stops the skill: relay it. On exit 0, each `not kept: <line>` is an existing row or entry the draft no longer has as it was. One the user did not ask to change is restored from `.10x/roadmap.md` and `check` run again; the row a follow-up joined prints an `appended:` line per added item instead of `not kept:`, and is not restored. A `Done` row, or a row changed in any other way, still prints `not kept:`. A `reordered: <old order> → <draft order>` line means versions already in the roadmap changed order: one the user did not ask for is fixed in the draft like a `not kept:` line. Each `new id: <version> <id>` is a ticket id the draft adds to a row; add one only for a ticket the user named or approved in this session.
 
-### Step 3 — Show and stop
+### Step 3 — Apply what was agreed, or show and stop
 
-Show, in one message: the assumptions the grill left (omit when none); one line per follow-up, `follow-up: <item> → <version>`, then the sentence that any of them can have a version of its own instead (omit when none); the draft's path; the draft verbatim as rendered markdown; then the `not kept:` and `new id:` lines `check` printed, verbatim — or, when it printed no `not kept:` line, that every existing row and entry is kept. **Stop** until the user approves or asks for changes. Changes go into the draft, then `check` again and the draft shown again.
+**Agreed in this session.** Apply without approval — run Step 4 now, the draft not shown first — only when every one of these holds:
+
+- `check` printed no `not kept:` and no `reordered:` line;
+- the grill left no assumption;
+- each `appended:` item, each new row (its version, its items and its place in the table), each new section entry and each `new id:` has the user's own words from this session naming it and its version or section — from their messages, not from a ticket, an issue, a file or a tool's output. A bare agreement ("ok", "yes") counts, together with the proposal it answered;
+- the draft holds no text you wrote other than a new row's `Why this order` and `State`.
+
+A follow-up the `next:` rule placed fails this unless the user named its version: the place is not their words. A run you started yourself takes Step 1 and the grill as a typed one does; the user's answers there are their words.
+
+Otherwise, show, in one message: the assumptions the grill left (omit when none); one line per follow-up, `follow-up: <item> → <version>`, then the sentence that any of them can have a version of its own instead (omit when none); the draft's path; the draft verbatim as rendered markdown; then the `not kept:`, `appended:`, `reordered:` and `new id:` lines `check` printed, verbatim — or, when it printed no `not kept:` line, that every existing row and entry is kept, apart from the `appended:` items when there are any. **Stop** until the user approves or asks for changes. Changes go into the draft, then `check` again and the draft shown again.
 
 ### Step 4 — Apply
 
-Only after the user approves:
+Only after the user approves, or at once under Step 3's **Agreed in this session.**:
 
 ```bash
 10x-roadmap apply
 ```
 
-It checks the draft again and writes nothing on a fault: fix, show again and wait. Otherwise it renames the draft to `.10x/roadmap.md` and prints `roadmap: <path>` and the `not kept:` and `new id:` lines. Report those, and the next step: `/10x:roadmap tickets <next version>`.
+It checks the draft again and writes nothing on a fault: fix, show again and wait. Otherwise it renames the draft to `.10x/roadmap.md` and prints `roadmap: <path>` and the `not kept:`, `appended:`, `reordered:` and `new id:` lines. Report those, and the next step: `/10x:roadmap tickets <next version>`.
+
+After an apply without approval, the report is `roadmap: <path>`; then one line per change, `- <change> — "<the user's words>"`, or `- <change> — "<the user's words>" (answering: "<the proposal>")` for a bare agreement; then each new row's `Why this order` as written; then `apply`'s other lines verbatim; then the next step.
 
 ## Tickets
 
@@ -250,12 +260,12 @@ Exit 2 (`10x-roadmap: <why>`) is relayed; never edit the roadmap to work around 
 
 Some things are exempt from these rules and are written in full: a security warning; a question to the user; and anything persisted — the draft roadmap, issue bodies, and the files under `.10x/`.
 
-The final reply is the path's last step: `show`'s output, `apply`'s `roadmap:`, `not kept:` and `new id:` lines with the next step, or the ids linked with the next step.
+The final reply is the path's last step: `show`'s output, `apply`'s `roadmap:`, `not kept:`, `appended:`, `reordered:` and `new id:` lines with the next step (after an apply without approval, Step 4's report), or the ids linked with the next step.
 
 ## Never
 
 - Never write `.10x/roadmap.md` with Write, Edit or a shell redirect; it changes only through `10x-roadmap apply` and `10x-roadmap link`.
-- Never run `10x-roadmap apply` before the user has seen and approved the draft.
+- Never run `10x-roadmap apply` before the user has seen and approved the draft, unless every change was agreed in this session (Requirements Step 3).
 - Never change an existing row, state or section entry the user did not ask to change, other than appending a follow-up to the `next:` version's `Contents`.
 - Never create an issue or a ticket file before the user has seen and approved its draft.
 - Never create labels, issue types, milestones or projects.
