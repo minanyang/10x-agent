@@ -2848,11 +2848,15 @@ rr_config() {
   [ "$1" = none ] || h=",\"batch\":{\"hostRerun\":$1}"
   printf '{"close":"local"%s,"gates":%s}\n' "$h" "$2" >.claude/10x.json
 }
-# rr_ticket <id> — an approved ticket with a real worktree .worktrees/<id> and a plan run behind it.
+# rr_ticket <id>… — approved tickets in one batch, each with a real worktree .worktrees/<id> and a plan run behind it.
 rr_ticket() {
+  local id
   git worktree prune
-  ticket "$1"; vb init "$1"; approved "$1" a
-  git worktree add -q --detach ".worktrees/$1" HEAD
+  ticket "$@"; vb init "$@"
+  for id in "$@"; do
+    approved "$id" a
+    git worktree add -q --detach ".worktrees/$id" HEAD
+  done
 }
 # rr_summary <id> <gate> — a verify summary where <gate> is FAIL at the worktree's HEAD.
 rr_summary() {
@@ -2936,11 +2940,11 @@ end
 
 reset; rm -f "$tmp/ran.log"
 begin "a FAIL covered by a green rerun at the same HEAD does not fail the ticket"
-rr_config true "[\"$G_OK\"]"; rr_ticket t1
+rr_config true "[\"$G_OK\"]"; rr_ticket t1 t2
 rr_summary t1 "$G_OK"
 rr_run "$G_OK" t1 implement
 need "implemented, not failed" phase_is t1 implemented
-rr_config true '[]'; rr_ticket t2; rr_summary t2 "$G_OK"
+rr_config true '[]'; rr_summary t2 "$G_OK"
 rr_run "$G_OK" t2 implement
 need "an uncovered FAIL still waits on the ask" phase_is t2 waiting
 end
@@ -2957,7 +2961,7 @@ end
 
 reset; rm -f "$tmp/ran.log"
 begin "the board lists each rerun with its gate, place and result"
-rr_config true "[\"$G_OK\",\"$G_RED\"]"; rr_ticket t1; rr_ticket t2; rr_ticket t3
+rr_config true "[\"$G_OK\",\"$G_RED\"]"; rr_ticket t1 t2 t3
 rr_run "$G_OK" t1 implement; rr_run "echo other" t2 implement; rr_run "$G_RED" t3 implement
 vb status
 sha="$(git -C .worktrees/t1 rev-parse --short HEAD)"
@@ -2966,7 +2970,7 @@ need "refused line" grep -qF -- "- t2 — echo other: refused: not in the main c
 need "red line" grep -qxF -- "- t3 — $G_RED: red (run 02, .worktrees/t3 at $sha)" "$B/board.md"
 need "the section sits between Needs the human and Hand checks pending" eval '
   a="$(grep -n "^## Needs the human" "$B/board.md" | cut -d: -f1)"; b="$(grep -n "^## Host reruns" "$B/board.md" | cut -d: -f1)"
-  c="$(grep -n "^## Hand checks pending" "$B/board.md" | cut -d: -f1)"; [ -n "$b" ] && [ "$a" -lt "$b" ] && [ "$b" -lt "$c" ]'
+  c="$(grep -n "^## Hand checks pending" "$B/board.md" | cut -d: -f1)"; [ -n "$b" ] && [ "$a" -lt "$b" ] && { [ -z "$c" ] || [ "$b" -lt "$c" ]; }'
 reset; ticket t1; vb init t1; vb status
 need "absent with no rerun" not grep -q '^## Host reruns' "$B/board.md"
 end
