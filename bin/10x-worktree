@@ -5,7 +5,7 @@
 #   10x-worktree add  <id> [--type feat] [--slug short-name] [--no-setup]
 #   10x-worktree list
 #   10x-worktree path <id>
-#   10x-worktree rm   <id>
+#   10x-worktree rm   <id> [--landed-only]
 #   10x-worktree sync-base
 #   10x-worktree memory <id>
 #
@@ -31,6 +31,13 @@
 # (`git branch -d`); an unmerged branch is kept and reported. Once it deletes the branch it writes
 # .10x/<id>/landed, one line `landed on <base> at <short sha>` (the text of 10x-batch's <nn>-landed), which
 # `10x-batch init <version>` reads as landed; a symlinked .10x/<id> or landed file is reported and left alone.
+# When the folder is gone but git still lists its worktree record (`git worktree list --porcelain`, under the real
+# path), `rm` takes the branch and HEAD from the record, prunes it (`pruned the worktree record of <path>`; git prunes
+# every record whose folder is gone) and applies the same branch rules; a record with no branch, or still listed after
+# the prune (locked), exits 2. With `--landed-only` a worktree whose folder is there is removed only when its branch is
+# an ancestor of the main checkout's HEAD or of the base, or has landed as above; otherwise it prints `kept worktree
+# <path> and branch <branch>: its changes are not on <base ref>` and exits 0. Under TENX_BATCH (a batch worker), any
+# non-zero exit of `rm` ends with `left for 10x-batch: it finishes this cleanup once the run ends`.
 # `sync-base` fetches the base and fast-forwards it in the main checkout when the main checkout
 # is on the base and git allows the fast-forward (uncommitted changes to files the incoming
 # commits do not touch are carried over); otherwise it leaves it and says why.
@@ -180,22 +187,56 @@ case "$cmd" in
     ;;
 
   rm)
-    id="${1:-}"; [ -n "$id" ] || die "usage: 10x-worktree rm <id>"
+    usage="usage: 10x-worktree rm <id> [--landed-only]"
+    id="${1:-}"; [ -n "$id" ] || die "$usage"
     check_id "$id"
-    [ $# -eq 1 ] || die "usage: 10x-worktree rm <id>"
-    wt_path "$id"; path="$WT"
-    branch="$(git -C "$path" rev-parse --abbrev-ref HEAD)"
-    tip="$(git -C "$path" rev-parse HEAD)"
+    landed_only=0
+    case "$#:${2:-}" in
+      1:) ;;
+      2:--landed-only) landed_only=1 ;;
+      *) die "$usage" ;;
+    esac
+    # A batch worker's sandbox may refuse what rm writes in the git dir; 10x-batch repeats it on the host after the run.
+    trap 'rc=$?; [ "$rc" -eq 0 ] || [ -z "${TENX_BATCH:-}" ] || say "left for 10x-batch: it finishes this cleanup once the run ends"' EXIT
     dir="$(task_dir "$id")"
+    path="$(worktree_dir)/$id"
+    if [ -e "$path/.git" ]; then
+      wt_path "$id"; path="$WT"
+      branch="$(git -C "$path" rev-parse --abbrev-ref HEAD)"
+      tip="$(git -C "$path" rev-parse HEAD)"
+      if [ "$landed_only" = 1 ] && ! git -C "$ROOT" merge-base --is-ancestor "$branch" HEAD 2>/dev/null &&
+        ! git -C "$ROOT" merge-base --is-ancestor "$branch" "$(base_ref)" 2>/dev/null && ! landed "$branch"; then
+        say "kept worktree $path and branch $branch: its changes are not on $(base_ref)"
+        exit 0
+      fi
+      # git worktree remove would run its own git status in the worktree, reading the link files again: its two tests
+      # are made here, pinned, and --force then starts no git there.
+      [ ! -e "$WT_GIT_DIR/modules" ] || die "worktree has submodules; remove it yourself"
+      st="$(git -C "$path" status --porcelain --ignore-submodules=none)" || die "could not read the worktree's status"
+      [ -z "$st" ] || die "worktree has uncommitted changes; commit or discard them yourself"
+      git -C "$ROOT" worktree remove --force "$path" || die "could not remove the worktree at $path"
+      say "removed: $path"
+    else
+      # The folder is gone but git may still hold its record, listed under the real path.
+      wd="$(worktree_dir)"
+      [ ! -d "$wd" ] || wd="$(cd -P "$wd" && pwd)"
+      rec="$(git -C "$ROOT" worktree list --porcelain | awk -v want="worktree $wd/$id" '
+        $0 == want { on = 1; print "found"; next }
+        /^worktree / { on = 0 }
+        on && /^HEAD / { print "head " substr($0, 6) }
+        on && /^branch refs\/heads\// { print "branch " substr($0, 19) }
+      ')"
+      [ -n "$rec" ] || wt_path "$id"
+      path="$wd/$id"
+      tip="$(sed -n 's/^head //p' <<<"$rec")"
+      branch="$(sed -n 's/^branch //p' <<<"$rec")"
+      [ -n "$branch" ] || die "the worktree record of $path has no branch; remove it yourself"
+      git -C "$ROOT" worktree prune
+      ! git -C "$ROOT" worktree list --porcelain | grep -qxF "worktree $path" || die "the worktree record of $path is locked"
+      say "pruned the worktree record of $path"
+    fi
     recorded=""
     if [ ! -L "$dir" ] && [ ! -L "$dir/start" ] && [ -f "$dir/start" ]; then recorded="$(cat "$dir/start")"; fi
-    # git worktree remove would run its own git status in the worktree, reading the link files again: its two tests
-    # are made here, pinned, and --force then starts no git there.
-    [ ! -e "$WT_GIT_DIR/modules" ] || die "worktree has submodules; remove it yourself"
-    st="$(git -C "$path" status --porcelain --ignore-submodules=none)" || die "could not read the worktree's status"
-    [ -z "$st" ] || die "worktree has uncommitted changes; commit or discard them yourself"
-    git -C "$ROOT" worktree remove --force "$path" || die "could not remove the worktree at $path"
-    say "removed: $path"
     # The record is agent-writable: deleting with -D also requires the tip to be on the base, so nothing is lost.
     if [ "$recorded" = "$tip" ] && git -C "$ROOT" merge-base --is-ancestor "$tip" "$(base_ref)" 2>/dev/null; then
       # Still where add cut it: nothing of its own landed, so no record for 10x-batch init to skip.

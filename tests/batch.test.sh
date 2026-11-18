@@ -3174,5 +3174,95 @@ need "the entry stays" has_entry "$FPA"
 need "the board names the reason" board_has "- t1 — kept $FPA: review.md round 1 has a finding against it"
 end
 
+# ---------------------------------------------------------------- close cleanup on the host
+
+# cc_start <landed|unlanded> <folder|record> — reset, a real worktree for t1 with one commit of its own, run records as
+# after an implement run; landed merges the branch into the base; the branch is pushed to origin; record moves the
+# folder away so only git's record is left. origin points at the bare repo for the real `10x-worktree add` and the run.
+cc_start() {
+  reset; ticket t1; vb init t1
+  git remote set-url origin "$tmp/origin.git"
+  git worktree prune; git branch -D feat/t1 >/dev/null 2>&1
+  10x-worktree add t1 --no-setup >"$tmp/wt.out" 2>&1
+  git remote set-url origin git@github.com:acme/batch.git
+  CCWT="$root/.worktrees/t1"; CCBR="$(git -C "$CCWT" rev-parse --abbrev-ref HEAD)"; CCBASE="$(git rev-parse main)"
+  echo mine >"$CCWT/mine.txt"; git -C "$CCWT" add mine.txt; git -C "$CCWT" commit -qm "feat: mine"
+  git -C "$CCWT" push -q "$tmp/origin.git" "$CCBR"
+  [ "$1" = landed ] && git merge -q --ff-only "$CCBR"
+  implemented t1 a
+  [ "$2" = record ] && rm -rf "$CCWT"
+  return 0
+}
+cc_run() { git remote set-url origin "$tmp/origin.git"; vb run t1 close; git remote set-url origin git@github.com:acme/batch.git; }
+cc_end() {
+  git checkout -q main 2>/dev/null; git reset -q --hard "$CCBASE"
+  git worktree remove --force "$CCWT" 2>/dev/null; rm -rf "$CCWT"; git worktree prune
+  git branch -D "$CCBR" >/dev/null 2>&1; git branch -D other >/dev/null 2>&1
+  git --git-dir="$tmp/origin.git" update-ref -d "refs/heads/$CCBR"
+}
+cc_listed() { git worktree list --porcelain | grep -qF "worktree $CCWT"; }
+cc_branch() { git show-ref --verify --quiet "refs/heads/$CCBR"; }
+cc_remote() { git --git-dir="$tmp/origin.git" show-ref --verify --quiet "refs/heads/$CCBR"; }
+cc_row() { grep -F "| t1 | $1 |" "$B/board.md" | grep -qF -- "$2"; } # <phase> <text in its row>
+cc_board() { grep -qF -- "$1" "$B/board.md"; }
+cc_item() { grep -F '"need":"cleanup"' "$tmp/loop.out" | grep -F '"id":"t1"' | grep -qF "$1"; }
+
+begin "close cleanup: a landed close's leftover worktree, record and branches are removed"
+for left in folder record; do
+  cc_start landed "$left"; cc_run
+  need "$left: the folder is gone" test ! -e "$CCWT"
+  need "$left: git no longer lists the worktree" not cc_listed
+  need "$left: the local branch is deleted" not cc_branch
+  need "$left: the remote branch is deleted" not cc_remote
+  need "$left: landed" phase_is t1 landed
+  need "$left: the steps are written to <nn>-cleanup" test -s "$B/t1/03-cleanup"
+  need "$left: Evidence names the local branch step" cc_row landed "deleted branch $CCBR"
+  need "$left: Evidence names the remote branch step" cc_row landed "deleted origin/$CCBR"
+  if [ "$left" = folder ]; then need "folder: Evidence names the removal" cc_row landed "removed: $CCWT"
+  else need "record: Evidence names the prune" cc_row landed "pruned the worktree record of $CCWT"; fi
+  cc_end
+done
+end
+
+begin "close cleanup: a branch not on the base is kept and named"
+cc_start unlanded folder; cc_run
+need "folder: the worktree stays" test -e "$CCWT/.git"
+need "folder: the branch stays" cc_branch
+need "folder: the record stays" cc_listed
+need "folder: the file names the kept worktree" grep -qF "cleanup: kept worktree $CCWT and branch $CCBR" "$B/t1/03-cleanup"
+need "folder: Needs the human names it" cc_board "- t1 — cleanup: kept worktree $CCWT and branch $CCBR"
+cc_end
+cc_start unlanded record; cc_run
+need "record: the record is pruned" not cc_listed
+need "record: the branch stays" cc_branch
+need "record: the ticket is landed (its folder is gone)" phase_is t1 landed
+need "record: Evidence names the kept branch" cc_row landed "kept branch $CCBR"
+need "record: Needs the human names it" cc_board "- t1 — cleanup: kept branch $CCBR"
+lp 60
+need "record: loop finished" finished
+need "record: loop prints a cleanup item" grep -qF '"need":"cleanup"' "$tmp/loop.out"
+need "record: for t1, naming the branch" cc_item "kept branch $CCBR"
+cc_end
+end
+
+begin "close cleanup: the base is fast-forwarded, or left with the reason"
+# cc_behind — the base one commit ahead on origin (and in origin/main), the local base back where it was.
+cc_behind() { CCBASE="$(git rev-parse main)"; base_moves newbase.txt one; git reset -q --hard "$CCBASE"; }
+cc_pr() { reset; echo '{"close":"pr-merge"}' >.claude/10x.json; ticket t1; vb init t1; implemented t1 a; }
+cc_flow() { git remote set-url origin "$tmp/origin.git"; WORKER_SCRIPT=flow vb run t1 close; git remote set-url origin git@github.com:acme/batch.git; }
+cc_pr; cc_behind; cc_flow
+need "on the base: main is fast-forwarded to origin/main" test "$(git rev-parse main)" = "$(git rev-parse origin/main)"
+need "on the base: Evidence says so" cc_row landed "base: fast-forwarded main to"
+need "on the base: nothing is left for the human" not cc_board "- t1 — base:"
+base_reset "$CCBASE"
+cc_pr; cc_behind; git checkout -q -b other; git branch -q -f main "$CCBASE"; cc_flow
+need "off the base: main is untouched" test "$(git rev-parse main)" = "$CCBASE"
+need "off the base: Evidence says why" cc_row landed "base: main is behind origin/main, not updated: the main checkout is on other"
+need "off the base: Needs the human says why" cc_board "- t1 — base: main is behind origin/main, not updated: the main checkout is on other"
+git checkout -q main; git branch -q -D other; base_reset "$CCBASE"
+reset; ticket t1; vb init t1; implemented t1 a; cc_flow
+need "close: local: the board says it skipped" cc_row landed "base: skipped (close: local)"
+end
+
 [ "$fail" -eq 0 ] && echo "batch: all cases pass"
 exit "$fail"

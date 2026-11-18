@@ -120,6 +120,8 @@ Only once the branch is merged (squash-merged PR, or the local squash). After a 
 
 It removes the worktree and deletes the branch once its changes are on the base — merged as git sees it, or squash-merged (every file it touched is identical on `origin/<base>`, or on the local base after a local squash) — along with the pushed branch on origin if a merged PR left it behind. A branch whose changes are not on the base is kept and reported; never delete it yourself. Keep `.10x/<id>/` — it is the ticket's record.
 
+In a `/10x:batch` worker the sandbox may refuse part of this cleanup; `rm` then ends with `left for 10x-batch: it finishes this cleanup once the run ends`. Report what was left (the worktree, its record, the branch) as left to the batch, which finishes it on the host once this run ends, and give the user no command for it.
+
 ## Step 5 — Report
 
 What landed and where (PR URL or base commit), the final verify table — on a cleanup run, which runs no verify, the merged PR's URL instead — what `sync-base` did to the local base (fast-forwarded to which commit, or left behind and why), and what was cleaned up or left.

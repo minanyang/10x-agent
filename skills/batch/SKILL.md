@@ -100,6 +100,7 @@ When it wakes you:
   - `answer`: Read and show `.10x/_batch/<id>/turn.md`, and `.10x/<id>/product-questions.md` and `.10x/<id>/held-questions.md` when they exist; for a ticket whose session is not a plan session, first its Evidence from the board.
   - `approve`: as in Step 2 — show the turn and the lines of `plan.md` above its `# Appendix` line verbatim, under its path; on the user's `approve`, `10x-land comment <id>` when `.10x/<id>/comment.md` exists, then `10x-batch approve <id>`, which still asks permission; `approve all` as in Step 2.
   - `failed`: show its evidence and offer `replan` and `drop`, as in Step 1.
+  - `cleanup`: a landed ticket whose host cleanup left something for the user — a kept worktree or branch whose changes are not on the base, a refused removal, a base not updated. Show its evidence verbatim; it needs no reply and holds nothing, and a `done` item may follow it.
 
   After relaying them, call `PushNotification` once (load it with ToolSearch `select:PushNotification` when it is deferred) with the message `10x batch: <n> need you — <id> <need>, <id> <need>…`: `<n>` the number of items, the ids in item order, cut with `…` to stay under 200 characters. Never push for a restart without a JSON line or for an exit 2.
 
